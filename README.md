@@ -30,8 +30,6 @@ pip install pillow
 python app.py
 ```
 
-或双击 `启动.bat`。
-
 启动后自动定位本机 FH6 存档（Steam 读注册表，商店版扫描 `XboxGames\GameSave\pgs`），也可以用「手动选择目录…」指定 `remote` 或 `ContainersRoot` 目录。
 
 ## 使用说明

@@ -30,8 +30,6 @@ pip install pillow
 python app.py
 ```
 
-or double-click `启动.bat`.
-
 On launch the tool locates your FH6 save automatically (via the Steam registry key, or by scanning `XboxGames\GameSave\pgs` for the Store/Xbox edition). You can also point it at a `remote` or `ContainersRoot` folder manually via “手动选择目录…”.
 
 > The UI is currently in Simplified Chinese (button labels are quoted where relevant below); an English UI may follow.
