@@ -1,17 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-app.py — FH6 涂装管理器 (GUI)
+app.py — FH6 涂装查看器 (GUI)
 
-仅管理《极限竞速:地平线 6》存档,主视图为缩略图平铺。
+仅查看《极限竞速:地平线 6》存档中的涂装, 主视图为缩略图平铺, 只读。
 
-用法: python app.py        启动图形界面
-      python app.py --smoke  冒烟测试(构建界面后立即退出)
-      python app.py --demo   启动并自动选中第一个条目(调试用)
+用法: python app.py
+打包: pyinstaller --onefile --noconsole --name FH6LiveryViewer --add-data "cars.json;." app.py
 """
 
 from __future__ import annotations
 
 import os
+import re
+import shutil
+import sys
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -25,7 +27,14 @@ try:
 except ImportError:
     HAS_PIL = False
 
-APP_DIR = Path(__file__).resolve().parent
+if getattr(sys, "frozen", False):
+    # PyInstaller 打包后: 数据文件放在 exe 同目录; 首次运行从包内释放 cars.json
+    APP_DIR = Path(sys.executable).resolve().parent
+    _bundle = Path(getattr(sys, "_MEIPASS", APP_DIR))
+    if not (APP_DIR / "cars.json").exists() and (_bundle / "cars.json").exists():
+        shutil.copy2(_bundle / "cars.json", APP_DIR / "cars.json")
+else:
+    APP_DIR = Path(__file__).resolve().parent
 BACKUP_DIR = APP_DIR / "backups"
 
 CARD_W, CARD_H = 196, 208      # 卡片尺寸
@@ -449,7 +458,13 @@ class App(tk.Tk):
         if mode == "名称":
             return sorted(items, key=lambda i: (i.name or "").lower())
         if mode == "车型":
-            return sorted(items, key=lambda i: self.car_display(i).lower())
+            def _car_key(i: SaveItem):
+                n = self.car_table.name("fh6", i.car_id)
+                if not n:
+                    return (1, f"{i.car_id:06d}")        # 未识别的排最后, 按 ID 排
+                n = re.sub(r"^\d{4}\s+", "", n)          # 剥掉年份前缀, 按品牌车型排
+                return (0, n.lower())
+            return sorted(items, key=_car_key)
         if mode == "作者":
             return sorted(items, key=lambda i: (i.creator or "").lower())
         return items

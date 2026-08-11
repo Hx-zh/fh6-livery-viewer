@@ -1,3 +1,7 @@
 __pycache__/
 *.pyc
 backups/
+.venv-build/
+build/
+dist/
+*.spec
