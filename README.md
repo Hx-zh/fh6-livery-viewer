@@ -38,14 +38,11 @@ python app.py
 ## 打包发布
 
 ```bash
-python -m venv .venv-build
-.venv-build\Scripts\pip install pyinstaller pillow
-.venv-build\Scripts\python -m PyInstaller FH6LiveryViewer.spec
+python -m PyInstaller FH6LiveryViewer.spec
 ```
 
 产出为单文件 `dist\FH6LiveryViewer.exe`，`cars.json` 已内嵌（运行时只读，不释放到用户目录）。
 
-> 注意：请用 `python -m PyInstaller` 而不是 `.venv-build\Scripts\pyinstaller.exe`——后者的启动器 shim 可能损坏（静默退出且不产生任何输出），模块入口不受影响。
 
 ## 使用说明
 
