@@ -4,4 +4,3 @@ backups/
 .venv-build/
 build/
 dist/
-*.spec

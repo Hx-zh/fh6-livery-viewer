@@ -9,11 +9,10 @@
 ## 功能特性
 
 - 🖼️ **缩略图平铺**：直接读取存档自带的 `bigThumb` 预览图，卡片墙展示全部涂装
-- 🏎️ **显示具体车型**：内置 651 辆车的 ID 对照表（见致谢），不再对着一串数字猜车
+- 🏎️ **显示具体车型**：内置 660 辆车的 ID 对照表（与游戏数据对齐），不再对着一串数字猜车
 - 🔍 **可缩放预览**：双击打开大图，滚轮缩放（5%–1200%）、拖动平移、原始尺寸/适应窗口
 - 📅 **下载日期排序**：按涂装写入存档的时刻排序（新→旧/旧→新），也可按名称/车型/作者排序
 - 🔎 **搜索**：按涂装名/作者/车型过滤
-- 🏷️ **车型标注**：对照表未收录的新车可手动补名，存入 `cars.json`
 - 💾 **一键备份**：把整个存档目录打成 zip（只读操作）
 - 🖥️ **双版本存档支持**：Steam 版（userdata）与商店/Xbox 版（`XboxGames\GameSave\pgs`）自动识别
 
@@ -32,13 +31,24 @@ python app.py
 
 启动后自动定位本机 FH6 存档（Steam 读注册表，商店版扫描 `XboxGames\GameSave\pgs`），也可以用「手动选择目录…」指定 `remote` 或 `ContainersRoot` 目录。
 
+## 打包发布
+
+```bash
+python -m venv .venv-build
+.venv-build\Scripts\pip install pyinstaller pillow
+.venv-build\Scripts\python -m PyInstaller FH6LiveryViewer.spec
+```
+
+产出为单文件 `dist\FH6LiveryViewer.exe`，`cars.json` 已内嵌（运行时只读，不释放到用户目录）。
+
+> 注意：请用 `python -m PyInstaller` 而不是 `.venv-build\Scripts\pyinstaller.exe`——后者的启动器 shim 可能损坏（静默退出且不产生任何输出），模块入口不受影响。
+
 ## 使用说明
 
 | 操作 | 说明 |
 |---|---|
 | 单击卡片 | 选中，右侧显示大图与元数据（名称/车型/作者/日期/层数/大小） |
 | 双击卡片 | 打开可缩放预览窗口 |
-| 「标注车型…」 | 给未收录的车型 ID 补名（写入 `cars.json`，不影响存档） |
 | 「备份整个存档」 | 存档目录打包 zip 到 `backups\` |
 | 「所在文件夹」 | 在资源管理器中定位该涂装 |
 
@@ -58,7 +68,7 @@ python app.py
 ```
 ├── app.py      # GUI 主程序（只读查看器）
 ├── fh6save.py  # 存档扫描/header 解析库，可独立运行自检：python fh6save.py
-├── cars.json   # 车型 ID → 名称对照表（可手动编辑，用户标注优先）
+├── cars.json   # 车型 ID → 名称对照表（打包时内嵌进 exe，运行时只读）
 └── LICENSE     # AGPL-3.0
 ```
 
@@ -68,7 +78,7 @@ python app.py
 的逆向成果，并用本机 FH4/FH5/FH6 真实存档做了校正（FH6 header v7 的图层数/车型 ID 偏移为本项目补充）。
 遵照上游，本项目同样以 **AGPL-3.0** 开源。
 
-车型 ID 对照表来自 [HDR 的 FH6 Car Ordinals](https://gist.github.com/HDR/0659d1717bc61504bf83750628963f4f)（2026-07-14 版本，651 辆）。
+车型 ID 对照表最初来自 [HDR 的 FH6 Car Ordinals](https://gist.github.com/HDR/0659d1717bc61504bf83750628963f4f)，现已与游戏内 `Data_Car.str` 字符串表逐条对齐（660 辆）。
 
 ## 免责声明
 
@@ -76,4 +86,4 @@ python app.py
 
 ## License
 
-[GNU Affero General Public License v3.0](LICENSE) —— 与上游项目保持一致。
+[GNU Affero General Public License v3.0](LICENSE)

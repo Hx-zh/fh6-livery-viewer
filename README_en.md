@@ -9,11 +9,10 @@ Browse the liveries in your local *Forza Horizon 6* save outside the game: a til
 ## Features
 
 - 🖼️ **Tiled thumbnails**: reads the `bigThumb` previews stored in the save itself and lays all liveries out as a card wall
-- 🏎️ **Real car names**: ships with a 651-car ID table (see Upstream & Credits) — no more guessing from a bare number
+- 🏎️ **Real car names**: ships with a 660-car ID table (aligned with in-game data) — no more guessing from a bare number
 - 🔍 **Zoomable preview**: double-click for a full-size viewer with wheel zoom (5%–1200%), drag panning, fit-to-window / actual-size
 - 📅 **Sort by download date**: order by the moment a livery was written into your save (newest/oldest first), or by name / car / creator
 - 🔎 **Search**: filter by livery name, creator, or car
-- 🏷️ **Car tagging**: name unrecognized car IDs yourself; stored in `cars.json`
 - 💾 **One-click backup**: zip the whole save directory (a read-only operation)
 - 🖥️ **Both PC editions**: auto-detects Steam saves (`userdata`) and Microsoft Store / Xbox app saves (`XboxGames\GameSave\pgs`)
 
@@ -32,6 +31,18 @@ python app.py
 
 On launch the tool locates your FH6 save automatically (via the Steam registry key, or by scanning `XboxGames\GameSave\pgs` for the Store/Xbox edition). You can also point it at a `remote` or `ContainersRoot` folder manually via “手动选择目录…”.
 
+## Packaging
+
+```bash
+python -m venv .venv-build
+.venv-build\Scripts\pip install pyinstaller pillow
+.venv-build\Scripts\python -m PyInstaller FH6LiveryViewer.spec
+```
+
+Produces a single-file `dist\FH6LiveryViewer.exe` with `cars.json` embedded (read-only at runtime, never extracted next to the exe).
+
+> Note: use `python -m PyInstaller` rather than `.venv-build\Scripts\pyinstaller.exe` — the launcher shim may be broken (it exits silently with no output), while the module entry point works fine.
+
 > The UI is currently in Simplified Chinese (button labels are quoted where relevant below); an English UI may follow.
 
 ## Usage
@@ -40,7 +51,6 @@ On launch the tool locates your FH6 save automatically (via the Steam registry k
 |---|---|
 | Click a card | Select it; the right panel shows the large preview and metadata (name / car / creator / date / layers / size) |
 | Double-click a card | Open the zoomable preview window |
-| 「标注车型…」 (Tag car) | Assign a name to an unrecognized car ID (writes to `cars.json`, save untouched) |
 | 「备份整个存档」 (Backup) | Zip the save directory into `backups\` |
 | 「所在文件夹」 (Open folder) | Reveal the livery in Explorer |
 
@@ -60,7 +70,7 @@ The tool is **read-only**. These findings come from real on-disk saves plus comm
 ```
 ├── app.py      # GUI application (read-only viewer)
 ├── fh6save.py  # save scanning / header parsing library; standalone self-check: python fh6save.py
-├── cars.json   # car ID → name table (editable; user tags win)
+├── cars.json   # car ID → name table (embedded into the exe at build time, read-only at runtime)
 └── LICENSE     # AGPL-3.0
 ```
 
@@ -71,7 +81,7 @@ The save-header parsing logic is based on the reverse-engineering work of the up
 real local FH4/FH5/FH6 saves (the FH6 header v7 layer-count / car-ID offsets were contributed by this project).
 Following the upstream, this project is licensed under **AGPL-3.0** as well.
 
-The car ID table comes from [HDR's FH6 Car Ordinals](https://gist.github.com/HDR/0659d1717bc61504bf83750628963f4f) (2026-07-14 snapshot, 651 cars).
+The car ID table originally came from [HDR's FH6 Car Ordinals](https://gist.github.com/HDR/0659d1717bc61504bf83750628963f4f) and has since been aligned entry-by-entry with the game's `Data_Car.str` string table (660 cars).
 
 ## Disclaimer
 
