@@ -4,3 +4,4 @@ backups/
 .venv-build/
 build/
 dist/
+AGENTS.md
