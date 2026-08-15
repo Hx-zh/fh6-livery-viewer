@@ -6,7 +6,7 @@ app.py — FH6 涂装查看器 (GUI)
 车型名表 cars.json 随程序分发(打包时内嵌进 exe, 不再释放到用户目录)。
 
 用法: python app.py
-打包: pyinstaller FH6LiveryViewer.spec
+打包: python -m PyInstaller FH6LiveryViewer.spec(勿用损坏的 pyinstaller.exe shim)
 """
 
 from __future__ import annotations

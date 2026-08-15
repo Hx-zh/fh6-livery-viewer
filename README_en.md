@@ -10,9 +10,13 @@ Browse the liveries in your local *Forza Horizon 6* save outside the game: a til
 
 - 🖼️ **Tiled thumbnails**: reads the `bigThumb` previews stored in the save itself and lays all liveries out as a card wall
 - 🏎️ **Real car names**: ships with a 660-car ID table (aligned with in-game data) — no more guessing from a bare number
+- 📍 **In-game position**: every livery is labeled with its row/column in the game's "My Liveries" grid (thumbnail badge + details), and the wall can follow the in-game order
+- 🔄 **Duplicate detection**: perceptual hashing plus car/creator/name-similarity rules, split into four scenarios — same-car replicas, same-author variants (v1/v2), cross-car ports, no-image name twins — each filterable on its own
+- 🏭 **Manufacturer filter**: narrow the wall down by make (Porsche, Ferrari, …)
 - 🔍 **Zoomable preview**: double-click for a full-size viewer with wheel zoom (5%–1200%), drag panning, fit-to-window / actual-size
-- 📅 **Sort by download date**: order by the moment a livery was written into your save (newest/oldest first), or by name / car / creator
+- 📅 **Sort by download date**: order by the moment a livery was written into your save (newest/oldest first), or by name / car / creator / in-game order
 - 🔎 **Search**: filter by livery name, creator, or car
+- 📋 **Native copy**: selectable details text (Ctrl+C / context menu); card context menu copies position / name / car / creator
 - 💾 **One-click backup**: zip the whole save directory (a read-only operation)
 - 🖥️ **Both PC editions**: auto-detects Steam saves (`userdata`) and Microsoft Store / Xbox app saves (`XboxGames\GameSave\pgs`)
 
@@ -49,12 +53,16 @@ Produces a single-file `dist\FH6LiveryViewer.exe` with `cars.json` embedded (rea
 
 | Action | Result |
 |---|---|
-| Click a card | Select it; the right panel shows the large preview and metadata (name / car / creator / date / layers / size) |
+| Click a card | Select it; the right panel shows the large preview and metadata (name / car / creator / in-game position / date / layers / size / duplicate group) |
 | Double-click a card | Open the zoomable preview window |
+| Right-click a card | Context menu: copy in-game position / name / car / creator |
+| Ctrl+C | Copies the selected text when the details box is focused; otherwise copies the selected livery's in-game position |
+| 「重复涂装筛选」 (Dup filter) | Single-choice scenario filter (click the active item again to clear); can stack with the multi/single-livery-per-car dimension |
+| 「车厂」 (Manufacturer) | Filter by make |
 | 「备份整个存档」 (Backup) | Zip the save directory into `backups\` |
 | 「所在文件夹」 (Open folder) | Reveal the livery in Explorer |
 
-Card rows: livery name / car name / creator. If the car is not in the table, the third row shows `ID xxxx + date` instead.
+Card rows: livery name / car name (wraps to show in full) / creator. If the car is not in the table, the third row shows `ID xxxx + date` instead. The badge at the thumbnail's top-right is the in-game position (`N行M列` — row N of column M; "My Liveries" groups by car, two rows per column).
 
 ## Save Format Notes
 
