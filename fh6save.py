@@ -338,16 +338,41 @@ def scan_folder(game: str, steam_user: str, folder: Path) -> list[SaveItem]:
     return sorted(items.values(), key=lambda x: (x.ts or datetime.min), reverse=True)
 
 
-def game_position_map(items: list[SaveItem]) -> dict[str, str]:
-    """计算每个涂装在游戏内「我的涂装」列表中的位置。
+def game_layout(items: list[SaveItem]) -> tuple[int, dict[str, tuple[int, int]]]:
+    """计算每个涂装在游戏内「我的涂装」网格中的布局。
 
     与游戏内排列一致(参照 FH6存档涂装解析器 的实测结论):
     仅 Livery 条目, 按车型 ID 升序分组, 同车型内按条目名(时间戳)升序,
-    每列 2 个(行号为列内序号), 位置格式为 "N行M列"(均 1 起)。
+    每列 2 个(行号 = 列内序号), 行列均 1 起。
+    返回 (总列数, base -> (行, 列)); 总列数 = ceil(Livery 数 / 2)。
     """
     liveries = sorted((it for it in items if it.itype == "Livery"),
                       key=lambda it: (it.car_id, it.base))
-    return {it.base: f"{i % 2 + 1}行{i // 2 + 1}列" for i, it in enumerate(liveries)}
+    layout = {it.base: (i % 2 + 1, i // 2 + 1) for i, it in enumerate(liveries)}
+    return (len(liveries) + 1) // 2, layout
+
+
+def game_position_map(items: list[SaveItem]) -> dict[str, str]:
+    """每个涂装在「我的涂装」列表中的位置字符串 "N行M列"(布局规则见 game_layout)。"""
+    _total, layout = game_layout(items)
+    return {base: f"{x}行{y}列" for base, (x, y) in layout.items()}
+
+
+def locate_keys(x: int, y: int, total: int) -> list[tuple[str, int]]:
+    """从 1行1列 到 (x行y列) 的最短方向键序列, 返回 [(方向, 次数)](先水平后垂直)。
+
+    水平取 min(y-1, total-y+1): y-1 更短(或相等)则向右, 否则向左(利用首尾环绕);
+    垂直固定向下 x-1 次。已在原位(1行1列)时返回空列表。
+    """
+    keys: list[tuple[str, int]] = []
+    if y - 1 <= total - y + 1:
+        if y > 1:
+            keys.append(("→", y - 1))
+    else:
+        keys.append(("←", total - y + 1))
+    if x > 1:
+        keys.append(("↓", x - 1))
+    return keys
 
 
 # ---------------------------------------------------------------- 重复涂装检测

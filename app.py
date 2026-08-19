@@ -11,12 +11,14 @@ app.py — FH6 涂装查看器 (GUI)
 
 from __future__ import annotations
 
+import ctypes
 import os
 import re
 import sys
 import threading
 import tkinter as tk
 import webbrowser
+from ctypes import wintypes
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -38,7 +40,7 @@ else:
     CARS_JSON = APP_DIR / "cars.json"
 BACKUP_DIR = APP_DIR / "backups"
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 PROJECT_URL = "https://github.com/Hx-zh/fh6-livery-viewer"
 RELEASES_URL = PROJECT_URL + "/releases"
 
@@ -46,6 +48,76 @@ CARD_W, CARD_H = 196, 200      # 卡片尺寸
 THUMB_W, THUMB_H = 184, 120    # 卡片缩略图区域
 
 SORT_OPTIONS = ["下载日期(新→旧)", "下载日期(旧→新)", "名称", "车型", "作者", "游戏内顺序"]
+
+# 重复场景规则(标签, 菜单显示文案); 标签与 fh6save.detect_duplicates 的规则标签一致
+DUP_RULES = [
+    ("同车复刻", "同车复刻(经典涂装多人复刻)"),
+    ("同车微调", "同车微调(同一作者的 v1/v2 版本)"),
+    ("跨车型移植", "跨车型移植(同一涂装的多车型版)"),
+    ("无图同名", "无图同名(无缩略图的同名涂装)"),
+]
+
+# 按键节奏默认值(毫秒): 「我的設計」网格二分实测, 周期(按下保持+键间间隔)阈值 ≈30ms, 默认 40ms 留 10ms 余量(低帧率机器保险)
+# 用户可在「设置」里调整; 为保持单文件零外部文件零注册表, 设置仅本次运行有效, 不落盘
+DEFAULT_KEY_HOLD_MS = 15    # 按下保持
+DEFAULT_KEY_GAP_MS = 25     # 键间间隔(无间隔会把连发合并吞键)
+GAME_EXE = "forzahorizon6.exe"
+
+# user32/kernel32 原型: HWND 是 64 位指针, ctypes 默认 restype=int 会截断, 必须显式声明
+_u32, _k32 = ctypes.windll.user32, ctypes.windll.kernel32
+_u32.GetForegroundWindow.restype = wintypes.HWND
+_u32.GetWindow.restype = wintypes.HWND
+
+
+def find_game_window(exe: str = GAME_EXE):
+    """按进程名找游戏主窗口(可见、无 owner、有标题的顶层窗口), 返回 HWND 或 None。"""
+    found = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def _cb(hwnd, _lp):
+        if (not _u32.IsWindowVisible(hwnd) or _u32.GetWindow(hwnd, 4)   # GW_OWNER
+                or _u32.GetWindowTextLengthW(hwnd) == 0):
+            return True
+        pid = wintypes.DWORD()
+        _u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        h = _k32.OpenProcess(0x1000, False, pid.value)   # PROCESS_QUERY_LIMITED_INFORMATION
+        if h:
+            try:
+                buf = ctypes.create_unicode_buffer(260)
+                n = wintypes.DWORD(len(buf))
+                if (_k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n))
+                        and buf.value.lower().endswith(exe)):
+                    found.append(hwnd)
+                    return False                       # 找到即停
+            finally:
+                _k32.CloseHandle(h)
+        return True
+
+    _u32.EnumWindows(_cb, 0)
+    return found[0] if found else None
+
+
+def force_foreground(hwnd) -> bool:
+    """把窗口切到前台。AttachThreadInput 绕过 SetForegroundWindow 的前台权限限制。"""
+    if _u32.IsIconic(hwnd):
+        _u32.ShowWindow(hwnd, 9)                         # SW_RESTORE
+    if _u32.GetForegroundWindow() == hwnd:
+        return True
+    fg = _u32.GetForegroundWindow()
+    cur = _k32.GetCurrentThreadId()
+    fg_tid = _u32.GetWindowThreadProcessId(fg, None)
+    tgt_tid = _u32.GetWindowThreadProcessId(hwnd, None)
+    _u32.AttachThreadInput(cur, fg_tid, True)
+    if tgt_tid != fg_tid:
+        _u32.AttachThreadInput(cur, tgt_tid, True)
+    try:
+        _u32.BringWindowToTop(hwnd)
+        _u32.SetForegroundWindow(hwnd)
+    finally:
+        _u32.AttachThreadInput(cur, fg_tid, False)
+        if tgt_tid != fg_tid:
+            _u32.AttachThreadInput(cur, tgt_tid, False)
+    return _u32.GetForegroundWindow() == hwnd
 
 
 def fmt_size(n: int) -> str:
@@ -105,16 +177,23 @@ class Card(tk.Frame):
                   self.car_label, self.sub_label):
             w.bind("<Button-1>", self._on_click)
             w.bind("<Double-1>", self._on_dbl)
-            w.bind("<Button-3>", self._on_rclick)   # 右键复制游戏内位置
+            w.bind("<Button-3>", self._on_rclick)   # 右键菜单(预览/定位/复制)
         self.set_selected(False)   # 初始化边框
 
     def _on_rclick(self, e):
-        """右键菜单: 复制位置/名称/车型/作者。"""
+        """右键菜单: 查看缩略图/定位到涂装 + 复制位置/名称/车型/作者。"""
         self.app.select(self.item.base)
         it = self.item
         pos = self.app._pos_map.get(it.base, "")
         car = self.app.car_table.name("fh6", it.car_id)
         menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="查看缩略图",
+                         state=tk.NORMAL if it.thumb_big else tk.DISABLED,
+                         command=self.app.show_big_preview)
+        menu.add_command(label="定位到涂装位置",
+                         state=tk.NORMAL if pos else tk.DISABLED,
+                         command=self.app.auto_locate)
+        menu.add_separator()
         menu.add_command(label=f"复制游戏内位置 ({pos})" if pos else "复制游戏内位置",
                          state=tk.NORMAL if pos else tk.DISABLED,
                          command=lambda: self.app.copy_text(pos))
@@ -136,8 +215,9 @@ class Card(tk.Frame):
         self.app.select(self.item.base)
 
     def _on_dbl(self, _e):
+        """双击 = 自动定位到游戏内该涂装(右键菜单仍可查看缩略图)。"""
         self.app.select(self.item.base)
-        self.app.show_big_preview()
+        self.app.auto_locate()
 
     def set_image(self, img):
         if img:
@@ -262,6 +342,16 @@ class App(tk.Tk):
         self._car_unique: dict[int, int] = {}     # 车型 ID -> 唯一涂装数
         self._dup_rules: dict[int, list[str]] = {}  # 重复组号 -> 命中规则标签
         self._dup_feats: dict | None = None       # 重复检测预计算特征(后台线程填充)
+        self._dup_pending = False                 # 重复分析进行中(防重入)
+        self._layout: dict[str, tuple[int, int]] = {}  # base -> (行, 列)
+        self._total_cols = 0                      # 「我的涂装」总列数
+        self._locate_running = False              # 方向键发送中
+        self._locate_cancel = False               # 取消发送标志(发送线程逐键检查)
+        self._locate_keys: list[tuple[str, int]] = []
+        self._locate_hwnd = None                  # 游戏窗口句柄
+        # 按键节奏(会话级, 不落盘): 默认 15+25=40ms, 「设置」里可改
+        self.key_hold_ms = DEFAULT_KEY_HOLD_MS
+        self.key_gap_ms = DEFAULT_KEY_GAP_MS
         self._thumb_pending: list[str] = []
         self._selected: str | None = None
         self._detail_img = None
@@ -287,6 +377,12 @@ class App(tk.Tk):
                           ("备份整个存档", self.backup_all),
                           ("打开存档目录", self.open_folder)):
             ttk.Button(bar, text=text, command=cmd).pack(side=tk.LEFT, padx=2)
+        # 置顶开关: 窗口浮在游戏上方, 方便随时调用(配合自动定位)
+        self.topmost_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bar, text="置顶", variable=self.topmost_var,
+                        command=self._toggle_topmost).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(bar, text="设置", command=self.open_settings).pack(side=tk.RIGHT,
+                                                                      padx=2)
 
         flt = ttk.Frame(self, padding=(6, 0, 6, 6))
         flt.pack(fill=tk.X)
@@ -295,9 +391,9 @@ class App(tk.Tk):
         ent = ttk.Entry(flt, textvariable=self.search_var, width=28)
         ent.pack(side=tk.LEFT, padx=(2, 10))
         ent.bind("<KeyRelease>", lambda _e: self.rebuild_grid())
-        # 重复涂装场景筛选: "all" 不筛选, "dup" 不限场景, 其余为规则标签(同车复刻 等)
-        self.dup_view = tk.StringVar(value="all")
-        self._dup_view_last = "all"    # 供"再点一次取消"判断
+        # 涂装筛选: 全部为独立开关(可多选组合), 首次打开任一开关时才触发后台重复分析
+        self.dup_only = tk.BooleanVar(value=False)
+        self.rule_vars = {tag: tk.BooleanVar(value=False) for tag, _ in DUP_RULES}
         self.multi_only = tk.BooleanVar(value=False)
         self.single_only = tk.BooleanVar(value=False)
         ttk.Label(flt, text="车厂:").pack(side=tk.LEFT, padx=(14, 2))
@@ -314,20 +410,17 @@ class App(tk.Tk):
         scb.pack(side=tk.LEFT)
         scb.bind("<<ComboboxSelected>>", lambda _e: self.rebuild_grid())
 
-        # 右侧: 重复涂装筛选(场景单选, 再点一次已选项取消; 经典 tk.Menubutton 凸起边框)
-        self.filter_mb = tk.Menubutton(flt, text="重复涂装筛选", relief=tk.RAISED, bd=1,
+        # 右侧: 涂装筛选(全部独立开关, 多规则 OR 组合; 经典 tk.Menubutton 凸起边框)
+        self.filter_mb = tk.Menubutton(flt, text="涂装筛选", relief=tk.RAISED, bd=1,
                                        bg="#e1e1e1", activebackground="#ececec",
                                        padx=10, pady=2)
         fmenu = tk.Menu(self.filter_mb, tearoff=0)
-        # 场景单选(互斥); "all" = 不筛选(不能用空串做 radio 值, 会选不中)
-        for label, val in (("全部涂装(不筛选)", "all"),
-                           ("仅重复涂装(不限场景)", "dup"),
-                           ("同车复刻(经典涂装多人复刻)", "同车复刻"),
-                           ("同车微调(同一作者的 v1/v2 版本)", "同车微调"),
-                           ("跨车型移植(同一涂装的多车型版)", "跨车型移植"),
-                           ("无图同名(无缩略图的同名涂装)", "无图同名")):
-            fmenu.add_radiobutton(label=label, variable=self.dup_view, value=val,
-                                  command=lambda v=val: self._toggle_dup_view(v))
+        fmenu.add_checkbutton(label="仅显示重复涂装(不限场景)", variable=self.dup_only,
+                              command=self._on_dup_switch)
+        fmenu.add_separator()
+        for tag, label in DUP_RULES:
+            fmenu.add_checkbutton(label=label, variable=self.rule_vars[tag],
+                                  command=self._on_dup_switch)
         fmenu.add_separator()
         # 车型维度(可叠加, 二者互斥)
         fmenu.add_checkbutton(label="仅显示多涂装车型(≥2 种)", variable=self.multi_only,
@@ -361,6 +454,7 @@ class App(tk.Tk):
         btns = tk.Frame(right)
         btns.pack(fill=tk.X)
         for text, cmd in (("查看大图", self.show_big_preview),
+                          ("自动定位到游戏", self.auto_locate),
                           ("所在文件夹", self.open_item_folder)):
             ttk.Button(btns, text=text, command=cmd).pack(fill=tk.X, pady=1)
 
@@ -401,6 +495,7 @@ class App(tk.Tk):
         ttk.Label(self, textvariable=self.status_var, relief=tk.SUNKEN,
                   anchor=tk.W, padding=(6, 2)).pack(fill=tk.X, side=tk.BOTTOM)
         self.bind("<Control-c>", self._on_ctrl_c)
+        self.bind("<Escape>", lambda _e: self._cancel_locate())
 
     # ------------------------------------------------------------ 平铺布局
 
@@ -452,16 +547,15 @@ class App(tk.Tk):
         self._set_info("未选择条目")
         self.thumb_label.configure(image="", text="(无预览)")
         parts = []
-        if self.dup_view.get() == "dup":
+        if self.dup_only.get():
             parts.append("仅重复")
-        elif self.dup_view.get() != "all":
-            parts.append(self.dup_view.get())
+        parts += [tag for tag, _ in DUP_RULES if self.rule_vars[tag].get()]
         if self.multi_only.get():
             parts.append("多涂装车型")
         if self.single_only.get():
             parts.append("单涂装车型")
         self.filter_mb.configure(
-            text=f"重复涂装筛选: {'+'.join(parts)}" if parts else "重复涂装筛选")
+            text=f"涂装筛选: {'+'.join(parts)}" if parts else "涂装筛选")
         known = self.car_table.known_count("fh6")
         dup_groups = len({g for g in self._dup_group.values() if g})
         dup_files = sum(1 for g in self._dup_group.values() if g)
@@ -479,7 +573,10 @@ class App(tk.Tk):
                 continue
             img = self._load_thumb(card.item.thumb_big, THUMB_W, THUMB_H,
                                    badge=self._pos_map.get(base, ""))
-            self._img_cache[base] = img
+            if img:
+                # 解码失败(如游戏正在写入该文件)不缓存, 下次重建网格时自动重试,
+                # 否则 None 进缓存会让卡片永远卡在「加载中…」
+                self._img_cache[base] = img
             card.set_image(img)
         if self._thumb_pending:
             self.after(10, self._load_thumbs_batch)
@@ -504,6 +601,8 @@ class App(tk.Tk):
             self._dup_group, self._car_unique, self._pos_map = {}, {}, {}
             self._dup_rules = {}
             self._dup_feats = None
+            self._dup_pending = False
+            self._layout, self._total_cols = {}, 0
             self._img_cache.clear()
             self.rebuild_grid()
             self.status_var.set("未找到 FH6 存档, 请用「手动选择目录」指定存档文件夹")
@@ -521,10 +620,13 @@ class App(tk.Tk):
         self.items = fh6save.scan_folder("fh6", self.current["steam_user"],
                                          Path(self.current["dir"]))
         self.item_map = {it.base: it for it in self.items}
-        self._pos_map = fh6save.game_position_map(self.items)
+        self._cancel_locate()
+        self._total_cols, self._layout = fh6save.game_layout(self.items)
+        self._pos_map = {b: f"{x}行{y}列" for b, (x, y) in self._layout.items()}
         self._dup_group, self._car_unique = {}, {}
         self._dup_rules = {}
         self._dup_feats = None
+        self._dup_pending = False
         self._img_cache.clear()
         # 车厂下拉: 只列出当前存档涂装实际涉及的车厂
         brands = sorted({b for it in self.items if it.itype == "Livery"
@@ -532,19 +634,13 @@ class App(tk.Tk):
         self.brand_combo.configure(values=["全部车厂"] + brands)
         if self.brand_var.get() not in ("全部车厂", *brands):
             self.brand_var.set("全部车厂")
-        # 后台线程解码缩略图计算感知哈希(慢), 完成后再算重复分组
-        items = self.items
-
-        def _work():
-            feats = fh6save.extract_dup_features(items)
-            self.after(0, lambda: self._dup_ready(items, feats))
-
-        threading.Thread(target=_work, daemon=True).start()
+        # 重复检测按需触发(解码缩略图算哈希很慢): 见 _ensure_dup_analysis
         self.rebuild_grid()
 
     def _dup_ready(self, items: list[SaveItem], feats: dict):
         if items is not self.items:
-            return                     # 等待期间已切换存档, 丢弃
+            return                     # 等待期间已切换存档, 丢弃(不碰新存档的状态)
+        self._dup_pending = False
         self._dup_feats = feats
         self._rerun_dup()
 
@@ -579,12 +675,24 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------ 过滤
 
-    def _toggle_dup_view(self, val: str):
-        """场景单选: 再次点击已选中的场景 = 取消(回到不筛选)。"""
-        if val != "all" and self._dup_view_last == val:
-            self.dup_view.set("all")
-        self._dup_view_last = self.dup_view.get()
+    def _on_dup_switch(self):
+        """任一筛选开关切换: 刷新列表, 并按需启动重复分析。"""
         self.rebuild_grid()
+        self._ensure_dup_analysis()   # 放 rebuild 之后, 状态栏"分析中"不被覆盖
+
+    def _ensure_dup_analysis(self):
+        """重复检测按需触发: 只在首次打开依赖它的开关时才后台解码缩略图算哈希。"""
+        if self._dup_feats is not None or self._dup_pending or not self.items:
+            return
+        self._dup_pending = True
+        items = self.items
+        self.status_var.set("重复涂装分析中(解码缩略图计算哈希)…")
+
+        def _work():
+            feats = fh6save.extract_dup_features(items)
+            self.after(0, lambda: self._dup_ready(items, feats))
+
+        threading.Thread(target=_work, daemon=True).start()
 
     def _select_dup_filter(self, which: str):
         """车型维度的「多涂装」与「单涂装」互斥。"""
@@ -593,6 +701,7 @@ class App(tk.Tk):
         elif which == "single" and self.single_only.get():
             self.multi_only.set(False)
         self.rebuild_grid()
+        self._ensure_dup_analysis()
 
     def car_display(self, it: SaveItem) -> str:
         if it.car_id == 0:
@@ -608,16 +717,18 @@ class App(tk.Tk):
     def _filtered(self) -> list[SaveItem]:
         q = self.search_var.get().strip().lower()
         brand = self.brand_var.get()
+        active_rules = [tag for tag, _ in DUP_RULES if self.rule_vars[tag].get()]
         out = []
         for it in self.items:
             if it.itype != "Livery":          # 仅限涂装
                 continue
-            view = self.dup_view.get()
-            if view != "all":
+            if self.dup_only.get() or active_rules:
                 gid = self._dup_group.get(it.base, 0)
                 if not gid:
                     continue
-                if view != "dup" and view not in self._dup_rules.get(gid, []):
+                # 多规则 OR: 组命中任一选中的场景即保留
+                if active_rules and not any(
+                        r in self._dup_rules.get(gid, []) for r in active_rules):
                     continue
             unique = self._car_unique.get(it.car_id, 0)
             if self.multi_only.get() and unique < 2:
@@ -731,7 +842,10 @@ class App(tk.Tk):
             f"作者: {it.creator or '?'}",
         ]
         if pos:
-            lines.append(f"游戏内位置: {pos}")
+            lines.append(f"游戏内位置: {pos} (共 {self._total_cols} 列)")
+            keys = fh6save.locate_keys(*self._layout[it.base], self._total_cols)
+            path = " ".join(f"{d}×{n}" for d, n in keys)
+            lines.append(f"按键路径: {path or '无需按键(就在 1行1列)'}")
         lines += [
             f"日期: {it.ts.strftime('%Y-%m-%d %H:%M:%S') if it.ts else '?'}",
             f"状态: {'已分享' if it.published else '本地'}",
@@ -764,6 +878,136 @@ class App(tk.Tk):
         self.clipboard_clear()
         self.clipboard_append(text)
         self.status_var.set(f"已复制: {ellipsize(text, 60)}")
+
+    def _toggle_topmost(self):
+        """置顶开关: 窗口浮在游戏上方, 方便随时调用。"""
+        self.attributes("-topmost", self.topmost_var.get())
+
+    def open_settings(self):
+        """设置窗口: 自动定位的按键节奏(毫秒), 仅本次运行有效(不落盘)。"""
+        dlg = tk.Toplevel(self)
+        dlg.title("设置")
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        dlg.grab_set()                          # 模态
+
+        body = ttk.Frame(dlg, padding=12)
+        body.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(body, text="自动定位按键节奏 (毫秒, 周期 = 保持 + 间隔):").grid(
+            row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 6))
+        ttk.Label(body, text="按下保持:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        ttk.Label(body, text="键间间隔:").grid(row=2, column=0, sticky=tk.W, pady=2)
+        hold_var = tk.StringVar(value=str(self.key_hold_ms))
+        gap_var = tk.StringVar(value=str(self.key_gap_ms))
+        ttk.Spinbox(body, from_=0, to=2000, width=8,
+                    textvariable=hold_var).grid(row=1, column=1, sticky=tk.W, pady=2)
+        ttk.Spinbox(body, from_=0, to=2000, width=8,
+                    textvariable=gap_var).grid(row=2, column=1, sticky=tk.W, pady=2)
+        ttk.Label(body, text="(仅本次运行有效)").grid(
+            row=3, column=0, columnspan=2, sticky=tk.W, pady=(2, 0))
+
+        btns = ttk.Frame(body)
+        btns.grid(row=4, column=0, columnspan=2, sticky=tk.E, pady=(10, 0))
+
+        def _save():
+            try:
+                hold, gap = int(hold_var.get()), int(gap_var.get())
+            except ValueError:
+                messagebox.showerror("设置", "请输入整数毫秒值", parent=dlg)
+                return
+            if not (0 <= hold <= 2000 and 0 <= gap <= 2000):
+                messagebox.showerror("设置", "取值范围 0~2000 毫秒", parent=dlg)
+                return
+            self.key_hold_ms, self.key_gap_ms = hold, gap
+            self.status_var.set(f"按键节奏: 保持 {hold}ms + 间隔 {gap}ms (本次运行有效)")
+            dlg.destroy()
+
+        def _reset():
+            hold_var.set(str(DEFAULT_KEY_HOLD_MS))
+            gap_var.set(str(DEFAULT_KEY_GAP_MS))
+
+        ttk.Button(btns, text="恢复默认", command=_reset).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btns, text="确定", command=_save).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btns, text="取消", command=dlg.destroy).pack(side=tk.LEFT, padx=2)
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+        # 居中于主窗口
+        dlg.update_idletasks()
+        dw, dh = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        dlg.geometry(f"+{self.winfo_rootx() + (self.winfo_width() - dw) // 2}"
+                     f"+{self.winfo_rooty() + (self.winfo_height() - dh) // 2}")
+
+    # ------------------------------------------------------------ 自动定位(发送方向键)
+
+    def auto_locate(self):
+        """立即切到游戏窗口并经 keybd_event 发送方向键; 发送中再点按钮或按 Esc 取消。"""
+        if self._locate_running:
+            self._cancel_locate()
+            return
+        it = self.selected_item()
+        rc = self._layout.get(it.base) if it else None
+        if not rc:
+            msg = "该涂装没有游戏内位置信息" if it else "请先在左侧选中一个涂装"
+            messagebox.showinfo("自动定位", msg)
+            return
+        keys = fh6save.locate_keys(rc[0], rc[1], self._total_cols)
+        if not keys:
+            self.status_var.set("该涂装就在 1行1列, 无需按键")
+            return
+        hwnd = find_game_window()
+        if hwnd is None:
+            messagebox.showinfo("自动定位", "未找到游戏窗口, 请先打开游戏")
+            return
+        if not force_foreground(hwnd):
+            self.status_var.set("无法切换到游戏窗口, 已取消")
+            return
+        self._locate_hwnd = hwnd
+        self._locate_keys = keys
+        self._send_keys()
+
+    def _cancel_locate(self):
+        """取消发送; 无定位在进行时为空操作。"""
+        if not self._locate_running:
+            return
+        self._locate_cancel = True      # 发送线程每个按键前检查
+        self.status_var.set("自动定位已取消")
+
+    def _send_keys(self):
+        """后台线程依次发送方向键(Windows keybd_event, 纯 stdlib)。"""
+        keys = self._locate_keys
+        hold = self.key_hold_ms / 1000        # 主线程取快照, 避免发送中改设置
+        gap = self.key_gap_ms / 1000
+        self._locate_running = True
+        self._locate_cancel = False
+
+        def _work():
+            import time
+            if self._locate_hwnd is not None:
+                time.sleep(0.5)                 # 等游戏拿到焦点再按键
+            user32 = ctypes.windll.user32
+            vk = {"←": 0x25, "↑": 0x26, "→": 0x27, "↓": 0x28}
+            finished = True
+            for sym, n in keys:
+                for _ in range(n):
+                    if self._locate_cancel:
+                        finished = False
+                        break
+                    user32.keybd_event(vk[sym], 0, 0, 0)        # 按下
+                    time.sleep(hold)
+                    user32.keybd_event(vk[sym], 0, 2, 0)        # 抬起(KEYEVENTF_KEYUP)
+                    time.sleep(gap)                             # 无间隔会吞键(实测)
+                if not finished:
+                    break
+            self.after(0, lambda: self._locate_done(finished))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _locate_done(self, finished: bool):
+        self._locate_running = False
+        if finished:
+            path = " ".join(f"{d}×{n}" for d, n in self._locate_keys)
+            self.status_var.set(f"自动定位完成: {path}")
+        else:
+            self.status_var.set("自动定位已取消")
 
     # ------------------------------------------------------------ 详情文本(只读/复制)
 

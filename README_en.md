@@ -11,9 +11,11 @@ Browse the liveries in your local *Forza Horizon 6* save outside the game: a til
 - 🖼️ **Tiled thumbnails**: reads the `bigThumb` previews stored in the save itself and lays all liveries out as a card wall
 - 🏎️ **Real car names**: ships with a 660-car ID table (aligned with in-game data) — no more guessing from a bare number
 - 📍 **In-game position**: every livery is labeled with its row/column in the game's "My Liveries" grid (thumbnail badge + details), and the wall can follow the in-game order
-- 🔄 **Duplicate detection**: perceptual hashing plus car/creator/name-similarity rules, split into four scenarios — same-car replicas, same-author variants (v1/v2), cross-car ports, no-image name twins — each filterable on its own
+- 🎯 **Auto-locate**: the details panel shows the shortest arrow-key path from row 1 / column 1 (using edge wrap-around), and the "auto-locate" button brings the game to the foreground and sends those keystrokes, landing exactly on the chosen livery
+- 📌 **Always on top**: pin the window above the game so you can look up and locate liveries without leaving it
+- 🔄 **Duplicate detection**: perceptual hashing plus car/creator/name-similarity rules, split into four scenarios — same-car replicas, same-author variants (v1/v2), cross-car ports, no-image name twins — freely combinable filter switches; analysis runs on demand only (zero cost when unused)
 - 🏭 **Manufacturer filter**: narrow the wall down by make (Porsche, Ferrari, …)
-- 🔍 **Zoomable preview**: double-click for a full-size viewer with wheel zoom (5%–1200%), drag panning, fit-to-window / actual-size
+- 🔍 **Zoomable preview**: open the full-size viewer from the card's right-click menu ("查看缩略图") or the details panel — wheel zoom (5%–1200%), drag panning, fit-to-window / actual-size
 - 📅 **Sort by download date**: order by the moment a livery was written into your save (newest/oldest first), or by name / car / creator / in-game order
 - 🔎 **Search**: filter by livery name, creator, or car
 - 📋 **Native copy**: selectable details text (Ctrl+C / context menu); card context menu copies position / name / car / creator
@@ -53,11 +55,14 @@ Produces a single-file `dist\FH6LiveryViewer.exe` with `cars.json` embedded (rea
 
 | Action | Result |
 |---|---|
-| Click a card | Select it; the right panel shows the large preview and metadata (name / car / creator / in-game position / date / layers / size / duplicate group) |
-| Double-click a card | Open the zoomable preview window |
-| Right-click a card | Context menu: copy in-game position / name / car / creator |
+| Click a card | Select it; the right panel shows the large preview and metadata (name / car / creator / in-game position / key path / date / layers / size / duplicate group) |
+| Double-click a card | Auto-locate that livery in the game (same as the "auto-locate" button in the details panel) |
+| Right-click a card | Context menu: view thumbnail / locate livery in game / copy in-game position, name, car, creator |
 | Ctrl+C | Copies the selected text when the details box is focused; otherwise copies the selected livery's in-game position |
-| 「重复涂装筛选」 (Dup filter) | Single-choice scenario filter (click the active item again to clear); can stack with the multi/single-livery-per-car dimension |
+| 「涂装筛选」 (Filters) | All filters are independent toggles that stack (multiple scenarios OR together); duplicate analysis starts in the background the first time any toggle is switched on — zero cost otherwise |
+| 「置顶」 (Always on top) | Keep the window above the game for quick access |
+| 「自动定位到游戏」 (Auto-locate) | Instantly brings the game window to the foreground and sends arrow keys to jump to the selected livery (shows a notice if the game is not running); click again or press Esc to cancel mid-send. Requires a freshly opened "My Designs" screen (focus at row 1 / column 1) with no in-game filter applied |
+| 「设置」 (Settings) | Tunes the auto-locate key timing (key hold + inter-key gap, in ms); applies to the current session only — nothing is written to disk or the registry, keeping the single-file exe footprint-free. The measured per-key cycle threshold is ~30ms — anything below drops keys; default is 15+25=40ms, raise it on low-FPS machines |
 | 「车厂」 (Manufacturer) | Filter by make |
 | 「备份整个存档」 (Backup) | Zip the save directory into `backups\` |
 | 「所在文件夹」 (Open folder) | Reveal the livery in Explorer |
