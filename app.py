@@ -13,16 +13,19 @@ from __future__ import annotations
 
 import ctypes
 import os
+import queue
 import re
 import sys
 import threading
 import tkinter as tk
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor
 from ctypes import wintypes
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 import fh6save
+import gamemem
 from fh6save import CarTable, SaveItem, SaveOps
 
 try:
@@ -40,11 +43,13 @@ else:
     CARS_JSON = APP_DIR / "cars.json"
 BACKUP_DIR = APP_DIR / "backups"
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 PROJECT_URL = "https://github.com/Hx-zh/fh6-livery-viewer"
 RELEASES_URL = PROJECT_URL + "/releases"
 
 CARD_W, CARD_H = 196, 200      # 卡片尺寸
+ROW_H = CARD_H + 8             # 网格行距(卡片高 + 上下间距)
+COL_W = CARD_W + 8             # 网格列距
 THUMB_W, THUMB_H = 184, 120    # 卡片缩略图区域
 
 SORT_OPTIONS = ["下载日期(新→旧)", "下载日期(旧→新)", "名称", "车型", "作者", "游戏内顺序"]
@@ -130,6 +135,62 @@ def fmt_size(n: int) -> str:
 
 def ellipsize(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
+
+
+# 「已喷涂检测」机制与风险说明: 「⚠ 检测喷涂状态」按钮与已喷涂筛选开关共用的确认框文案
+# (本会话未扫描过时, 打开任一已喷涂开关也弹同款确认框, 取消则开关回退无效)
+APPLIED_NOTICE = """已喷涂检测(标记哪些涂装正喷在车上)通过只读扫描游戏进程内存实现:
+
+· 原理: 游戏车库表常驻内存, 工具只读匹配其中的涂装文件名记录;
+· 方式: OpenProcess + ReadProcessMemory, 不修改内存、不 hook、不附加调试器;
+· 前提: 需要游戏正在运行。
+
+风险提示: 只读外部读取不触发调试器检测, 理论风险远低于修改器,
+但不能保证绝对零风险。介意请勿使用相关开关, 或仅在离线模式下使用。"""
+
+
+def _build_applied_sprite():
+    """生成「已喷在车上」喷漆罐角标素材(34×34 RGBA, 贴图片左上角)。
+
+    图案用 4 倍超采样绘制再缩小, 保证小尺寸下边缘平滑;
+    琥珀色沿用 Okabe-Ito #E69F00(色盲安全), 与详情面板「喷涂状态」呼应。"""
+    from PIL import ImageDraw
+    S = 4                                # 超采样倍数(抗锯齿)
+    leg = 34                             # 三角直角边长(贴图片左上角)
+    badge = Image.new("RGBA", (leg * S, leg * S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(badge)
+
+    def p(v):
+        return v * S
+
+    d.polygon([(0, 0), (leg * S - 1, 0), (0, leg * S - 1)],
+              fill=(230, 159, 0, 245))           # 贴角三角
+    # 喷漆罐(深色): 先在 16px 小图里正立画好, 逆时针转 45° 让罐身顺斜边,
+    # 再贴进三角靠角位置
+    ink = (30, 25, 20, 255)
+    tile = Image.new("RGBA", (p(16), p(16)), (0, 0, 0, 0))
+    t = ImageDraw.Draw(tile)
+    t.rounded_rectangle((p(6), p(7), p(10) - 1, p(13) - 1),
+                        radius=p(1), fill=ink)           # 罐身
+    t.rectangle((p(7), p(5), p(9) - 1, p(7) - 1), fill=ink)     # 罐顶
+    t.rectangle((p(7), p(4), p(9) - 1, p(5) - 1), fill=ink)     # 喷嘴
+    for cx, cy in ((4.5, 2.2), (2.3, 1.2), (2.2, 4.5)):         # 漆雾
+        t.ellipse((p(cx - 0.9), p(cy - 0.9), p(cx + 0.9) - 1, p(cy + 0.9) - 1),
+                  fill=ink)
+    tile = tile.rotate(45, resample=Image.Resampling.BICUBIC)
+    badge.alpha_composite(tile, (p(3), p(3)))
+    return badge.resize((leg, leg), Image.Resampling.LANCZOS)
+
+
+_applied_sprite = None
+
+
+def _applied_badge_sprite():
+    """喷漆罐角标预制素材单例: 全卡一致只生成一次, 之后每张缩略图只做一次贴图。"""
+    global _applied_sprite
+    if _applied_sprite is None:
+        _applied_sprite = _build_applied_sprite()
+    return _applied_sprite
 
 
 class Card(tk.Frame):
@@ -226,12 +287,16 @@ class Card(tk.Frame):
             self.img_label.configure(image="", text="(无预览图)")
 
     def set_selected(self, on: bool):
-        fill = "#0078D7" if on else "#ffffff"
-        name_fg = "#ffffff" if on else "#000000"
-        car_fg = "#eaf4ff" if on else "#333333"
-        sub_fg = "#cce6ff" if on else "#888888"
-        # 外层背景即描边: 选中深蓝, 未选中浅灰
-        border = "#005a9e" if on else "#cccccc"
+        self._sel = on
+        self._refresh_colors()
+
+    def _refresh_colors(self):
+        if getattr(self, "_sel", False):
+            fill, name_fg, car_fg, sub_fg = "#0078D7", "#ffffff", "#eaf4ff", "#cce6ff"
+            border = "#005a9e"          # 选中: 蓝框蓝底
+        else:
+            fill, name_fg, car_fg, sub_fg = "#ffffff", "#000000", "#333333", "#888888"
+            border = "#cccccc"          # 默认: 白底浅灰边
         self.configure(bg=border)
         self.inner.configure(bg=fill)
         self.name_label.configure(bg=fill, fg=name_fg)
@@ -337,12 +402,17 @@ class App(tk.Tk):
         self.item_map: dict[str, SaveItem] = {}
         self.cards: dict[str, Card] = {}
         self._img_cache: dict[str, object] = {}   # base -> PhotoImage
+        self._img_badged: dict[str, bool] = {}    # base -> 缓存图是否已画「已喷涂」角标
         self._pos_map: dict[str, str] = {}        # base -> 游戏内位置 ("N行M列")
         self._dup_group: dict[str, int] = {}      # base -> 重复组号 (0 = 无重复)
         self._car_unique: dict[int, int] = {}     # 车型 ID -> 唯一涂装数
         self._dup_rules: dict[int, list[str]] = {}  # 重复组号 -> 命中规则标签
         self._dup_feats: dict | None = None       # 重复检测预计算特征(后台线程填充)
         self._dup_pending = False                 # 重复分析进行中(防重入)
+        self._applied: set[str] | None = None     # 车上涂装 base 集合(运行时内存扫描, None=未扫描)
+        self._applied_pending = False             # 已喷涂扫描进行中(防重入)
+        self._mem_reader = None                   # 常驻 gamemem.GameMemoryReader(缓存命中区域)
+        self._mem_pid = None                      # 上次扫描时的游戏 PID(变了则重建 reader)
         self._layout: dict[str, tuple[int, int]] = {}  # base -> (行, 列)
         self._total_cols = 0                      # 「我的涂装」总列数
         self._locate_running = False              # 方向键发送中
@@ -353,13 +423,31 @@ class App(tk.Tk):
         self.key_hold_ms = DEFAULT_KEY_HOLD_MS
         self.key_gap_ms = DEFAULT_KEY_GAP_MS
         self._thumb_pending: list[str] = []
+        self._thumb_gen = 0                       # 缩略图解码代次(rebuild 递增, 过期结果丢弃)
+        self._thumb_inflight = 0                  # 线程池中未回的解码任务数(drain 启停用)
+        self._thumb_queue: queue.Queue = queue.Queue()   # 工作线程 -> 主线程的解码结果
+        self._thumb_pool = (ThreadPoolExecutor(max_workers=4) if HAS_PIL else None)
+        self._shown: list[str] = []               # 当前显示的 base(网格顺序, 增量重排用)
+        self._applied_from_button = False         # 本次扫描来自确认流程(完成后弹「已标记喷涂」)
         self._selected: str | None = None
         self._detail_img = None
         self._cols = 1
         self._relayout_job = None
+        self._win_rows = (0, 0)                   # 当前 grid 进画布的行窗口 (r0, r1)
+        self._scroll_job = None                   # 滚动防抖 job(重铺可视窗口)
 
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_ui()
+        if HAS_PIL:
+            _applied_badge_sprite()            # 预热喷漆罐角标素材, 免得线程池里竞态生成
         self.rescan_saves()
+        self._applied_rescan_tick()          # 启动「已喷涂」定期快速重扫(开关打开且游戏运行时生效)
+
+    def _on_close(self):
+        """关窗: 停掉缩略图线程池(cancel 未开始的任务)再销毁。"""
+        if self._thumb_pool is not None:
+            self._thumb_pool.shutdown(wait=False, cancel_futures=True)
+        self.destroy()
 
     # ------------------------------------------------------------ UI 构建
 
@@ -383,6 +471,8 @@ class App(tk.Tk):
                         command=self._toggle_topmost).pack(side=tk.RIGHT, padx=2)
         ttk.Button(bar, text="设置", command=self.open_settings).pack(side=tk.RIGHT,
                                                                       padx=2)
+        ttk.Button(bar, text="⚠ 检测喷涂状态",
+                   command=self.confirm_detect_applied).pack(side=tk.RIGHT, padx=2)
 
         flt = ttk.Frame(self, padding=(6, 0, 6, 6))
         flt.pack(fill=tk.X)
@@ -396,6 +486,9 @@ class App(tk.Tk):
         self.rule_vars = {tag: tk.BooleanVar(value=False) for tag, _ in DUP_RULES}
         self.multi_only = tk.BooleanVar(value=False)
         self.single_only = tk.BooleanVar(value=False)
+        self.applied_mark = tk.BooleanVar(value=False)
+        self.applied_only = tk.BooleanVar(value=False)
+        self.unapplied_only = tk.BooleanVar(value=False)
         ttk.Label(flt, text="车厂:").pack(side=tk.LEFT, padx=(14, 2))
         self.brand_var = tk.StringVar(value="全部车厂")
         self.brand_combo = ttk.Combobox(flt, textvariable=self.brand_var,
@@ -427,6 +520,13 @@ class App(tk.Tk):
                               command=lambda: self._select_dup_filter("multi"))
         fmenu.add_checkbutton(label="仅显示单涂装车型(仅 1 种)", variable=self.single_only,
                               command=lambda: self._select_dup_filter("single"))
+        fmenu.add_separator()
+        fmenu.add_checkbutton(label="标记喷涂状态(喷漆角标)", variable=self.applied_mark,
+                              command=self._on_applied_switch)
+        fmenu.add_checkbutton(label="仅显示已喷涂(在车上)", variable=self.applied_only,
+                              command=lambda: self._select_applied_filter("applied"))
+        fmenu.add_checkbutton(label="仅显示未喷涂(不在车上)", variable=self.unapplied_only,
+                              command=lambda: self._select_applied_filter("unapplied"))
         self.filter_mb.configure(menu=fmenu)
         self.filter_mb.pack(side=tk.RIGHT)
 
@@ -472,7 +572,7 @@ class App(tk.Tk):
         tk.Label(footer, anchor=tk.NW, justify=tk.LEFT, wraplength=400,
                  fg="#777777", font=("Microsoft YaHei UI", 8),
                  text="本工具与 Microsoft、Xbox、Playground Games、Turn 10 无关，Forza 相关商标归其各自所有者。\n"
-                      "工具仅读取本地存档文件，不提供任何修改、解锁或联机功能。\n"
+                      "工具仅读取本地内容，不提供任何修改、解锁或联机功能。\n"
                       "使用本工具产生的任何后果由使用者自行承担。\n").pack(
                      fill=tk.X, pady=(4, 0))
 
@@ -481,13 +581,13 @@ class App(tk.Tk):
         grid_wrap.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.canvas = tk.Canvas(grid_wrap, highlightthickness=0, bg="#fafafa")
         vsb = ttk.Scrollbar(grid_wrap, orient=tk.VERTICAL, command=self.canvas.yview)
-        self.canvas.configure(yscrollcommand=vsb.set)
+        self.vsb = vsb
+        self.canvas.configure(yscrollcommand=self._on_yview)
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         self.grid_frame = tk.Frame(self.canvas, bg="#fafafa")
         self._canvas_win = self.canvas.create_window((0, 0), window=self.grid_frame,
                                                      anchor=tk.NW)
-        self.grid_frame.bind("<Configure>", self._on_grid_configure)
         self.canvas.bind("<Configure>", self._on_canvas_configure)
         # 全局滚轮: 指针在网格区域内才滚动(不能靠 Enter/Leave, 卡片子窗体会打断)
         self.bind_all("<MouseWheel>", self._on_wheel)
@@ -500,20 +600,33 @@ class App(tk.Tk):
     # ------------------------------------------------------------ 平铺布局
 
     def _on_wheel(self, e):
-        """指针在左侧网格区域时滚动画布(含卡片子窗体上方)。"""
-        w = self.winfo_containing(e.x_root, e.y_root)
+        """指针在左侧网格区域时滚动画布(含卡片子窗体上方)。
+        winfo_containing 可能 KeyError(如悬在 ttk Combobox 下拉 popdown 上——
+        该窗口只有 Tcl 对象没有 Python 控件), 此时直接忽略即可。"""
+        try:
+            w = self.winfo_containing(e.x_root, e.y_root)
+        except KeyError:
+            return
         while w is not None:
             if w in (self.canvas, self.grid_frame):
                 self.canvas.yview_scroll(int(-e.delta / 120), "units")
                 return
             w = getattr(w, "master", None)
 
-    def _on_grid_configure(self, _e):
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+    def _on_yview(self, first, last):
+        """滚动位置变化: 更新滚动条, 防抖后重铺可视窗口(见 _apply_visible_window)。"""
+        self.vsb.set(first, last)
+        if self._scroll_job:
+            self.after_cancel(self._scroll_job)
+        self._scroll_job = self.after(120, self._scroll_settled)
+
+    def _scroll_settled(self):
+        self._scroll_job = None
+        self._apply_visible_window()
 
     def _on_canvas_configure(self, e):
         self.canvas.itemconfigure(self._canvas_win, width=e.width)
-        cols = max(1, e.width // (CARD_W + 8))
+        cols = max(1, e.width // COL_W)
         if cols != self._cols:
             self._cols = cols
             if self._relayout_job:
@@ -522,30 +635,73 @@ class App(tk.Tk):
 
     def _relayout(self):
         self._relayout_job = None
-        visible = [c for c in self.cards.values() if c.winfo_exists()]
-        for i, card in enumerate(visible):
-            card.grid(row=i // self._cols, column=i % self._cols,
-                      padx=4, pady=4, sticky=tk.NW)
+        self._apply_visible_window(force=True)
+
+    def _apply_visible_window(self, force: bool = False):
+        """只把可视区(上下各留余量)内的卡片 grid 进画布, 其余 grid_remove(控件保留)。
+
+        Tk/Windows 下画布内嵌子控件在内容坐标超过约 8200px 后渲染会坏
+        (缩略图只剩条带、文字整片丢失, 实测 9360px 高画布必现), 所以画布内
+        任何时刻只保留可视窗口附近的行; grid_frame 移到窗口对应的画布 y,
+        滚动区仍按全高设置, 滚动条与滚动位置语义不变。
+        卡片对象全部保留(增量卡片池语义不变, 选中/缩略图缓存不受影响)。"""
+        total = -(-len(self._shown) // self._cols) if self._shown else 0
+        if not total:
+            for card in self.cards.values():
+                if card.winfo_manager():
+                    card.grid_remove()
+            self._win_rows = (0, 0)
+            self.canvas.coords(self._canvas_win, 0, 0)
+            self.canvas.configure(scrollregion=(0, 0, 0, 0))
+            return
+        view_rows = max(1, -(-self.canvas.winfo_height() // ROW_H))
+        top_row = min(total - 1, int(self.canvas.yview()[0] * total))
+        r0 = max(0, top_row - 3)
+        r1 = min(total, top_row + view_rows + 4)
+        if not force and self._win_rows == (r0, r1):
+            return
+        self._win_rows = (r0, r1)
+        base_row = r0 * self._cols
+        win = set()
+        for i in range(base_row, min(len(self._shown), r1 * self._cols)):
+            card = self.cards.get(self._shown[i])
+            if card:
+                card.grid(row=(i - base_row) // self._cols, column=i % self._cols,
+                          padx=4, pady=4, sticky=tk.NW)
+                win.add(self._shown[i])
+        for base, card in self.cards.items():
+            if base not in win and card.winfo_manager():
+                card.grid_remove()
+        self.canvas.coords(self._canvas_win, 0, r0 * ROW_H)
+        self.canvas.configure(
+            scrollregion=(0, 0, self._cols * COL_W, total * ROW_H))
 
     def rebuild_grid(self):
-        for c in self.cards.values():
-            c.destroy()
-        self.cards = {}
+        """增量卡片池: 卡片只建一次, 筛选/排序/刷新只重排(grid)或移出网格(grid_remove),
+        不销毁重建(实测销毁 1000 卡 ≈1.8s, 纯重排 ≈1ms); 切存档才在 scan_items 全量销毁。"""
+        self._thumb_gen += 1                    # 作废旧解码结果(不注销缓存, 只防在途结果串档)
         self._thumb_pending = []
         shown = self._sorted(self._filtered())
+        shown_bases = {it.base for it in shown}
         for it in shown:
-            card = Card(self.grid_frame, self, it)
-            self.cards[it.base] = card
-            if it.base not in self._img_cache:
+            card = self.cards.get(it.base)
+            if card is None:                    # 首次显示才创建(存档新增涂装也走这里)
+                card = Card(self.grid_frame, self, it)
+                self.cards[it.base] = card
+            # 缓存图带不带「已喷涂」角标必须与当前状态一致, 否则重解码合成
+            if (it.base not in self._img_cache
+                    or self._img_badged.get(it.base) != self._applied_badged(it.base)):
                 self._thumb_pending.append(it.base)
             # 已有缓存的直接贴图
             elif self._img_cache.get(it.base):
                 card.set_image(self._img_cache[it.base])
+        # 被过滤掉的卡片移出网格但保留控件, 再显示时复用; 选中状态随卡片存活
+        for base, card in self.cards.items():
+            if base not in shown_bases and card.winfo_manager():
+                card.grid_remove()
+        self._shown = [it.base for it in shown]
         self._relayout()
         self.after(30, self._load_thumbs_batch)
-        self._selected = None
-        self._set_info("未选择条目")
-        self.thumb_label.configure(image="", text="(无预览)")
         parts = []
         if self.dup_only.get():
             parts.append("仅重复")
@@ -554,32 +710,94 @@ class App(tk.Tk):
             parts.append("多涂装车型")
         if self.single_only.get():
             parts.append("单涂装车型")
+        if self.applied_mark.get():
+            parts.append("标记喷涂")
+        if self.applied_only.get():
+            parts.append("仅已喷涂")
+        if self.unapplied_only.get():
+            parts.append("仅未喷涂")
         self.filter_mb.configure(
             text=f"涂装筛选: {'+'.join(parts)}" if parts else "涂装筛选")
         known = self.car_table.known_count("fh6")
         dup_groups = len({g for g in self._dup_group.values() if g})
         dup_files = sum(1 for g in self._dup_group.values() if g)
         dup_txt = f"重复 {dup_groups} 组({dup_files} 个)  |  " if dup_groups else ""
+        applied_txt = f"已上车 {len(self._applied)}  |  " if self._applied is not None else ""
         self.status_var.set(
-            f"共 {len(self.items)} 个条目, 显示 {len(shown)} 个  |  {dup_txt}"
+            f"共 {len(self.items)} 个条目, 显示 {len(shown)} 个  |  {applied_txt}{dup_txt}"
             f"已识别车型 {known} 个  |  {self.current['dir'] if self.current else ''}")
 
     def _load_thumbs_batch(self, n: int = 8):
-        """分批在主线程解码缩略图, 保持界面响应。"""
+        """加载缩略图: 有 PIL 时解码+合成放线程池, 主线程只做 PhotoImage 贴图;
+        无 PIL 退回主线程分批(tk.PhotoImage)。"""
+        if self._thumb_pool is not None:
+            self._submit_thumb_jobs()
+            return
         batch, self._thumb_pending = self._thumb_pending[:n], self._thumb_pending[n:]
         for base in batch:
             card = self.cards.get(base)
             if not card:
                 continue
+            applied = self._applied_badged(base)
             img = self._load_thumb(card.item.thumb_big, THUMB_W, THUMB_H,
-                                   badge=self._pos_map.get(base, ""))
+                                   badge=self._pos_map.get(base, ""),
+                                   applied=applied)
             if img:
                 # 解码失败(如游戏正在写入该文件)不缓存, 下次重建网格时自动重试,
                 # 否则 None 进缓存会让卡片永远卡在「加载中…」
                 self._img_cache[base] = img
+                self._img_badged[base] = applied
             card.set_image(img)
         if self._thumb_pending:
             self.after(10, self._load_thumbs_batch)
+
+    def _submit_thumb_jobs(self):
+        """待解码条目全部提交线程池; 结果经队列回主线程 drain。"""
+        pool = self._thumb_pool
+        if pool is None:                # 调用方已保证有 PIL 才走到这, 防御一下
+            return
+        gen = self._thumb_gen
+        pending, self._thumb_pending = self._thumb_pending, []
+        for base in pending:
+            card = self.cards.get(base)
+            if not card:
+                continue
+            self._thumb_inflight += 1
+            pool.submit(self._decode_thumb_job, gen, base,
+                        card.item.thumb_big,
+                        self._pos_map.get(base, ""),
+                        self._applied_badged(base))
+        if self._thumb_inflight:
+            self.after(30, self._drain_thumb_queue)
+
+    def _decode_thumb_job(self, gen: int, base: str, path: Path | None,
+                          badge: str, applied: bool):
+        """工作线程: 解码+合成(PIL 解码/缩放释放 GIL), 结果入队等主线程贴图。"""
+        img = self._compose_thumb(path, THUMB_W, THUMB_H, badge, applied) \
+            if path and path.exists() else None
+        self._thumb_queue.put((gen, base, img, applied))
+
+    def _drain_thumb_queue(self):
+        """主线程: 取回解码好的图, 转 PhotoImage 贴卡并写缓存(每轮最多 16 张保持响应)。"""
+        for _ in range(16):
+            try:
+                gen, base, img, applied = self._thumb_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._thumb_inflight -= 1
+            if gen != self._thumb_gen:
+                continue                        # 期间又 rebuild 过, 过期结果丢弃
+            card = self.cards.get(base)
+            if not card:
+                continue
+            photo = ImageTk.PhotoImage(img) if img is not None else None
+            if photo:
+                # 解码失败不缓存, 下次重建网格时自动重试(同主线程路径的容错)
+                self._img_cache[base] = photo
+                self._img_badged[base] = applied
+            card.set_image(photo)
+        if self._thumb_inflight > 0 or not self._thumb_queue.empty():
+            self.after(30, self._drain_thumb_queue)
 
     # ------------------------------------------------------------ 存档加载
 
@@ -602,8 +820,18 @@ class App(tk.Tk):
             self._dup_rules = {}
             self._dup_feats = None
             self._dup_pending = False
+            self._applied = None
+            self._applied_pending = False
             self._layout, self._total_cols = {}, 0
             self._img_cache.clear()
+            self._img_badged.clear()
+            for c in self.cards.values():
+                c.destroy()
+            self.cards = {}
+            self._shown = []
+            self._selected = None
+            self._set_info("未选择条目")
+            self.thumb_label.configure(image="", text="(无预览)")
             self.rebuild_grid()
             self.status_var.set("未找到 FH6 存档, 请用「手动选择目录」指定存档文件夹")
 
@@ -627,7 +855,17 @@ class App(tk.Tk):
         self._dup_rules = {}
         self._dup_feats = None
         self._dup_pending = False
+        self._applied = None                 # 车上涂装标记与游戏实时档案绑定, 切存档即失效
+        self._applied_pending = False
         self._img_cache.clear()
+        self._img_badged.clear()
+        for c in self.cards.values():       # 切存档: 卡片池全量销毁(平时 rebuild 增量复用)
+            c.destroy()
+        self.cards = {}
+        self._shown = []
+        self._selected = None
+        self._set_info("未选择条目")
+        self.thumb_label.configure(image="", text="(无预览)")
         # 车厂下拉: 只列出当前存档涂装实际涉及的车厂
         brands = sorted({b for it in self.items if it.itype == "Livery"
                          for b in [self._brand_of(it)] if b}, key=str.lower)
@@ -703,6 +941,121 @@ class App(tk.Tk):
         self.rebuild_grid()
         self._ensure_dup_analysis()
 
+    # ------------------------------------------------------------ 已喷涂检测(运行时内存)
+
+    def _on_applied_switch(self):
+        """「标记喷涂状态」开关: 与「⚠ 检测喷涂状态」按钮同款确认门——
+        本会话未扫描过时须确认才生效, 取消则开关回退(选择无效); 已扫描过直接生效。"""
+        if self.applied_mark.get() and self._applied is None:
+            if not self._confirm_applied_scan():
+                self.applied_mark.set(False)
+                return
+            self._applied_from_button = True     # 完成同样弹「已标记喷涂」
+        self.rebuild_grid()
+        self._ensure_applied_scan()
+
+    def _select_applied_filter(self, which: str):
+        """「已喷涂」与「未喷涂」筛选互斥; 确认门与「标记喷涂状态」开关相同。"""
+        var = self.applied_only if which == "applied" else self.unapplied_only
+        if which == "applied" and self.applied_only.get():
+            self.unapplied_only.set(False)
+        elif which == "unapplied" and self.unapplied_only.get():
+            self.applied_only.set(False)
+        if var.get() and self._applied is None:
+            if not self._confirm_applied_scan():
+                var.set(False)
+                return
+            self._applied_from_button = True
+        self.rebuild_grid()
+        self._ensure_applied_scan()
+
+    def _applied_status(self, base: str) -> str:
+        """详情面板用: 喷涂状态文案(未扫描/不适用返回空串)。"""
+        if self._applied is None:
+            return ""
+        return "已喷在车上 ✓" if base in self._applied else "未喷在车上"
+
+    def _applied_badged(self, base: str) -> bool:
+        """该卡片缩略图当前是否应带「已喷在车上」角标(缓存合成比对用)。"""
+        return bool(self.applied_mark.get() and self._applied
+                    and base in self._applied)
+
+    def _ensure_applied_scan(self, force: bool = False):
+        """已喷涂检测按需触发: 仅 FH6 存档 + 游戏运行中; 后台只读扫描游戏内存。
+        确认弹窗不在此处——统一由入口(按钮/开关)的 _confirm_applied_scan() 把关。"""
+        if not self.current or self.current.get("game") != "fh6":
+            return
+        if self._applied_pending or (self._applied is not None and not force):
+            return
+        pid = gamemem.find_game_pid()
+        if not pid:
+            self.status_var.set("已喷涂检测: 未检测到游戏进程 (游戏启动后可重试)")
+            return
+        self._applied_pending = True
+        self.status_var.set("已喷涂检测: 只读扫描游戏内存中…")
+
+        def _work():
+            try:
+                if self._mem_reader is None or self._mem_pid != pid:
+                    if self._mem_reader is not None:
+                        self._mem_reader.close()
+                    self._mem_reader = gamemem.GameMemoryReader(pid)
+                    self._mem_pid = pid
+                names = self._mem_reader.scan_applied_liveries()
+            except OSError as e:
+                names, err = None, str(e)
+            else:
+                err = None
+            self.after(0, lambda: self._applied_ready(names, err))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _applied_ready(self, names, err):
+        self._applied_pending = False
+        from_button = self._applied_from_button
+        self._applied_from_button = False
+        if err or names is None:
+            self.status_var.set(f"已喷涂检测失败: {err or '读取失败'}")
+            if from_button:
+                messagebox.showwarning("检测喷涂状态",
+                                       f"检测失败: {err or '读取失败'}", parent=self)
+            return
+        self._applied = names
+        self.rebuild_grid()
+        self.status_var.set(f"已喷涂检测: {len(names)} 个涂装正在车上")
+        if from_button:
+            messagebox.showinfo("检测喷涂状态",
+                                f"已标记喷涂\n\n{len(names)} 个涂装正喷在车上, 已用喷漆角标标出。",
+                                parent=self)
+
+    def _applied_rescan_tick(self):
+        """任一已喷涂相关开关打开时: 未扫描且游戏在跑则补全量扫描, 已扫描则定期快速重扫。"""
+        want = (self.applied_mark.get() or self.applied_only.get()
+                or self.unapplied_only.get())
+        if want and not self._applied_pending:
+            if self._applied is None:
+                if gamemem.find_game_pid():
+                    self._ensure_applied_scan()     # 开关已开但游戏刚启动, 补一次全量扫描
+            elif self._mem_reader is not None:
+                self._applied_pending = True
+                reader = self._mem_reader
+
+                def _work():
+                    try:
+                        names = reader.rescan_applied_liveries()
+                    except OSError:
+                        names = None
+                    self.after(0, lambda: self._applied_update(names))
+                threading.Thread(target=_work, daemon=True).start()
+        self.after(5000, self._applied_rescan_tick)
+
+    def _applied_update(self, names):
+        self._applied_pending = False
+        if names is not None and names != self._applied:
+            self._applied = names
+            self.rebuild_grid()
+            self.status_var.set(f"已喷涂检测: {len(names)} 个涂装正在车上")
+
     def car_display(self, it: SaveItem) -> str:
         if it.car_id == 0:
             return "-"
@@ -735,6 +1088,16 @@ class App(tk.Tk):
                 continue
             if self.single_only.get() and unique != 1:
                 continue
+            if self.applied_only.get():
+                if self._applied is None:
+                    self._ensure_applied_scan()     # 未扫描先触发, 扫描完成前不过滤
+                elif it.base not in self._applied:
+                    continue
+            if self.unapplied_only.get():
+                if self._applied is None:
+                    self._ensure_applied_scan()
+                elif it.base in self._applied:
+                    continue
             if brand != "全部车厂" and self._brand_of(it) != brand:
                 continue
             if q:
@@ -782,21 +1145,15 @@ class App(tk.Tk):
         return self.item_map.get(self._selected) if self._selected else None
 
     def _load_thumb(self, path: Path | None, max_w: int, max_h: int,
-                    badge: str = ""):
+                    badge: str = "", applied: bool = False):
         """优先用 PIL(支持 webp/jpg 且缩放质量好), 否则退回 tk.PhotoImage。
-        badge 非空时把位置角标画到图片右上角(浅色底黑字)。"""
+        badge 非空时把位置角标画到图片右上角(浅色底黑字);
+        applied 为真时在左上角贴「已喷在车上」喷漆罐角标(仅 PIL 路径支持角标)。"""
         if not path or not path.exists():
             return None
         if HAS_PIL:
-            try:
-                img = Image.open(path)
-                img.thumbnail((max_w, max_h))
-                if badge:
-                    img = img.convert("RGBA")
-                    self._draw_badge(img, badge)
-                return ImageTk.PhotoImage(img)
-            except Exception:
-                return None
+            img = self._compose_thumb(path, max_w, max_h, badge, applied)
+            return ImageTk.PhotoImage(img) if img is not None else None
         try:
             img = tk.PhotoImage(file=str(path))
         except tk.TclError:
@@ -805,6 +1162,23 @@ class App(tk.Tk):
         if factor > 1:
             img = img.subsample(factor, factor)
         return img
+
+    def _compose_thumb(self, path: Path, max_w: int, max_h: int,
+                       badge: str = "", applied: bool = False):
+        """PIL 解码+缩放+角标合成, 返回 PIL 图(失败 None)。
+        纯 PIL 无 tk 依赖, 可在工作线程里跑(缩略图线程池用)。"""
+        try:
+            img = Image.open(path)
+            img.thumbnail((max_w, max_h))
+            if badge or applied:
+                img = img.convert("RGBA")
+                if badge:
+                    self._draw_badge(img, badge)
+                if applied:
+                    self._draw_applied_badge(img)
+            return img
+        except Exception:
+            return None
 
     @staticmethod
     def _draw_badge(img, text: str):
@@ -823,6 +1197,12 @@ class App(tk.Tk):
                             radius=r, fill="#f0f0f0")
         d.text((x1 + pad - bbox[0], y1 + pad - bbox[1]), text,
                font=font, fill="#000000")
+
+    @staticmethod
+    def _draw_applied_badge(img):
+        """把预制的「已喷在车上」喷漆罐角标素材贴到图片左上角(一次 alpha_composite,
+        不再逐张调用绘图原语; 素材见模块级 _applied_badge_sprite())。"""
+        img.alpha_composite(_applied_badge_sprite(), (0, 0))
 
     def show_preview(self):
         it = self.selected_item()
@@ -851,6 +1231,9 @@ class App(tk.Tk):
             f"状态: {'已分享' if it.published else '本地'}",
             f"大小: {fmt_size(it.total_size)}",
         ]
+        applied_txt = self._applied_status(it.base)
+        if applied_txt:
+            lines.append(f"喷涂状态: {applied_txt}")
         gid = self._dup_group.get(it.base, 0)
         if gid:
             n = sum(1 for g in self._dup_group.values() if g == gid)
@@ -882,6 +1265,29 @@ class App(tk.Tk):
     def _toggle_topmost(self):
         """置顶开关: 窗口浮在游戏上方, 方便随时调用。"""
         self.attributes("-topmost", self.topmost_var.get())
+
+    def _confirm_applied_scan(self) -> bool:
+        """机制/风险说明 + 确认框(「⚠ 检测喷涂状态」按钮与已喷涂筛选开关共用):
+        用户确认且游戏运行中才返回 True。"""
+        if not messagebox.askokcancel("检测喷涂状态",
+                                      APPLIED_NOTICE + "\n\n确认开始检测？",
+                                      parent=self):
+            return False
+        if not gamemem.find_game_pid():
+            messagebox.showwarning("检测喷涂状态",
+                                   "未检测到游戏进程。\n已喷涂检测需要游戏正在运行, 请启动游戏后重试。",
+                                   parent=self)
+            return False
+        return True
+
+    def confirm_detect_applied(self):
+        """顶栏「⚠ 检测喷涂状态」: 确认后开始内存扫描并打开喷涂标记(喷漆角标);
+        检测完成由 _applied_ready 弹「已标记喷涂」。"""
+        if not self._confirm_applied_scan():
+            return
+        self._applied_from_button = True     # 标记本次扫描来自确认流程, 完成后弹结果
+        self.applied_mark.set(True)          # 检测完即用喷漆角标标出
+        self._ensure_applied_scan(force=True)
 
     def open_settings(self):
         """设置窗口: 自动定位的按键节奏(毫秒), 仅本次运行有效(不落盘)。"""

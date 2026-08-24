@@ -9,11 +9,13 @@ Browse the liveries in your local *Forza Horizon 6* save outside the game: a til
 ## Features
 
 - 🖼️ **Tiled thumbnails**: reads the `bigThumb` previews stored in the save itself and lays all liveries out as a card wall
-- 🏎️ **Real car names**: ships with a 660-car ID table (aligned with in-game data) — no more guessing from a bare number
+- 🏎️ **Real car names**: ships with a 660-car ID table (aligned entry-by-entry with in-game data; re-checked against game 6.420.696.0 for v1.3.0 — no new cars, 9 model-year fixes per the in-game ModelShort year suffixes) — no more guessing from a bare number
 - 📍 **In-game position**: every livery is labeled with its row/column in the game's "My Liveries" grid (thumbnail badge + details), and the wall can follow the in-game order
 - 🎯 **Auto-locate**: the details panel shows the shortest arrow-key path from row 1 / column 1 (using edge wrap-around), and the "auto-locate" button brings the game to the foreground and sends those keystrokes, landing exactly on the chosen livery
 - 📌 **Always on top**: pin the window above the game so you can look up and locate liveries without leaving it
 - 🔄 **Duplicate detection**: perceptual hashing plus car/creator/name-similarity rules, split into four scenarios — same-car replicas, same-author variants (v1/v2), cross-car ports, no-image name twins — freely combinable filter switches; analysis runs on demand only (zero cost when unused)
+- 🟢 **Applied-livery detection**: while the game is running, a read-only scan of its process memory (no writes, no hooks, no debugger) flags which liveries are currently applied to your cars — three independent toggles: mark applied status (「标记喷涂状态(喷漆角标)」 — paints a spray-can badge onto the top-left corner of an applied livery's thumbnail, amber `#E69F00`, colorblind-friendly), show applied only, show unapplied only (the two filters are mutually exclusive), plus an applied-status line in the details panel and a status-bar count; requires the game to be running. The「⚠ 检测喷涂状态」button in the toolbar runs the whole flow in one click: it shows the mechanism/risk confirmation box, starts the scan on confirm, turns on the spray-can badge marking automatically, and pops「已标记喷涂」when done (or a prompt if the game is not running); opening any applied toggle before the first scan of a session pops the same confirmation box — cancel it and the toggle reverts with no effect; once scanned, the toggles take effect directly without further popups
+- ⚡ **Performance** (v1.3.0): incremental card-wall relayout (filtering/sorting/refresh no longer destroys and rebuilds widgets — about 2s saved per rebuild), pooled background thumbnail decoding (180 cards in ~0.36s without freezing the UI), parallelized duplicate detection (3.74× measured), and a faster parallel full memory scan (steady ~3.9s)
 - 🏭 **Manufacturer filter**: narrow the wall down by make (Porsche, Ferrari, …)
 - 🔍 **Zoomable preview**: open the full-size viewer from the card's right-click menu ("查看缩略图") or the details panel — wheel zoom (5%–1200%), drag panning, fit-to-window / actual-size
 - 📅 **Sort by download date**: order by the moment a livery was written into your save (newest/oldest first), or by name / car / creator / in-game order
@@ -63,11 +65,12 @@ Produces a single-file `dist\FH6LiveryViewer.exe` with `cars.json` embedded (rea
 | 「置顶」 (Always on top) | Keep the window above the game for quick access |
 | 「自动定位到游戏」 (Auto-locate) | Instantly brings the game window to the foreground and sends arrow keys to jump to the selected livery (shows a notice if the game is not running); click again or press Esc to cancel mid-send. Requires a freshly opened "My Designs" screen (focus at row 1 / column 1) with no in-game filter applied |
 | 「设置」 (Settings) | Tunes the auto-locate key timing (key hold + inter-key gap, in ms); applies to the current session only — nothing is written to disk or the registry, keeping the single-file exe footprint-free. The measured per-key cycle threshold is ~30ms — anything below drops keys; default is 15+25=40ms, raise it on low-FPS machines |
+| 「⚠ 检测喷涂状态」 (Detect applied status) | Shows the mechanism/risk confirmation box for the applied-livery memory scan; on confirm it starts the scan and turns on the spray-can badge marking automatically, then pops「已标记喷涂」when done (or prompts you to launch the game first if it is not running). Opening any applied toggle (mark applied / applied only / unapplied only) before the first scan of a session pops the same confirmation box — cancel it and the toggle reverts with no effect; once scanned, toggles take effect directly with no further popups |
 | 「车厂」 (Manufacturer) | Filter by make |
 | 「备份整个存档」 (Backup) | Zip the save directory into `backups\` |
 | 「所在文件夹」 (Open folder) | Reveal the livery in Explorer |
 
-Card rows: livery name / car name (wraps to show in full) / creator. If the car is not in the table, the third row shows `ID xxxx + date` instead. The badge at the thumbnail's top-right is the in-game position (`N行M列` — row N of column M; "My Liveries" groups by car, two rows per column).
+Card rows: livery name / car name (wraps to show in full) / creator. If the car is not in the table, the third row shows `ID xxxx + date` instead. The badge at the thumbnail's top-right is the in-game position (`N行M列` — row N of column M; "My Liveries" groups by car, two rows per column); with applied-status marking on, applied liveries also get a spray-can badge at the top-left — the two badges coexist side by side.
 
 ## Save Format Notes
 
@@ -83,6 +86,7 @@ The tool is **read-only**. These findings come from real on-disk saves plus comm
 ```
 ├── app.py      # GUI application (read-only viewer)
 ├── fh6save.py  # save scanning / header parsing library; standalone self-check: python fh6save.py
+├── gamemem.py  # read-only game process memory scanner (applied-livery detection)
 ├── cars.json   # car ID → name table (embedded into the exe at build time, read-only at runtime)
 └── LICENSE     # AGPL-3.0
 ```
@@ -98,7 +102,7 @@ The car ID table originally came from [HDR's FH6 Car Ordinals](https://gist.gith
 
 ## Disclaimer
 
-This tool is not affiliated with Microsoft, Xbox, Playground Games, or Turn 10. Forza and related trademarks belong to their respective owners. It only reads local save files and provides no modification, unlocking, or online functionality. Use at your own risk.
+This tool is not affiliated with Microsoft, Xbox, Playground Games, or Turn 10. Forza and related trademarks belong to their respective owners. It only reads local content (local save files and, while the game is running, a read-only scan of the game process memory for applied-livery detection; no writes, no hooks). It provides no modification, unlocking, or online functionality. Use at your own risk.
 
 ## License
 
