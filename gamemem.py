@@ -28,6 +28,7 @@ _k32 = ctypes.WinDLL('kernel32', use_last_error=True)
 
 PROCESS_VM_READ = 0x10
 PROCESS_QUERY_INFORMATION = 0x400
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 MEM_COMMIT = 0x1000
 MEM_PRIVATE = 0x20000
 PAGE_READWRITE = 0x4
@@ -90,9 +91,20 @@ class GameMemoryReader:
 
     def __init__(self, pid: int):
         self.pid = pid
-        self.handle = _k32.OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, False, pid)
+        self.handle = None
+        last_err = 0
+        # 优先用完整查询权限; 某些运行环境只允许 QUERY_LIMITED_INFORMATION,
+        # 使用受限权限也能满足 VirtualQueryEx + ReadProcessMemory 的只读需求。
+        for access in (PROCESS_VM_READ | PROCESS_QUERY_INFORMATION,
+                       PROCESS_VM_READ | PROCESS_QUERY_LIMITED_INFORMATION):
+            self.handle = _k32.OpenProcess(access, False, pid)
+            if self.handle:
+                break
+            last_err = ctypes.get_last_error()
         if not self.handle:
-            raise OSError(f'OpenProcess 失败 err={ctypes.get_last_error()}')
+            raise OSError(
+                f'OpenProcess 失败 err={last_err}；若游戏以管理员身份运行，'
+                f'请也以管理员身份运行本工具，或关闭会拦截进程访问的安全软件。')
         self._hit_regions: list[tuple[int, int]] = []   # 缓存命中区域 (base, size)
 
     def close(self):
