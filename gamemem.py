@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-gamemem.py — FH6 运行时内存只读扫描器 (检测「涂装是否喷在车上」)
+gamemem.py — FH6 运行时内存只读扫描器 (检测「涂装是否喷在车上」/ 读取车辆串表)
 
 原理 (全部实测自本机 FH6):
 - 游戏把车库表 (Career_Garage) 序列化数据常驻内存。每条车库记录里,
@@ -8,6 +8,8 @@ gamemem.py — FH6 运行时内存只读扫描器 (检测「涂装是否喷在�
   其后紧跟 "Tuning_<车型ID>_<时间戳>" (有调校的车) 或一个 GUID 串
   (VersionedLiveryId, 无调校的车)。该签名与「存档条目列表」「存档键名表」
   均不冲突 (对真值 133/133 精确命中, 条目列表 0 误报)。
+- 游戏同时把 Data_Car VALUES 串表加载进内存，可用 read_car_strings()
+  只读取出全部 DisplayName / ModelShort（各 660 条），用于校对 cars.json。
 - 我们只读 (OpenProcess + ReadProcessMemory), 不附加调试器/不写内存/不下 hook。
 
 抗 ASLR: 不硬编码地址, 每次全量扫描定位记录区 (8 线程并行读, 约 3-4 秒,
@@ -40,6 +42,12 @@ APPLIED_RE = re.compile(
     rb'(Livery_[0-9]{3,6}_[0-9]{14})'
     rb'(?:Tuning_[0-9]{3,6}_[0-9]{14}'
     rb'|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})')
+
+# 车辆字符串表签名: 游戏内加载的 Data_Car VALUES 串表本体。
+# 顺序 = Data_Car.str 的键序 (IDS_DisplayName_* 按 ID 字符串字典序),
+# 前 660 条为 DisplayName, 后 660 条为 ModelShort。
+CAR_STRING_SIG = b"FXX\x00CCGT\x00Lancer Evolution X GSR\x00M3\x00"
+CAR_STRING_COUNT = 1320
 
 
 class _MBI(ctypes.Structure):
@@ -174,6 +182,33 @@ class GameMemoryReader:
             return self.scan_applied_liveries()
         return out
 
+    # ---- 车辆字符串表 ----
+
+    def read_car_strings(self) -> tuple[list[str], list[str]] | None:
+        """读取游戏内存中已加载的 Data_Car VALUES 串表。
+
+        返回 (DisplayName[660], ModelShort[660]); 串表顺序即 Data_Car.str
+        的键序 (IDS_DisplayName_* 按 ID 字符串字典序)。找不到返回 None。
+        """
+        for base, size in self._regions():
+            mem = self._read(base, size)
+            if not mem:
+                continue
+            pos = mem.find(CAR_STRING_SIG)
+            if pos < 0:
+                continue
+            strings: list[str] = []
+            i = pos
+            while len(strings) < CAR_STRING_COUNT and i < len(mem):
+                j = mem.find(b"\x00", i)
+                if j < 0:
+                    break
+                strings.append(mem[i:j].decode("utf-8", errors="replace"))
+                i = j + 1
+            if len(strings) == CAR_STRING_COUNT:
+                return strings[:660], strings[660:]
+        return None
+
 
 def read_applied_liveries(pid: int | None = None) -> set[str] | None:
     """一次性: 找游戏并全量扫描, 返回车上涂装名集合。游戏不在运行返回 None。"""
@@ -182,6 +217,15 @@ def read_applied_liveries(pid: int | None = None) -> set[str] | None:
         return None
     with GameMemoryReader(pid) as r:
         return r.scan_applied_liveries()
+
+
+def read_car_strings(pid: int | None = None) -> tuple[list[str], list[str]] | None:
+    """一次性: 读取游戏内存中 Data_Car 的 DisplayName/ModelShort 串表。"""
+    pid = pid or find_game_pid()
+    if not pid:
+        return None
+    with GameMemoryReader(pid) as r:
+        return r.read_car_strings()
 
 
 if __name__ == '__main__':

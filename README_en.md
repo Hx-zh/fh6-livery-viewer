@@ -16,6 +16,8 @@ Browse the liveries in your local *Forza Horizon 6* save outside the game: a til
 - 🔄 **Duplicate detection**: perceptual hashing plus car/creator/name-similarity rules, split into four scenarios — same-car replicas, same-author variants (v1/v2), cross-car ports, no-image name twins — freely combinable filter switches; analysis runs on demand only (zero cost when unused)
 - 🟢 **Applied-livery detection**: while the game is running, a read-only scan of its process memory (no writes, no hooks, no debugger) flags which liveries are currently applied to your cars — three independent toggles: mark applied status (「标记喷涂状态(喷漆角标)」 — paints a spray-can badge onto the top-left corner of an applied livery's thumbnail, amber `#E69F00`, colorblind-friendly), show applied only, show unapplied only (the two filters are mutually exclusive), plus an applied-status line in the details panel and a status-bar count; requires the game to be running. The「⚠ 检测喷涂状态」button in the toolbar runs the whole flow in one click: it shows the mechanism/risk confirmation box, starts the scan on confirm, turns on the spray-can badge marking automatically, and pops「已标记喷涂」when done (or a prompt if the game is not running); opening any applied toggle before the first scan of a session pops the same confirmation box — cancel it and the toggle reverts with no effect; once scanned, the toggles take effect directly without further popups
 - ⚡ **Performance** (v1.3.0): incremental card-wall relayout (filtering/sorting/refresh no longer destroys and rebuilds widgets — about 2s saved per rebuild), pooled background thumbnail decoding (180 cards in ~0.36s without freezing the UI), parallelized duplicate detection (3.74× measured), and a faster parallel full memory scan (steady ~3.9s)
+- 🔍 **Memory-verified car list** (v1.3.1): added `gamemem.read_car_strings()` to read the in-memory `Data_Car` DisplayName / ModelShort string table while the game is running; `cars.json` was regenerated/rechecked from it, fixing several car-name issues. Also improved thumbnail decoding failure handling by keeping the old image and using exponential retry.
+
 - 🏭 **Manufacturer filter**: narrow the wall down by make (Porsche, Ferrari, …)
 - 🔍 **Zoomable preview**: open the full-size viewer from the card's right-click menu ("查看缩略图") or the details panel — wheel zoom (5%–1200%), drag panning, fit-to-window / actual-size
 - 📅 **Sort by download date**: order by the moment a livery was written into your save (newest/oldest first), or by name / car / creator / in-game order
@@ -86,7 +88,7 @@ The tool is **read-only**. These findings come from real on-disk saves plus comm
 ```
 ├── app.py      # GUI application (read-only viewer)
 ├── fh6save.py  # save scanning / header parsing library; standalone self-check: python fh6save.py
-├── gamemem.py  # read-only game process memory scanner (applied-livery detection)
+├── gamemem.py  # read-only game process memory scanner (applied-livery detection / car string-table reader)
 ├── cars.json   # car ID → name table (embedded into the exe at build time, read-only at runtime)
 └── LICENSE     # AGPL-3.0
 ```

@@ -43,7 +43,7 @@ else:
     CARS_JSON = APP_DIR / "cars.json"
 BACKUP_DIR = APP_DIR / "backups"
 
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 PROJECT_URL = "https://github.com/Hx-zh/fh6-livery-viewer"
 RELEASES_URL = PROJECT_URL + "/releases"
 
@@ -423,6 +423,7 @@ class App(tk.Tk):
         self.key_hold_ms = DEFAULT_KEY_HOLD_MS
         self.key_gap_ms = DEFAULT_KEY_GAP_MS
         self._thumb_pending: list[str] = []
+        self._thumb_fails: dict[str, int] = {}    # base -> 连续解码失败次数(瞬态重试用, 封顶放弃)
         self._thumb_gen = 0                       # 缩略图解码代次(rebuild 递增, 过期结果丢弃)
         self._thumb_inflight = 0                  # 线程池中未回的解码任务数(drain 启停用)
         self._thumb_queue: queue.Queue = queue.Queue()   # 工作线程 -> 主线程的解码结果
@@ -734,6 +735,7 @@ class App(tk.Tk):
             self._submit_thumb_jobs()
             return
         batch, self._thumb_pending = self._thumb_pending[:n], self._thumb_pending[n:]
+        retry = []
         for base in batch:
             card = self.cards.get(base)
             if not card:
@@ -743,13 +745,39 @@ class App(tk.Tk):
                                    badge=self._pos_map.get(base, ""),
                                    applied=applied)
             if img:
-                # 解码失败(如游戏正在写入该文件)不缓存, 下次重建网格时自动重试,
-                # 否则 None 进缓存会让卡片永远卡在「加载中…」
+                # 解码失败(如游戏正在写入该文件)不缓存, 否则 None 进缓存
+                # 会让卡片永远卡在「加载中…」
                 self._img_cache[base] = img
                 self._img_badged[base] = applied
-            card.set_image(img)
+                self._thumb_fails.pop(base, None)
+                card.set_image(img)
+            elif not self._thumb_transient_fail(card, base, retry):
+                card.set_image(None)
         if self._thumb_pending:
             self.after(10, self._load_thumbs_batch)
+        self._schedule_thumb_retry(retry)
+
+    def _thumb_transient_fail(self, card: "Card", base: str, retry: list) -> bool:
+        """解码失败但条目确有缩略图文件 → 视为瞬态失败(游戏/云同步正在写存档,
+        读到锁定或半截文件): 保留卡片旧图不清空, 计数交给退避重试(同一 base
+        连续 6 次失败才放弃, 回退显示「无预览图」)。"""
+        if card.item.thumb_big is None:
+            return False
+        fails = self._thumb_fails.get(base, 0)
+        if fails >= 6:
+            return False
+        self._thumb_fails[base] = fails + 1
+        retry.append(base)
+        return True
+
+    def _schedule_thumb_retry(self, retry: list):
+        """瞬态失败的条目退避重排(第 n 次失败延迟 n 秒); 重试由退避定时器触发,
+        不进 10ms/30ms 的快通道, 免得对正被写入的文件空转猛刷。"""
+        if not retry:
+            return
+        self._thumb_pending.extend(retry)
+        self.after(1000 * max(self._thumb_fails.get(b, 1) for b in retry),
+                   self._load_thumbs_batch)
 
     def _submit_thumb_jobs(self):
         """待解码条目全部提交线程池; 结果经队列回主线程 drain。"""
@@ -779,6 +807,7 @@ class App(tk.Tk):
 
     def _drain_thumb_queue(self):
         """主线程: 取回解码好的图, 转 PhotoImage 贴卡并写缓存(每轮最多 16 张保持响应)。"""
+        retry = []
         for _ in range(16):
             try:
                 gen, base, img, applied = self._thumb_queue.get_nowait()
@@ -792,10 +821,14 @@ class App(tk.Tk):
                 continue
             photo = ImageTk.PhotoImage(img) if img is not None else None
             if photo:
-                # 解码失败不缓存, 下次重建网格时自动重试(同主线程路径的容错)
+                # 解码失败不缓存(同主线程路径的容错)
                 self._img_cache[base] = photo
                 self._img_badged[base] = applied
-            card.set_image(photo)
+                self._thumb_fails.pop(base, None)
+                card.set_image(photo)
+            elif not self._thumb_transient_fail(card, base, retry):
+                card.set_image(None)
+        self._schedule_thumb_retry(retry)
         if self._thumb_inflight > 0 or not self._thumb_queue.empty():
             self.after(30, self._drain_thumb_queue)
 
@@ -825,6 +858,7 @@ class App(tk.Tk):
             self._layout, self._total_cols = {}, 0
             self._img_cache.clear()
             self._img_badged.clear()
+            self._thumb_fails.clear()
             for c in self.cards.values():
                 c.destroy()
             self.cards = {}
@@ -859,6 +893,7 @@ class App(tk.Tk):
         self._applied_pending = False
         self._img_cache.clear()
         self._img_badged.clear()
+        self._thumb_fails.clear()
         for c in self.cards.values():       # 切存档: 卡片池全量销毁(平时 rebuild 增量复用)
             c.destroy()
         self.cards = {}
@@ -928,7 +963,10 @@ class App(tk.Tk):
 
         def _work():
             feats = fh6save.extract_dup_features(items)
-            self.after(0, lambda: self._dup_ready(items, feats))
+            try:
+                self.after(0, lambda: self._dup_ready(items, feats))
+            except RuntimeError:
+                pass                        # 窗口已销毁, 结果不再需要
 
         threading.Thread(target=_work, daemon=True).start()
 
@@ -1006,7 +1044,10 @@ class App(tk.Tk):
                 names, err = None, str(e)
             else:
                 err = None
-            self.after(0, lambda: self._applied_ready(names, err))
+            try:
+                self.after(0, lambda: self._applied_ready(names, err))
+            except RuntimeError:
+                pass                        # 窗口已销毁, 结果不再需要
 
         threading.Thread(target=_work, daemon=True).start()
 
@@ -1045,7 +1086,10 @@ class App(tk.Tk):
                         names = reader.rescan_applied_liveries()
                     except OSError:
                         names = None
-                    self.after(0, lambda: self._applied_update(names))
+                    try:
+                        self.after(0, lambda: self._applied_update(names))
+                    except RuntimeError:
+                        pass                # 窗口已销毁, 结果不再需要
                 threading.Thread(target=_work, daemon=True).start()
         self.after(5000, self._applied_rescan_tick)
 
