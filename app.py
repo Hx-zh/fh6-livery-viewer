@@ -16,13 +16,14 @@ import os
 import queue
 import re
 import sys
+from bisect import bisect_right
 import threading
 import tkinter as tk
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from ctypes import wintypes
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, font as tkfont, messagebox, ttk
 
 import fh6save
 import gamemem
@@ -43,7 +44,7 @@ else:
     CARS_JSON = APP_DIR / "cars.json"
 BACKUP_DIR = APP_DIR / "backups"
 
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.4.0"
 PROJECT_URL = "https://github.com/Hx-zh/fh6-livery-viewer"
 RELEASES_URL = PROJECT_URL + "/releases"
 
@@ -51,15 +52,30 @@ CARD_W, CARD_H = 196, 200      # 卡片尺寸
 ROW_H = CARD_H + 8             # 网格行距(卡片高 + 上下间距)
 COL_W = CARD_W + 8             # 网格列距
 THUMB_W, THUMB_H = 184, 120    # 卡片缩略图区域
+HEADER_H = 28                  # 重复分组标题行高(通栏色带)
 
-SORT_OPTIONS = ["下载日期(新→旧)", "下载日期(旧→新)", "名称", "车型", "作者", "游戏内顺序"]
+SORT_OPTIONS = ["下载日期(新→旧)", "下载日期(旧→新)", "名称", "车型", "作者", "车厂", "游戏内顺序"]
+SUB_SORT_NONE = "无"           # 次选下拉的「不启用」选项文案(默认选中)
+GROUP_OPTIONS = ["无", "车厂", "作者", "车型"]   # 「分组显示」维度(默认无=纯平铺)
 
-# 重复场景规则(标签, 菜单显示文案); 标签与 fh6save.detect_duplicates 的规则标签一致
-DUP_RULES = [
-    ("同车复刻", "同车复刻(经典涂装多人复刻)"),
-    ("同车微调", "同车微调(同一作者的 v1/v2 版本)"),
-    ("跨车型移植", "跨车型移植(同一涂装的多车型版)"),
-    ("无图同名", "无图同名(无缩略图的同名涂装)"),
+# 重复检测无预制模式: 判定条件(车型/作者/图片距离/名称相似度/创建/下载时间)
+# 由用户在「重复检测参数」对话框里自由组合, 出厂默认见 fh6save.DEFAULT_DUP_RULE。
+# 对话框提供常用「模板」一键填表(仅表单预设, 引擎仍只有单条组合条件)
+DUP_TEMPLATES = [
+    ("同车复刻(出厂默认)", "同车型, 图片距离≤6(不限作者/名称)",
+     dict(img=("dist", 6))),
+    ("同车微调(v1/v2)", "同车型+同作者, 图片距离≤10 且名称相似度≥0.6",
+     dict(author="same", img=("dist", 10), name=("min", 0.6))),
+    ("跨车型移植", "不同车型+同作者, 图片距离≤6 且名称相似度≥0.6",
+     dict(car="diff", author="same", img=("dist", 6), name=("min", 0.6))),
+    ("无图同名", "同车型+同作者, 任一方无预览图文件 且名称相似度≥0.9",
+     dict(author="same", img="missing", name=("min", 0.9))),
+    ("多次下载", "车型/名称/作者/创建时间全同而下载时间不同——真重复副本, 可任选保留",
+     dict(author="same", name=("min", 1.0), created="same", downloaded="diff")),
+    ("同名异版", "车型/名称/作者相同而创建时间不同——疑似版本迭代",
+     dict(author="same", name=("min", 1.0), created="diff")),
+    ("改ID重下", "车型/名称/创建时间相同而作者不同——疑似改 ID 前后的重复下载",
+     dict(author="diff", name=("min", 1.0), created="same", downloaded="diff")),
 ]
 
 # 按键节奏默认值(毫秒): 「我的設計」网格二分实测, 周期(按下保持+键间间隔)阈值 ≈30ms, 默认 40ms 留 10ms 余量(低帧率机器保险)
@@ -193,117 +209,6 @@ def _applied_badge_sprite():
     return _applied_sprite
 
 
-class Card(tk.Frame):
-    """平铺视图里的一张条目卡片。"""
-
-    def __init__(self, master, app: "App", item: SaveItem):
-        # 外层 Frame 的背景色即描边色; 内容装内层 Frame, 避免 highlight 被裁
-        super().__init__(master, width=CARD_W, height=CARD_H, bg="#cccccc")
-        self.app = app
-        self.item = item
-        self.pack_propagate(False)
-
-        self.inner = tk.Frame(self, bg="#ffffff")
-        self.inner.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
-
-        self.img_label = tk.Label(self.inner, text="加载中…", bg="#f0f0f0",
-                                  fg="#888888", anchor=tk.CENTER)
-        self.img_label.place(x=3, y=3, width=THUMB_W, height=THUMB_H)
-
-        self.name_label = tk.Label(self.inner, text=ellipsize(item.name or "(未解析)", 24),
-                                   anchor=tk.W, bg="#ffffff",
-                                   font=("Microsoft YaHei UI", 9, "bold"))
-        self.name_label.place(x=5, y=THUMB_H + 4, width=THUMB_W)
-
-        # 车型名允许换行(最多两行), 尽量完整显示
-        car = app.car_display(item)
-        self.car_label = tk.Label(self.inner, text=car, anchor=tk.NW, justify=tk.LEFT,
-                                  wraplength=THUMB_W - 4, bg="#ffffff", fg="#333333",
-                                  font=("Microsoft YaHei UI", 8))
-        self.car_label.place(x=5, y=THUMB_H + 24, width=THUMB_W, height=32)
-
-        # 第三行: 车型已识别(或无车型 ID) → 显示作者; 未识别 → 显示 ID 和日期(便于排查)
-        known = bool(app.car_table.name("fh6", item.car_id))
-        date = item.ts.strftime("%Y-%m-%d") if item.ts else ""
-        if known or not item.car_id:
-            third = item.creator or "?"
-        else:
-            third = f"ID {item.car_id}  {date}"
-        self.sub_label = tk.Label(self.inner, text=ellipsize(third, 30),
-                                  anchor=tk.W, bg="#ffffff", fg="#888888",
-                                  font=("Microsoft YaHei UI", 8))
-        self.sub_label.place(x=5, y=THUMB_H + 56, width=THUMB_W)
-
-        for w in (self, self.inner, self.img_label, self.name_label,
-                  self.car_label, self.sub_label):
-            w.bind("<Button-1>", self._on_click)
-            w.bind("<Double-1>", self._on_dbl)
-            w.bind("<Button-3>", self._on_rclick)   # 右键菜单(预览/定位/复制)
-        self.set_selected(False)   # 初始化边框
-
-    def _on_rclick(self, e):
-        """右键菜单: 查看缩略图/定位到涂装 + 复制位置/名称/车型/作者。"""
-        self.app.select(self.item.base)
-        it = self.item
-        pos = self.app._pos_map.get(it.base, "")
-        car = self.app.car_table.name("fh6", it.car_id)
-        menu = tk.Menu(self, tearoff=0)
-        menu.add_command(label="查看缩略图",
-                         state=tk.NORMAL if it.thumb_big else tk.DISABLED,
-                         command=self.app.show_big_preview)
-        menu.add_command(label="定位到涂装位置",
-                         state=tk.NORMAL if pos else tk.DISABLED,
-                         command=self.app.auto_locate)
-        menu.add_separator()
-        menu.add_command(label=f"复制游戏内位置 ({pos})" if pos else "复制游戏内位置",
-                         state=tk.NORMAL if pos else tk.DISABLED,
-                         command=lambda: self.app.copy_text(pos))
-        menu.add_command(label="复制名称",
-                         state=tk.NORMAL if it.name else tk.DISABLED,
-                         command=lambda: self.app.copy_text(it.name))
-        menu.add_command(label="复制车型",
-                         state=tk.NORMAL if car else tk.DISABLED,
-                         command=lambda: self.app.copy_text(car))
-        menu.add_command(label="复制作者",
-                         state=tk.NORMAL if it.creator else tk.DISABLED,
-                         command=lambda: self.app.copy_text(it.creator))
-        try:
-            menu.tk_popup(e.x_root, e.y_root)
-        finally:
-            menu.grab_release()
-
-    def _on_click(self, _e):
-        self.app.select(self.item.base)
-
-    def _on_dbl(self, _e):
-        """双击 = 自动定位到游戏内该涂装(右键菜单仍可查看缩略图)。"""
-        self.app.select(self.item.base)
-        self.app.auto_locate()
-
-    def set_image(self, img):
-        if img:
-            self.img_label.configure(image=img, text="")
-        else:
-            self.img_label.configure(image="", text="(无预览图)")
-
-    def set_selected(self, on: bool):
-        self._sel = on
-        self._refresh_colors()
-
-    def _refresh_colors(self):
-        if getattr(self, "_sel", False):
-            fill, name_fg, car_fg, sub_fg = "#0078D7", "#ffffff", "#eaf4ff", "#cce6ff"
-            border = "#005a9e"          # 选中: 蓝框蓝底
-        else:
-            fill, name_fg, car_fg, sub_fg = "#ffffff", "#000000", "#333333", "#888888"
-            border = "#cccccc"          # 默认: 白底浅灰边
-        self.configure(bg=border)
-        self.inner.configure(bg=fill)
-        self.name_label.configure(bg=fill, fg=name_fg)
-        self.car_label.configure(bg=fill, fg=car_fg)
-        self.sub_label.configure(bg=fill, fg=sub_fg)
-
-
 class ZoomPreview(tk.Toplevel):
     """可缩放的大图预览: 滚轮/按钮缩放, 左键拖动平移。"""
 
@@ -400,15 +305,15 @@ class App(tk.Tk):
         self.current: dict | None = None
         self.items: list[SaveItem] = []
         self.item_map: dict[str, SaveItem] = {}
-        self.cards: dict[str, Card] = {}
         self._img_cache: dict[str, object] = {}   # base -> PhotoImage
-        self._img_badged: dict[str, bool] = {}    # base -> 缓存图是否已画「已喷涂」角标
         self._pos_map: dict[str, str] = {}        # base -> 游戏内位置 ("N行M列")
         self._dup_group: dict[str, int] = {}      # base -> 重复组号 (0 = 无重复)
         self._car_unique: dict[int, int] = {}     # 车型 ID -> 唯一涂装数
         self._dup_rules: dict[int, list[str]] = {}  # 重复组号 -> 命中规则标签
         self._dup_feats: dict | None = None       # 重复检测预计算特征(后台线程填充)
         self._dup_pending = False                 # 重复分析进行中(防重入)
+        self._dup_cfg = fh6save.DEFAULT_DUP_RULE  # 重复判定条件(参数对话框可改, 会话级)
+        self.quick_filter: tuple | None = None    # 右键快筛 ("car",id)/("creator",name)/None
         self._applied: set[str] | None = None     # 车上涂装 base 集合(运行时内存扫描, None=未扫描)
         self._applied_pending = False             # 已喷涂扫描进行中(防重入)
         self._mem_reader = None                   # 常驻 gamemem.GameMemoryReader(缓存命中区域)
@@ -428,19 +333,25 @@ class App(tk.Tk):
         self._thumb_inflight = 0                  # 线程池中未回的解码任务数(drain 启停用)
         self._thumb_queue: queue.Queue = queue.Queue()   # 工作线程 -> 主线程的解码结果
         self._thumb_pool = (ThreadPoolExecutor(max_workers=4) if HAS_PIL else None)
-        self._shown: list[str] = []               # 当前显示的 base(网格顺序, 增量重排用)
+        self._applied_photo = None                # 喷漆罐角标的 PhotoImage(卡片角共用一份)
+        self._pos_badge_font = None               # 位置角标字体(像素字号, 懒建缓存)
+        self._shown: list[str] = []               # 当前显示的 base(行布局展开顺序, 计数用)
+        self._rows: list[tuple] = []              # 行模型: ("cards",[base..]) / ("hdr",gid,文本)
+        self._row_y: list[int] = []               # 每行起始 y 前缀和(长度 len(_rows)+1)
+        self._content_h = 0                       # 画布内容总高(scrollregion 用)
+        self._vis_cards: dict[str, dict] = {}     # 可视区各卡的 canvas item id 表(重配色/贴图用)
+        self._redraw_win = None                   # 已绘行窗口 (r0, r1), 同窗跳过重绘
+        self._filtered_items: list[SaveItem] = [] # 最近一次筛选结果(变列数重排复用, 不再走筛选)
         self._applied_from_button = False         # 本次扫描来自确认流程(完成后弹「已标记喷涂」)
         self._selected: str | None = None
         self._detail_img = None
         self._cols = 1
-        self._relayout_job = None
-        self._win_rows = (0, 0)                   # 当前 grid 进画布的行窗口 (r0, r1)
-        self._scroll_job = None                   # 滚动防抖 job(重铺可视窗口)
+        self._relayout_job = None                 # 变列数防抖 job(重算行布局)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_ui()
         if HAS_PIL:
-            _applied_badge_sprite()            # 预热喷漆罐角标素材, 免得线程池里竞态生成
+            _applied_badge_sprite()            # 预热喷漆罐角标素材(贴卡时只做一次 PhotoImage 转换)
         self.rescan_saves()
         self._applied_rescan_tick()          # 启动「已喷涂」定期快速重扫(开关打开且游戏运行时生效)
 
@@ -478,16 +389,21 @@ class App(tk.Tk):
         flt = ttk.Frame(self, padding=(6, 0, 6, 6))
         flt.pack(fill=tk.X)
         ttk.Label(flt, text="搜索:").pack(side=tk.LEFT)
+        # 双搜索框: 两个非空关键字都命中同一匹配串(名称/作者/车型 ID/车型名)才保留,
+        # 即「与」组合——中间的 + 即此意; 只用第一个框时行为与旧版单框完全一致
         self.search_var = tk.StringVar()
-        ent = ttk.Entry(flt, textvariable=self.search_var, width=28)
-        ent.pack(side=tk.LEFT, padx=(2, 10))
+        ent = ttk.Entry(flt, textvariable=self.search_var, width=16)
+        ent.pack(side=tk.LEFT, padx=(2, 0))
         ent.bind("<KeyRelease>", lambda _e: self.rebuild_grid())
+        tk.Label(flt, text="+").pack(side=tk.LEFT, padx=3)
+        self.search2_var = tk.StringVar()
+        ent2 = ttk.Entry(flt, textvariable=self.search2_var, width=16)
+        ent2.pack(side=tk.LEFT)
+        ent2.bind("<KeyRelease>", lambda _e: self.rebuild_grid())
         # 涂装筛选: 全部为独立开关(可多选组合), 首次打开任一开关时才触发后台重复分析
         self.dup_only = tk.BooleanVar(value=False)
-        self.rule_vars = {tag: tk.BooleanVar(value=False) for tag, _ in DUP_RULES}
         self.multi_only = tk.BooleanVar(value=False)
         self.single_only = tk.BooleanVar(value=False)
-        self.applied_mark = tk.BooleanVar(value=False)
         self.applied_only = tk.BooleanVar(value=False)
         self.unapplied_only = tk.BooleanVar(value=False)
         ttk.Label(flt, text="车厂:").pack(side=tk.LEFT, padx=(14, 2))
@@ -503,7 +419,26 @@ class App(tk.Tk):
                            width=16, values=SORT_OPTIONS)
         scb.pack(side=tk.LEFT)
         scb.bind("<<ComboboxSelected>>", lambda _e: self.rebuild_grid())
+        # 次选条件(平级打破时生效); 默认「无」= 不启用。与主选共用一套模式,
+        # 经稳定排序实现字典序——分组展示下组内/组间同样遵循两级链
+        ttk.Label(flt, text="次选:").pack(side=tk.LEFT, padx=(6, 2))
+        self.sub_sort_var = tk.StringVar(value=SUB_SORT_NONE)
+        sscb = ttk.Combobox(flt, textvariable=self.sub_sort_var, state="readonly",
+                            width=16, values=[SUB_SORT_NONE] + SORT_OPTIONS)
+        sscb.pack(side=tk.LEFT)
+        sscb.bind("<<ComboboxSelected>>", lambda _e: self.rebuild_grid())
+        # 分组显示维度: 卡片墙按所选字段分桶, 每桶前插通栏标题行。
+        # 重复类筛选激活时以重复组展示优先, 本下拉不生效
+        ttk.Label(flt, text="分组:").pack(side=tk.LEFT, padx=(6, 2))
+        self.group_var = tk.StringVar(value=GROUP_OPTIONS[0])
+        gcb = ttk.Combobox(flt, textvariable=self.group_var, state="readonly",
+                           width=8, values=GROUP_OPTIONS)
+        gcb.pack(side=tk.LEFT)
+        gcb.bind("<<ComboboxSelected>>", self._on_group_select)
 
+        # 重复检测参数: 独立按钮(原来在涂装筛选菜单里)
+        ttk.Button(flt, text="重复检测参数",
+                   command=self.open_dup_params).pack(side=tk.RIGHT, padx=(0, 8))
         # 右侧: 涂装筛选(全部独立开关, 多规则 OR 组合; 经典 tk.Menubutton 凸起边框)
         self.filter_mb = tk.Menubutton(flt, text="涂装筛选", relief=tk.RAISED, bd=1,
                                        bg="#e1e1e1", activebackground="#ececec",
@@ -512,18 +447,12 @@ class App(tk.Tk):
         fmenu.add_checkbutton(label="仅显示重复涂装(不限场景)", variable=self.dup_only,
                               command=self._on_dup_switch)
         fmenu.add_separator()
-        for tag, label in DUP_RULES:
-            fmenu.add_checkbutton(label=label, variable=self.rule_vars[tag],
-                                  command=self._on_dup_switch)
-        fmenu.add_separator()
         # 车型维度(可叠加, 二者互斥)
         fmenu.add_checkbutton(label="仅显示多涂装车型(≥2 种)", variable=self.multi_only,
                               command=lambda: self._select_dup_filter("multi"))
         fmenu.add_checkbutton(label="仅显示单涂装车型(仅 1 种)", variable=self.single_only,
                               command=lambda: self._select_dup_filter("single"))
         fmenu.add_separator()
-        fmenu.add_checkbutton(label="标记喷涂状态(喷漆角标)", variable=self.applied_mark,
-                              command=self._on_applied_switch)
         fmenu.add_checkbutton(label="仅显示已喷涂(在车上)", variable=self.applied_only,
                               command=lambda: self._select_applied_filter("applied"))
         fmenu.add_checkbutton(label="仅显示未喷涂(不在车上)", variable=self.unapplied_only,
@@ -580,17 +509,21 @@ class App(tk.Tk):
         # 左侧: 可滚动的平铺画布, 占满剩余空间
         grid_wrap = ttk.Frame(main)
         grid_wrap.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # 卡片墙用「单 Canvas 虚拟绘制」: 不建 Tk 子控件, 直接 create_image/text/rectangle
+        # 画可视区卡片(v1.4.0 起)。旧方案(内嵌子控件+grid 窗口化重铺)在 Windows 上受
+        # 大坐标(~8200px)渲染损坏限制, 且滚动重铺有中间态会闪屏; 虚拟绘制两者皆无。
         self.canvas = tk.Canvas(grid_wrap, highlightthickness=0, bg="#fafafa")
         vsb = ttk.Scrollbar(grid_wrap, orient=tk.VERTICAL, command=self.canvas.yview)
         self.vsb = vsb
         self.canvas.configure(yscrollcommand=self._on_yview)
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
-        self.grid_frame = tk.Frame(self.canvas, bg="#fafafa")
-        self._canvas_win = self.canvas.create_window((0, 0), window=self.grid_frame,
-                                                     anchor=tk.NW)
         self.canvas.bind("<Configure>", self._on_canvas_configure)
-        # 全局滚轮: 指针在网格区域内才滚动(不能靠 Enter/Leave, 卡片子窗体会打断)
+        # 卡片交互全部在画布层处理: 命中检测经 find_closest + tag(card:<base>) 解析条目
+        self.canvas.bind("<Button-1>", self._on_card_click)
+        self.canvas.bind("<Double-Button-1>", self._on_card_dbl)
+        self.canvas.bind("<Button-3>", self._on_card_rclick)
+        # 全局滚轮: 指针在网格区域内才滚动(不能靠 Enter/Leave)
         self.bind_all("<MouseWheel>", self._on_wheel)
         self.status_var = tk.StringVar(value="就绪")
         ttk.Label(self, textvariable=self.status_var, relief=tk.SUNKEN,
@@ -598,10 +531,10 @@ class App(tk.Tk):
         self.bind("<Control-c>", self._on_ctrl_c)
         self.bind("<Escape>", lambda _e: self._cancel_locate())
 
-    # ------------------------------------------------------------ 平铺布局
+    # ------------------------------------------------------------ 平铺布局(单 Canvas 虚拟绘制)
 
     def _on_wheel(self, e):
-        """指针在左侧网格区域时滚动画布(含卡片子窗体上方)。
+        """指针在左侧网格区域时滚动画布。
         winfo_containing 可能 KeyError(如悬在 ttk Combobox 下拉 popdown 上——
         该窗口只有 Tcl 对象没有 Python 控件), 此时直接忽略即可。"""
         try:
@@ -609,114 +542,476 @@ class App(tk.Tk):
         except KeyError:
             return
         while w is not None:
-            if w in (self.canvas, self.grid_frame):
+            if w is self.canvas:
                 self.canvas.yview_scroll(int(-e.delta / 120), "units")
                 return
             w = getattr(w, "master", None)
 
     def _on_yview(self, first, last):
-        """滚动位置变化: 更新滚动条, 防抖后重铺可视窗口(见 _apply_visible_window)。"""
+        """滚动位置变化: 更新滚动条并即时重绘可视区。
+        虚拟绘制下重绘只是十几个绘图元素的 delete+create(无子控件增删、
+        无中间态), 不需要旧方案的 120ms 防抖——这正是滚轮闪屏的根治点。"""
         self.vsb.set(first, last)
-        if self._scroll_job:
-            self.after_cancel(self._scroll_job)
-        self._scroll_job = self.after(120, self._scroll_settled)
-
-    def _scroll_settled(self):
-        self._scroll_job = None
-        self._apply_visible_window()
+        self._redraw()
 
     def _on_canvas_configure(self, e):
-        self.canvas.itemconfigure(self._canvas_win, width=e.width)
         cols = max(1, e.width // COL_W)
         if cols != self._cols:
             self._cols = cols
             if self._relayout_job:
                 self.after_cancel(self._relayout_job)
             self._relayout_job = self.after(120, self._relayout)
+        else:
+            self._redraw()          # 高度变化改变可视范围(首次映射时也靠这里补画)
 
     def _relayout(self):
+        """列数变化后按缓存的筛选结果重算行布局(不重新筛选/排序, 代次不动)。"""
         self._relayout_job = None
-        self._apply_visible_window(force=True)
+        self._layout_rows(self._filtered_items)
+        self._redraw(force=True)
 
-    def _apply_visible_window(self, force: bool = False):
-        """只把可视区(上下各留余量)内的卡片 grid 进画布, 其余 grid_remove(控件保留)。
+    # ---- 行模型 -------------------------------------------------------------
 
-        Tk/Windows 下画布内嵌子控件在内容坐标超过约 8200px 后渲染会坏
-        (缩略图只剩条带、文字整片丢失, 实测 9360px 高画布必现), 所以画布内
-        任何时刻只保留可视窗口附近的行; grid_frame 移到窗口对应的画布 y,
-        滚动区仍按全高设置, 滚动条与滚动位置语义不变。
-        卡片对象全部保留(增量卡片池语义不变, 选中/缩略图缓存不受影响)。"""
-        total = -(-len(self._shown) // self._cols) if self._shown else 0
-        if not total:
-            for card in self.cards.values():
-                if card.winfo_manager():
-                    card.grid_remove()
-            self._win_rows = (0, 0)
-            self.canvas.coords(self._canvas_win, 0, 0)
-            self.canvas.configure(scrollregion=(0, 0, 0, 0))
+    def _dup_grouping_active(self) -> bool:
+        """重复分组展示激活条件: 打开「仅显示重复涂装」且重复分析已有结果;
+        否则一律平铺(v1.4.0 改动2)。"""
+        return bool(self._dup_group) and self.dup_only.get()
+
+    def _order_chain(self) -> list:
+        """当前生效的排序条件链 [(key 函数, 是否反向), ...]:
+        「排序」下拉为主选, 「次选」下拉为次级条件(选中「无」=不启用),
+        末级恒为文件名兜底(base 升序, 保证同键时顺序确定且与旧版
+        「游戏内顺序」完全一致)。平铺与重复分组共用同一套链——分组时组内
+        成员与组间顺序(取各组首项的各级键)都按整条链做字典序。"""
+        modes = [self.sort_var.get()]
+        if self.sub_sort_var.get() != SUB_SORT_NONE:    # 「无」= 不启用次选
+            modes.append(self.sub_sort_var.get())
+        chain = [self._mode_key(m) for m in modes]
+        chain.append((lambda i: i.base, False))     # 末级兜底(确定性收尾)
+        return chain
+
+    def _mode_key(self, mode: str):
+        """单个排序模式 -> (key 函数, 是否反向); 主选/次选下拉共用。"""
+        from datetime import datetime as _dt, timezone as _tz
+        if mode == "下载日期(新→旧)":
+            tmin = _dt.min.replace(tzinfo=_tz.utc)
+            return (lambda i: i.ts or tmin), True
+        if mode == "下载日期(旧→新)":
+            tmax = _dt.max.replace(tzinfo=_tz.utc)
+            return (lambda i: i.ts or tmax), False
+        if mode == "名称":
+            return (lambda i: (i.name or "").lower()), False
+        if mode == "车型":
+            def _car_key(i: SaveItem):
+                n = self.car_table.name("fh6", i.car_id)
+                if not n:
+                    return (1, f"{i.car_id:06d}")        # 未识别的排最后, 按 ID 排
+                n = re.sub(r"^\d{4}\s+", "", n)          # 剥掉年份前缀, 按品牌车型排
+                return (0, n.lower())
+            return _car_key, False
+        if mode == "作者":
+            return (lambda i: (i.creator or "").lower()), False
+        if mode == "车厂":
+            def _brand_key(i: SaveItem):
+                # 头段: 有车厂的在前按品牌字母序, 空车厂归到最后一段
+                b = self._brand_of(i)
+                head = (0, b.lower()) if b else (1, "")
+                # 尾段: 同车厂内沿用「车型」模式的品牌车型序
+                n = self.car_table.name("fh6", i.car_id)
+                if not n:
+                    sub = (1, f"{i.car_id:06d}")
+                else:
+                    sub = (0, re.sub(r"^\d{4}\s+", "", n).lower())
+                return (head, sub)
+            return _brand_key, False
+        # 游戏内顺序: 与游戏内「我的涂装」排列一致, 车型 ID 升序。
+        # 注意只放 car_id——绝对平级打破交给链条末级的 base 兜底, 否则会
+        # 顶掉用户选的次选条件(次选在其下永远无法生效)
+        return (lambda i: (i.car_id,)), False
+
+    @staticmethod
+    def _chain_sort(lst, chain: list):
+        """按条件链做字典序多级排序: 每级方向独立, 从最低级到最高级
+        逐级稳定排序(Timsort 稳定, 高级在前即为主导)。"""
+        for keyf, rev in reversed(chain):
+            lst.sort(key=keyf, reverse=rev)
+
+    def _sorted(self, items: list[SaveItem]) -> list[SaveItem]:
+        out = list(items)
+        self._chain_sort(out, self._order_chain())
+        return out
+
+    def _layout_rows(self, items: list[SaveItem]):
+        """把筛选后的条目编成行模型 _rows 并算出 y 前缀和 _row_y。
+        平铺: 每行 _cols 张卡; 重复分组激活时按重复组聚拢(组标题「第 N 组 ·…」);
+        「分组显示」下拉选了车厂/作者时按该字段分桶(标题「组名 · 数量」),
+        空值归入「其他」恒置底。三种形态互斥, 重复分组优先。"""
+        if self._dup_grouping_active():
+            keyf_chain = self._order_chain()
+            buckets: dict[int, list[SaveItem]] = {}
+            for it in items:
+                gid = self._dup_group.get(it.base, 0)
+                buckets.setdefault(gid, []).append(it)
+            reps = {}
+            for gid, members in buckets.items():
+                self._chain_sort(members, keyf_chain)     # 组内: 主选+次选整条链
+                reps[gid] = tuple(kf(members[0]) for kf, _ in keyf_chain) \
+                    if members else ()
+            # 组间: 以各组首项(链排序后)的各级键做字典序, 每级方向同主选/次选
+            gids = list(buckets)
+            for idx in range(len(keyf_chain) - 1, -1, -1):
+                gids.sort(key=lambda g, i=idx: reps[g][i],
+                          reverse=keyf_chain[idx][1])
+            rows = []
+            for gid in gids:
+                # 单条件引擎后组标签恒为「重复」, 标题不再拼接规则名
+                rows.append(("hdr", gid, f"第 {gid} 组 · {len(buckets[gid])} 个"))
+                rows += self._card_rows([it.base for it in buckets[gid]])
+            return self._finish_layout(rows)
+        if self.group_var.get() != GROUP_OPTIONS[0]:      # 车厂/作者/车型维度
+            def get_group(it):
+                if self.group_var.get() == "车厂":
+                    return self._brand_of(it)
+                if self.group_var.get() == "车型":
+                    return self.car_display(it)   # 未识别车型显示 "ID xxx" 自成一组
+                return it.creator or ""
+            return self._finish_layout(
+                self._categorical_rows(items, get_group))
+        ordered = self._sorted(items)
+        return self._finish_layout(
+            self._card_rows([it.base for it in ordered]))
+
+    def _categorical_rows(self, items: list[SaveItem], get_group) -> list[tuple]:
+        """按取组函数把条目分桶并生成带通栏标题的行序列。
+        组间顺序与排序联动: 先按条件链整体排序, 再顺序切桶——各组自然以其
+        链序最靠前的成员领头; 组名取不到值(空串)的成员归入「其他」恒置底。"""
+        ordered = list(items)
+        self._chain_sort(ordered, self._order_chain())
+        seq: list[tuple[str, list[SaveItem]]] = []   # [(组名, 成员), ...] 保持链序
+        index: dict[str, int] = {}
+        other: list[SaveItem] = []
+        for it in ordered:
+            g = get_group(it).strip()
+            if not g:
+                other.append(it)                      # 无车厂/无作者 → 其他置底
+                continue
+            if g not in index:
+                index[g] = len(seq)
+                seq.append((g, []))
+            seq[index[g]][1].append(it)
+        rows = []
+        for name, members in seq:
+            rows.append(("hdr", name, f"{name} · {len(members)} 个"))
+            rows += self._card_rows([it.base for it in members])
+        if other:                                     # 「其他」强制最后
+            rows.append(("hdr", "其他", f"其他 · {len(other)} 个"))
+            rows += self._card_rows([it.base for it in other])
+        return rows
+
+    def _finish_layout(self, rows: list[tuple]):
+        """行模型收尾: 计算 y 前缀和与内容总高, 写回实例字段并返回行列表。"""
+        self._rows = rows
+        y, ys = 0, [0]
+        for r in rows:
+            y += HEADER_H if r[0] == "hdr" else ROW_H
+            ys.append(y)
+        self._row_y = ys
+        self._content_h = y
+        return rows
+
+    def _card_rows(self, bases: list[str]) -> list[tuple]:
+        cols = max(1, self._cols)
+        return [("cards", bases[i:i + cols]) for i in range(0, len(bases), cols)]
+
+    # ---- 可视区重绘 ----------------------------------------------------------
+
+    def _visible_rows(self) -> tuple[int, int]:
+        """当前可视行范围 (r0, r1)(上下各留余量); 无内容返回 (0, 0)。"""
+        n = len(self._rows)
+        if not n:
+            return 0, 0
+        view_h = max(1, self.canvas.winfo_height())
+        ytop = self.canvas.yview()[0] * self._content_h
+        r0 = max(0, bisect_right(self._row_y, ytop) - 1)
+        r1 = min(n, bisect_right(self._row_y, ytop + view_h))
+        margin = 2                       # 余量行, 减少小幅滚动触发的重绘次数
+        return max(0, r0 - margin), min(n, r1 + margin)
+
+    def _redraw(self, force: bool = False):
+        """重绘可视区的行(canvas 绘图元素)。delete+create 在同一回调内完成,
+        Tk 空闲时统一上屏, 无中间态; 行窗未变且非强制时跳过。"""
+        c = self.canvas
+        win = self._visible_rows()
+        if not force and win == self._redraw_win:
             return
-        view_rows = max(1, -(-self.canvas.winfo_height() // ROW_H))
-        top_row = min(total - 1, int(self.canvas.yview()[0] * total))
-        r0 = max(0, top_row - 3)
-        r1 = min(total, top_row + view_rows + 4)
-        if not force and self._win_rows == (r0, r1):
+        self._redraw_win = win
+        self._vis_cards.clear()
+        c.delete("all")
+        if not self._rows:
+            c.configure(scrollregion=(0, 0, 0, 0))
             return
-        self._win_rows = (r0, r1)
-        base_row = r0 * self._cols
-        win = set()
-        for i in range(base_row, min(len(self._shown), r1 * self._cols)):
-            card = self.cards.get(self._shown[i])
-            if card:
-                card.grid(row=(i - base_row) // self._cols, column=i % self._cols,
-                          padx=4, pady=4, sticky=tk.NW)
-                win.add(self._shown[i])
-        for base, card in self.cards.items():
-            if base not in win and card.winfo_manager():
-                card.grid_remove()
-        self.canvas.coords(self._canvas_win, 0, r0 * ROW_H)
-        self.canvas.configure(
-            scrollregion=(0, 0, self._cols * COL_W, total * ROW_H))
+        width = self._cols * COL_W
+        for ri in range(win[0], win[1]):
+            row = self._rows[ri]
+            y = self._row_y[ri]
+            if row[0] == "hdr":                      # 通栏组标题色带
+                c.create_rectangle(0, y, width, y + HEADER_H,
+                                   fill="#e8eef7", outline="")
+                c.create_text(10, y + HEADER_H // 2, anchor=tk.W, text=row[2],
+                              font=("Microsoft YaHei UI", 9, "bold"),
+                              fill="#34506b")
+            else:
+                for ci, base in enumerate(row[1]):
+                    self._draw_card(base, ci, ri)
+        c.configure(scrollregion=(0, 0, width, self._content_h))
+
+    # 可配色与 Card 时代的 _refresh_colors 一致: 选中蓝底蓝框优先于其它标记
+    _SEL_COLORS = ("#005a9e", "#0078D7", "#ffffff", "#eaf4ff", "#cce6ff")
+    _NORM_COLORS = ("#cccccc", "#ffffff", "#000000", "#333333", "#888888")
+
+    @staticmethod
+    def _palette(sel: bool):
+        return App._SEL_COLORS if sel else App._NORM_COLORS
+
+    def _draw_card(self, base: str, col: int, ri: int):
+        """画一张卡: 底板矩形(兼描边)+内面+三行文字+缩略图区, item 记入 _vis_cards。"""
+        it = self.item_map.get(base)
+        if it is None:
+            return
+        c = self.canvas
+        tag = f"card:{base}"
+        x = col * COL_W + 4
+        y = self._row_y[ri] + 4
+        border, face, name_fg, car_fg, sub_fg = self._palette(base == self._selected)
+
+        def new(kind, *args, **kw):
+            return getattr(c, f"create_{kind}")(*args, tags=(tag,), **kw)
+
+        ids = {"x": x, "y": y}
+        tx, ty = x + 5, y + 5
+        ids["tx"], ids["ty"] = tx, ty
+        ids["border"] = new("rectangle", x, y, x + CARD_W, y + CARD_H,
+                            fill=border, outline="")
+        ids["face"] = new("rectangle", x + 2, y + 2, x + CARD_W - 2, y + CARD_H - 2,
+                          fill=face, outline="")
+        # 缩略图底色(图片按比例缩放后的留白/未加载时的衬底, 同旧 Label 的灰底);
+        # 缩略图与角标必须在文字之前绘制: 图片按比例居中不会盖到下方文字行
+        new("rectangle", tx, ty, tx + THUMB_W, ty + THUMB_H,
+            fill="#f0f0f0", outline="")
+        self._paint_thumb(base, ids)
+        # 注意 create_text 一律 anchor=NW(顶端对齐): 旧 Label 的 place(y=..) 是
+        # 控件顶边定位, 若用 W(C=W 且垂直居中)整行文字会上移约半个行高压到图片
+        ids["name"] = new("text", x + 7, y + THUMB_H + 6, anchor=tk.NW,
+                          text=ellipsize(it.name or "(未解析)", 24),
+                          font=("Microsoft YaHei UI", 9, "bold"), fill=name_fg)
+        # 车型名允许换行(最多两行), 尽量完整显示(width=THUMB_W-4 即 wraplength)
+        ids["car"] = new("text", x + 7, y + THUMB_H + 26, anchor=tk.NW,
+                         justify=tk.LEFT, text=self.car_display(it),
+                         width=THUMB_W - 4,
+                         font=("Microsoft YaHei UI", 8), fill=car_fg)
+        # 第三行: 车型已识别(或无车型 ID) → 显示作者; 未识别 → 显示 ID 和日期(便于排查)
+        known = bool(self.car_table.name("fh6", it.car_id))
+        date = it.ts.strftime("%Y-%m-%d") if it.ts else ""
+        third = ((it.creator or "?") if known or not it.car_id
+                 else f"ID {it.car_id}  {date}")
+        ids["sub"] = new("text", x + 7, y + THUMB_H + 58, anchor=tk.NW,
+                         text=ellipsize(third, 30),
+                         font=("Microsoft YaHei UI", 8), fill=sub_fg)
+        self._vis_cards[base] = ids
+
+    def _paint_thumb(self, base: str, ids: dict):
+        """绘制某可视卡的缩略图元素与两个角标。
+        缩略图: 命中缓存贴 PhotoImage(居中); 条目无缩略图文件或解码连败封顶
+        显示「无预览图」; 其余显示「加载中…」。
+        角标(v1.4.0 起)均画在缩略图框角上、不再烙进图片(图片按比例居中后
+        烙印位置会随留白漂移): 「已喷在车上」喷漆罐素材贴左上角(全卡共用一份
+        PhotoImage, 需要 PIL); 位置「N行M列」文字牌贴右上角(固定边距/浅底黑字,
+        观感同旧烙印版)。"""
+        c = self.canvas
+        for k in ("img", "ph", "badge", "posr", "post"):
+            if ids.get(k):
+                c.delete(ids[k])
+        ids["img"] = ids["ph"] = ids["badge"] = None
+        ids["posr"] = ids["post"] = None
+        it = self.item_map.get(base)
+        cx, cy = ids["tx"] + THUMB_W // 2, ids["ty"] + THUMB_H // 2
+        tag = f"card:{base}"
+        photo = self._img_cache.get(base)
+        if photo:
+            ids["img"] = c.create_image(cx, cy, anchor=tk.CENTER,
+                                        image=photo, tags=(tag,))
+        elif it is None or it.thumb_big is None or self._thumb_fails.get(base, 0) >= 6:
+            ids["ph"] = c.create_text(cx, cy, text="(无预览图)", fill="#888888",
+                                      font=("Microsoft YaHei UI", 8), tags=(tag,))
+        else:
+            ids["ph"] = c.create_text(cx, cy, text="加载中…", fill="#888888",
+                                      font=("Microsoft YaHei UI", 8), tags=(tag,))
+        if (HAS_PIL and self._applied and base in self._applied):
+            if self._applied_photo is None:
+                self._applied_photo = ImageTk.PhotoImage(_applied_badge_sprite())
+            ids["badge"] = c.create_image(ids["x"], ids["y"], anchor=tk.NW,
+                                          image=self._applied_photo, tags=(tag,))
+        # 位置角标: 右上角浅底黑字(尺寸随文本自适应, 边距同旧烙印 m=3/pad=4)
+        pos = self._pos_map.get(base, "")
+        if pos:
+            fnt = self._pos_badge_font
+            if fnt is None:
+                fnt = tkfont.Font(family="Microsoft YaHei UI", size=-13)
+                self._pos_badge_font = fnt
+            tw, th = fnt.measure(pos), fnt.metrics("linespace")
+            m, pad = 3, 4
+            x1, y0 = ids["tx"] + THUMB_W - m, ids["ty"] + m
+            ids["posr"] = c.create_rectangle(x1 - tw - pad * 2, y0, x1, y0 + th,
+                                             fill="#f0f0f0", outline="",
+                                             tags=(tag,))
+            ids["post"] = c.create_text(x1 - pad - tw // 2, y0 + th // 2,
+                                        anchor=tk.CENTER, text=pos,
+                                        font=fnt, fill="#000000", tags=(tag,))
+
+    def _recolor_card(self, base: str | None):
+        """就地切换某可视卡的选中配色(不重绘整屏); 不在可视区则是空操作。"""
+        ids = self._vis_cards.get(base or "")
+        if not ids:
+            return
+        border, face, name_fg, car_fg, sub_fg = self._palette(base == self._selected)
+        c = self.canvas
+        c.itemconfigure(ids["border"], fill=border)
+        c.itemconfigure(ids["face"], fill=face)
+        c.itemconfigure(ids["name"], fill=name_fg)
+        c.itemconfigure(ids["car"], fill=car_fg)
+        c.itemconfigure(ids["sub"], fill=sub_fg)
+
+    def _set_card_image(self, base: str, _img):
+        """缩略图解码结果回贴入口(替代旧 Card.set_image): 图已写入缓存,
+        卡在可视区就按缓存状态重画其图片元素, 不在可视区无需动作(重绘自然生效)。"""
+        ids = self._vis_cards.get(base)
+        if ids:
+            self._paint_thumb(base, ids)
+
+    # ---- 画布上的卡片交互(原 Card 绑定迁移) ------------------------------------
+
+    def _hit_base(self, e) -> str | None:
+        """把画布事件解析成卡片 base(tag=card:<base>); 点在空白处返回 None。"""
+        c = self.canvas
+        try:
+            cx, cy = c.canvasx(e.x), c.canvasy(e.y)
+            cid = c.find_closest(cx, cy)[0]
+        except (tk.TclError, IndexError):
+            return None
+        bbox = c.bbox(cid)
+        if not bbox:
+            return None
+        x0, y0, x1, y1 = bbox
+        if not (x0 - 4 <= cx <= x1 + 4 and y0 - 4 <= cy <= y1 + 4):
+            return None                  # 最近元素也在数像素外的空白处
+        for t in c.gettags(cid):
+            if isinstance(t, str) and t.startswith("card:"):
+                return t[len("card:"):]
+        return None
+
+    def _on_card_click(self, e):
+        base = self._hit_base(e)
+        if base:
+            self.select(base)
+
+    def _on_card_dbl(self, e):
+        """双击 = 自动定位到游戏内该涂装(右键菜单仍可查看缩略图)。"""
+        base = self._hit_base(e)
+        if base:
+            self.select(base)
+            self.auto_locate()
+
+    def _set_quick_filter(self, qf: tuple):
+        """右键快筛: 只显示该车型/该作者(会话级; 切存档或「清除快筛」复原)。"""
+        self.quick_filter = qf
+        self.rebuild_grid()
+        what, val = qf
+        if what == "car":
+            rep = next((x for x in self.items if x.car_id == val), None)
+            desc = f"车型 {self.car_display(rep)}" if rep else f"车型 ID {val}"
+        else:
+            desc = f"作者 {val}"
+        self.status_var.set(f"快筛: 只显示{desc} (右键菜单可清除)")
+
+    def _clear_quick_filter(self):
+        self.quick_filter = None
+        self.rebuild_grid()
+        self.status_var.set("已清除快筛")
+
+    def _on_card_rclick(self, e):
+        """右键菜单: 查看缩略图/定位到涂装 + 复制位置/名称/车型/作者。"""
+        base = self._hit_base(e)
+        if not base or base not in self.item_map:
+            return
+        self.select(base)
+        it = self.item_map[base]
+        pos = self._pos_map.get(base, "")
+        car = self.car_table.name("fh6", it.car_id)
+        menu = tk.Menu(self.canvas, tearoff=0)
+        if self.quick_filter:
+            menu.add_command(label="清除快筛", command=self._clear_quick_filter)
+        menu.add_command(label="只显示该车型",
+                         command=lambda: self._set_quick_filter(("car", it.car_id)))
+        menu.add_command(label="只显示该作者",
+                         state=tk.NORMAL if it.creator else tk.DISABLED,
+                         command=lambda: self._set_quick_filter(
+                             ("creator", it.creator or "")))
+        menu.add_separator()
+        menu.add_command(label="查看缩略图",
+                         state=tk.NORMAL if it.thumb_big else tk.DISABLED,
+                         command=self.show_big_preview)
+        menu.add_command(label="定位到涂装位置",
+                         state=tk.NORMAL if pos else tk.DISABLED,
+                         command=self.auto_locate)
+        menu.add_separator()
+        menu.add_command(label=f"复制游戏内位置 ({pos})" if pos else "复制游戏内位置",
+                         state=tk.NORMAL if pos else tk.DISABLED,
+                         command=lambda: self.copy_text(pos))
+        menu.add_command(label="复制名称",
+                         state=tk.NORMAL if it.name else tk.DISABLED,
+                         command=lambda: self.copy_text(it.name))
+        menu.add_command(label="复制车型",
+                         state=tk.NORMAL if car else tk.DISABLED,
+                         command=lambda: self.copy_text(car))
+        menu.add_command(label="复制作者",
+                         state=tk.NORMAL if it.creator else tk.DISABLED,
+                         command=lambda: self.copy_text(it.creator))
+        try:
+            menu.tk_popup(e.x_root, e.y_root)
+        finally:
+            menu.grab_release()
 
     def rebuild_grid(self):
-        """增量卡片池: 卡片只建一次, 筛选/排序/刷新只重排(grid)或移出网格(grid_remove),
-        不销毁重建(实测销毁 1000 卡 ≈1.8s, 纯重排 ≈1ms); 切存档才在 scan_items 全量销毁。"""
+        """刷新卡片墙(筛选/排序/数据变化后调用): 重算行布局并重绘可视区。
+        v1.4.0 起为「单 Canvas 虚拟绘制」——不再创建/复用 Tk 子控件, 卡片只是
+        可视区的绘图元素; 布局 = 行模型(_layout_rows), 重绘零成本, 选中状态
+        与缩略图缓存独立于重绘存活(与旧增量卡片池语义一致)。切存档清空画布。"""
         self._thumb_gen += 1                    # 作废旧解码结果(不注销缓存, 只防在途结果串档)
         self._thumb_pending = []
-        shown = self._sorted(self._filtered())
-        shown_bases = {it.base for it in shown}
-        for it in shown:
-            card = self.cards.get(it.base)
-            if card is None:                    # 首次显示才创建(存档新增涂装也走这里)
-                card = Card(self.grid_frame, self, it)
-                self.cards[it.base] = card
-            # 缓存图带不带「已喷涂」角标必须与当前状态一致, 否则重解码合成
-            if (it.base not in self._img_cache
-                    or self._img_badged.get(it.base) != self._applied_badged(it.base)):
+        items = self._filtered()
+        self._filtered_items = items            # 变列数 _relayout 复用, 不再走一遍筛选
+        self._layout_rows(items)
+        self._shown = [b for r in self._rows if r[0] == "cards" for b in r[1]]
+        # 待解码清单: 无缓存即入队(「已喷涂」角标已改为画在卡片上,
+        # 不再烙进缩略图图片, 喷涂状态变化不触发缩略图重解码)
+        for it in items:
+            if it.base not in self._img_cache:
                 self._thumb_pending.append(it.base)
-            # 已有缓存的直接贴图
-            elif self._img_cache.get(it.base):
-                card.set_image(self._img_cache[it.base])
-        # 被过滤掉的卡片移出网格但保留控件, 再显示时复用; 选中状态随卡片存活
-        for base, card in self.cards.items():
-            if base not in shown_bases and card.winfo_manager():
-                card.grid_remove()
-        self._shown = [it.base for it in shown]
-        self._relayout()
+        self._redraw(force=True)
         self.after(30, self._load_thumbs_batch)
         parts = []
         if self.dup_only.get():
             parts.append("仅重复")
-        parts += [tag for tag, _ in DUP_RULES if self.rule_vars[tag].get()]
         if self.multi_only.get():
             parts.append("多涂装车型")
         if self.single_only.get():
             parts.append("单涂装车型")
-        if self.applied_mark.get():
-            parts.append("标记喷涂")
         if self.applied_only.get():
             parts.append("仅已喷涂")
         if self.unapplied_only.get():
             parts.append("仅未喷涂")
+        if self.quick_filter:
+            parts.append("快筛")
         self.filter_mb.configure(
             text=f"涂装筛选: {'+'.join(parts)}" if parts else "涂装筛选")
         known = self.car_table.known_count("fh6")
@@ -725,7 +1020,7 @@ class App(tk.Tk):
         dup_txt = f"重复 {dup_groups} 组({dup_files} 个)  |  " if dup_groups else ""
         applied_txt = f"已上车 {len(self._applied)}  |  " if self._applied is not None else ""
         self.status_var.set(
-            f"共 {len(self.items)} 个条目, 显示 {len(shown)} 个  |  {applied_txt}{dup_txt}"
+            f"共 {len(self.items)} 个条目, 显示 {len(self._shown)} 个  |  {applied_txt}{dup_txt}"
             f"已识别车型 {known} 个  |  {self.current['dir'] if self.current else ''}")
 
     def _load_thumbs_batch(self, n: int = 8):
@@ -737,31 +1032,27 @@ class App(tk.Tk):
         batch, self._thumb_pending = self._thumb_pending[:n], self._thumb_pending[n:]
         retry = []
         for base in batch:
-            card = self.cards.get(base)
-            if not card:
+            it = self.item_map.get(base)
+            if not it:
                 continue
-            applied = self._applied_badged(base)
-            img = self._load_thumb(card.item.thumb_big, THUMB_W, THUMB_H,
-                                   badge=self._pos_map.get(base, ""),
-                                   applied=applied)
+            img = self._load_thumb(it.thumb_big, THUMB_W, THUMB_H)
             if img:
                 # 解码失败(如游戏正在写入该文件)不缓存, 否则 None 进缓存
                 # 会让卡片永远卡在「加载中…」
                 self._img_cache[base] = img
-                self._img_badged[base] = applied
                 self._thumb_fails.pop(base, None)
-                card.set_image(img)
-            elif not self._thumb_transient_fail(card, base, retry):
-                card.set_image(None)
+                self._set_card_image(base, img)
+            elif not self._thumb_transient_fail(base, it.thumb_big, retry):
+                self._set_card_image(base, None)
         if self._thumb_pending:
             self.after(10, self._load_thumbs_batch)
         self._schedule_thumb_retry(retry)
 
-    def _thumb_transient_fail(self, card: "Card", base: str, retry: list) -> bool:
+    def _thumb_transient_fail(self, base: str, path, retry: list) -> bool:
         """解码失败但条目确有缩略图文件 → 视为瞬态失败(游戏/云同步正在写存档,
-        读到锁定或半截文件): 保留卡片旧图不清空, 计数交给退避重试(同一 base
+        读到锁定或半截文件): 保留卡上旧图不清空, 计数交给退避重试(同一 base
         连续 6 次失败才放弃, 回退显示「无预览图」)。"""
-        if card.item.thumb_big is None:
+        if path is None:
             return False
         fails = self._thumb_fails.get(base, 0)
         if fails >= 6:
@@ -787,47 +1078,43 @@ class App(tk.Tk):
         gen = self._thumb_gen
         pending, self._thumb_pending = self._thumb_pending, []
         for base in pending:
-            card = self.cards.get(base)
-            if not card:
+            it = self.item_map.get(base)
+            if not it:
                 continue
             self._thumb_inflight += 1
-            pool.submit(self._decode_thumb_job, gen, base,
-                        card.item.thumb_big,
-                        self._pos_map.get(base, ""),
-                        self._applied_badged(base))
+            pool.submit(self._decode_thumb_job, gen, base, it.thumb_big)
         if self._thumb_inflight:
             self.after(30, self._drain_thumb_queue)
 
-    def _decode_thumb_job(self, gen: int, base: str, path: Path | None,
-                          badge: str, applied: bool):
-        """工作线程: 解码+合成(PIL 解码/缩放释放 GIL), 结果入队等主线程贴图。"""
-        img = self._compose_thumb(path, THUMB_W, THUMB_H, badge, applied) \
+    def _decode_thumb_job(self, gen: int, base: str, path: Path | None):
+        """工作线程: 解码+缩放(PIL 解码释放 GIL), 结果入队等主线程贴图。
+        卡片缩略图不再烙任何角标(位置/喷涂角标均改为画在卡片层)。"""
+        img = self._compose_thumb(path, THUMB_W, THUMB_H) \
             if path and path.exists() else None
-        self._thumb_queue.put((gen, base, img, applied))
+        self._thumb_queue.put((gen, base, img))
 
     def _drain_thumb_queue(self):
         """主线程: 取回解码好的图, 转 PhotoImage 贴卡并写缓存(每轮最多 16 张保持响应)。"""
         retry = []
         for _ in range(16):
             try:
-                gen, base, img, applied = self._thumb_queue.get_nowait()
+                gen, base, img = self._thumb_queue.get_nowait()
             except queue.Empty:
                 break
             self._thumb_inflight -= 1
             if gen != self._thumb_gen:
                 continue                        # 期间又 rebuild 过, 过期结果丢弃
-            card = self.cards.get(base)
-            if not card:
+            it = self.item_map.get(base)
+            if not it:
                 continue
             photo = ImageTk.PhotoImage(img) if img is not None else None
             if photo:
                 # 解码失败不缓存(同主线程路径的容错)
                 self._img_cache[base] = photo
-                self._img_badged[base] = applied
                 self._thumb_fails.pop(base, None)
-                card.set_image(photo)
-            elif not self._thumb_transient_fail(card, base, retry):
-                card.set_image(None)
+                self._set_card_image(base, photo)
+            elif not self._thumb_transient_fail(base, it.thumb_big, retry):
+                self._set_card_image(base, None)
         self._schedule_thumb_retry(retry)
         if self._thumb_inflight > 0 or not self._thumb_queue.empty():
             self.after(30, self._drain_thumb_queue)
@@ -855,13 +1142,15 @@ class App(tk.Tk):
             self._dup_pending = False
             self._applied = None
             self._applied_pending = False
+            self.quick_filter = None
             self._layout, self._total_cols = {}, 0
             self._img_cache.clear()
-            self._img_badged.clear()
             self._thumb_fails.clear()
-            for c in self.cards.values():
-                c.destroy()
-            self.cards = {}
+            self.canvas.delete("all")           # 切存档/无存档: 清空虚拟绘制层
+            self._vis_cards.clear()
+            self._rows, self._row_y = [], []
+            self._content_h = 0
+            self._redraw_win = None
             self._shown = []
             self._selected = None
             self._set_info("未选择条目")
@@ -891,12 +1180,14 @@ class App(tk.Tk):
         self._dup_pending = False
         self._applied = None                 # 车上涂装标记与游戏实时档案绑定, 切存档即失效
         self._applied_pending = False
+        self.quick_filter = None
         self._img_cache.clear()
-        self._img_badged.clear()
         self._thumb_fails.clear()
-        for c in self.cards.values():       # 切存档: 卡片池全量销毁(平时 rebuild 增量复用)
-            c.destroy()
-        self.cards = {}
+        self.canvas.delete("all")               # 切存档: 清空虚拟绘制层(rebuild 会重铺)
+        self._vis_cards.clear()
+        self._rows, self._row_y = [], []
+        self._content_h = 0
+        self._redraw_win = None
         self._shown = []
         self._selected = None
         self._set_info("未选择条目")
@@ -918,13 +1209,203 @@ class App(tk.Tk):
         self._rerun_dup()
 
     def _rerun_dup(self):
-        """重算重复分组并刷新界面。"""
+        """用已缓存特征按当前判定条件重算重复分组并刷新界面(毫秒级);
+        特征未就绪则先触发分析。"""
         if self._dup_feats is None:
+            self._ensure_dup_analysis()
             return
         (self._dup_group, self._car_unique,
          self._dup_rules) = fh6save.detect_duplicates(self.items,
-                                                      features=self._dup_feats)
+                                                      features=self._dup_feats,
+                                                      rules=[self._dup_cfg])
         self.rebuild_grid()
+
+    def open_dup_params(self):
+        """「重复检测参数」对话框: 直接暴露全部底层比较条件, 无预制模式。
+        提供常用模板一键填表; 打开时回填上次应用的值(会话级), 确定后用已缓存
+        特征毫秒级重算, 不落盘。"""
+        dlg = tk.Toplevel(self)
+        dlg.title("重复检测参数")
+        dlg.transient(self)
+        dlg.grab_set()                          # 模态
+        body = ttk.Frame(dlg, padding=12)
+        body.pack(fill=tk.BOTH, expand=True)
+
+        R3 = {"any": "任意", "same": "相同", "diff": "不同"}
+        T3 = ["不参与", "相同", "不同"]
+        ANY3 = ["任意", "相同", "不同"]
+        IMG3 = ["不比对", "距离≤N", "任一方无图"]
+        SIM3 = ["不比对", "≥X(找相似名)", "<X(找不同名)"]
+
+        def _opt(row, name, combo_vals, hint):
+            """一行「条件下拉 + 灰色说明」。"""
+            ttk.Label(body, text=name).grid(row=row, column=0, sticky=tk.W, pady=3)
+            cb = ttk.Combobox(body, state="readonly", width=9, values=combo_vals)
+            cb.grid(row=row, column=1, sticky=tk.W, padx=(4, 4))
+            ttk.Label(body, text=hint, foreground="#777777").grid(
+                row=row, column=4, sticky=tk.W)
+            return cb
+
+        # 模板: 一键填表(引擎无预制规则, 模板只是常用条件的起点)
+        ttk.Label(body, text="模板:").grid(row=0, column=0, sticky=tk.W, pady=3)
+        cb_templ = ttk.Combobox(body, state="readonly", width=20,
+                                values=["(自定义)"] + [n for n, _, _ in DUP_TEMPLATES])
+        cb_templ.grid(row=0, column=1, columnspan=3, sticky=tk.W, padx=(4, 4))
+        tmpl_desc = ttk.Label(body, text="", foreground="#777777")
+        tmpl_desc.grid(row=0, column=4, sticky=tk.W)
+
+        cb_car = _opt(1, "车型:", ANY3, "条目文件名里的车型 ID")
+        cb_author = _opt(2, "作者:", ANY3,
+                         "涂装作者; Forza 默认名视为匿名, 匿名不参与相同/不同判定")
+        ttk.Label(body, text="图片:").grid(row=3, column=0, sticky=tk.W, pady=3)
+        cb_img = ttk.Combobox(body, state="readonly", width=9, values=IMG3)
+        cb_img.grid(row=3, column=1, sticky=tk.W, padx=(4, 4))
+        ttk.Label(body, text="N").grid(row=3, column=2, sticky=tk.E)
+        img_var = tk.StringVar()
+        ttk.Spinbox(body, from_=0, to=64, width=5,
+                    textvariable=img_var).grid(row=3, column=3, sticky=tk.W,
+                                               padx=(2, 10))
+        ttk.Label(body, text="感知哈希汉明距离 0~64, 越小要求越像;「任一方无图」"
+                             "=其中一条没有预览图文件(解码失败不算)",
+                  foreground="#777777").grid(row=3, column=4, sticky=tk.W)
+        ttk.Label(body, text="名称相似度:").grid(row=4, column=0, sticky=tk.W, pady=3)
+        cb_sim = ttk.Combobox(body, state="readonly", width=9, values=SIM3)
+        cb_sim.grid(row=4, column=1, sticky=tk.W, padx=(4, 4))
+        ttk.Label(body, text="X").grid(row=4, column=2, sticky=tk.E)
+        sim_var = tk.StringVar()
+        ttk.Spinbox(body, from_=0.0, to=1.0, increment=0.05, width=5,
+                    textvariable=sim_var).grid(row=4, column=3, sticky=tk.W,
+                                               padx=(2, 10))
+        ttk.Label(body, text="difflib 相似度 0~1; 任一方名称为空按 0 处理",
+                  foreground="#777777").grid(row=4, column=4, sticky=tk.W)
+        cb_created = _opt(5, "创建时间:", T3,
+                          "文件名时间戳(≈作者创作时间); 任一方缺失则条件不成立")
+        cb_down = _opt(6, "下载时间:", T3,
+                       "文件 mtime(≈玩家下载落盘时间); 任一方缺失则条件不成立")
+
+        def _fill_form(r: fh6save.DupRule, tmpl_name: str | None = None):
+            """把条件对象回填到表单(打开时回填上次应用的值 / 选模板时填表)。"""
+            cb_car.set(R3[r.car])
+            cb_author.set(R3[r.author])
+            if r.img is None:
+                cb_img.set("不比对")
+            elif r.img == "missing":
+                cb_img.set("任一方无图")
+            else:
+                cb_img.set("距离≤N")
+                img_var.set(str(r.img[1]))
+            if r.name is None:
+                cb_sim.set("不比对")
+            elif r.name[0] == "min":
+                cb_sim.set("≥X(找相似名)")
+                sim_var.set(f"{r.name[1]:.2f}")
+            else:
+                cb_sim.set("<X(找不同名)")
+                sim_var.set(f"{r.name[1]:.2f}")
+            cb_created.set("不参与" if r.created is None else
+                           ("相同" if r.created == "same" else "不同"))
+            cb_down.set("不参与" if r.downloaded is None else
+                        ("相同" if r.downloaded == "same" else "不同"))
+            if tmpl_name:
+                tmpl_desc.configure(
+                    text=next(d for n, d, _ in DUP_TEMPLATES if n == tmpl_name))
+            else:
+                tmpl_desc.configure(text="当前应用的条件")
+
+        def _on_templ(_e=None):
+            name = cb_templ.get()
+            if name == "(自定义)":
+                return
+            for n, _d, kw in DUP_TEMPLATES:
+                if n == name:
+                    _fill_form(fh6save.DupRule(**kw), name)
+                    return
+        cb_templ.bind("<<ComboboxSelected>>", _on_templ)
+
+        # 打开时回填上次应用的值; 与某模板完全一致则选中该模板名
+        _fill_form(self._dup_cfg)
+        tmpl_name = "(自定义)"
+        for n, _d, kw in DUP_TEMPLATES:
+            if fh6save.DupRule(key="重复", **kw) == self._dup_cfg:
+                tmpl_name = n
+                break
+        cb_templ.set(tmpl_name)
+        _fill_form(self._dup_cfg, None if tmpl_name == "(自定义)" else tmpl_name)
+
+        ttk.Label(body, foreground="#777777", wraplength=520, justify=tk.LEFT,
+                  text="判定方式: 两两配对, 同时满足以上启用条件的两条涂装判为重复;"
+                       "并按传递关系合并成组(A~B、B~C ⇒ 三者同组)。"
+                       "条件越宽松组越大。改动仅本次运行有效。").grid(
+            row=7, column=0, columnspan=5, sticky=tk.W, pady=(8, 0))
+
+        def _combo3(cb):
+            return {"任意": "any", "相同": "same", "不同": "diff"}.get(cb.get(), "any")
+
+        def _t3(cb):
+            return {"不参与": None, "相同": "same", "不同": "diff"}.get(cb.get())
+
+        def _build_rule() -> fh6save.DupRule:
+            """表单 → 条件对象(阈值非法时弹错并抛 ValueError)。"""
+            img = None
+            name = None
+            try:
+                if cb_img.get() == "距离≤N":
+                    d = int(img_var.get())
+                    if not 0 <= d <= 64:
+                        raise ValueError
+                    img = ("dist", d)
+                elif cb_img.get() == "任一方无图":
+                    img = "missing"
+                if cb_sim.get() != "不比对":
+                    s = float(sim_var.get())
+                    if not 0.0 <= s <= 1.0:
+                        raise ValueError
+                    name = ("min", s) if cb_sim.get().startswith("≥") else ("max", s)
+            except ValueError:
+                messagebox.showerror("重复检测参数",
+                                     "阈值无效: 距离 0~64 / 相似度 0.00~1.00",
+                                     parent=dlg)
+                raise
+            return fh6save.DupRule(key="重复", car=_combo3(cb_car),
+                                   author=_combo3(cb_author), img=img, name=name,
+                                   created=_t3(cb_created), downloaded=_t3(cb_down))
+
+        def _save():
+            try:
+                self._dup_cfg = _build_rule()
+            except ValueError:
+                return                          # 错误框已在 _build_rule 弹过
+            self._rerun_dup()
+            if self._dup_feats is not None:     # 特征分析中时不覆盖「分析中」提示
+                n_hit = sum(1 for g in self._dup_group.values() if g)
+                n_grp = len({g for g in self._dup_group.values() if g})
+                self.status_var.set(
+                    f"重复检测条件已更新: {n_hit} 个条目在重复组里, 共 {n_grp} 组")
+            dlg.destroy()
+
+        def _reset():
+            _fill_form(fh6save.DEFAULT_DUP_RULE)
+            cb_templ.set("(自定义)")
+            tmpl_desc.configure(text="出厂默认条件")
+
+        btns = ttk.Frame(body)
+        btns.grid(row=8, column=0, columnspan=5, sticky=tk.E, pady=(10, 0))
+        ttk.Button(btns, text="恢复默认", command=_reset).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btns, text="确定", command=_save).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btns, text="取消", command=dlg.destroy).pack(side=tk.LEFT, padx=2)
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+        # 控件引用(测试与状态检查用; 对话框销毁后即失效)
+        self._dup_param_state = {
+            "car": cb_car, "author": cb_author, "img": cb_img, "img_var": img_var,
+            "sim": cb_sim, "sim_var": sim_var, "created": cb_created,
+            "down": cb_down, "templ": cb_templ, "desc": tmpl_desc,
+            "save": _save, "reset": _reset, "apply_template": _on_templ,
+        }
+        # 居中于主窗口
+        dlg.update_idletasks()
+        dw, dh = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        dlg.geometry(f"+{self.winfo_rootx() + (self.winfo_width() - dw) // 2}"
+                     f"+{self.winfo_rooty() + (self.winfo_height() - dh) // 2}")
 
     def browse_folder(self):
         d = filedialog.askdirectory(title="选择 FH6 存档目录(remote 或 ContainersRoot)")
@@ -981,19 +1462,8 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------ 已喷涂检测(运行时内存)
 
-    def _on_applied_switch(self):
-        """「标记喷涂状态」开关: 与「⚠ 检测喷涂状态」按钮同款确认门——
-        本会话未扫描过时须确认才生效, 取消则开关回退(选择无效); 已扫描过直接生效。"""
-        if self.applied_mark.get() and self._applied is None:
-            if not self._confirm_applied_scan():
-                self.applied_mark.set(False)
-                return
-            self._applied_from_button = True     # 完成同样弹「已标记喷涂」
-        self.rebuild_grid()
-        self._ensure_applied_scan()
-
     def _select_applied_filter(self, which: str):
-        """「已喷涂」与「未喷涂」筛选互斥; 确认门与「标记喷涂状态」开关相同。"""
+        """「已喷涂」与「未喷涂」筛选互斥; 首次开启须过确认门(与「⚠ 检测喷涂状态」按钮相同)。"""
         var = self.applied_only if which == "applied" else self.unapplied_only
         if which == "applied" and self.applied_only.get():
             self.unapplied_only.set(False)
@@ -1012,11 +1482,6 @@ class App(tk.Tk):
         if self._applied is None:
             return ""
         return "已喷在车上 ✓" if base in self._applied else "未喷在车上"
-
-    def _applied_badged(self, base: str) -> bool:
-        """该卡片缩略图当前是否应带「已喷在车上」角标(缓存合成比对用)。"""
-        return bool(self.applied_mark.get() and self._applied
-                    and base in self._applied)
 
     def _ensure_applied_scan(self, force: bool = False):
         """已喷涂检测按需触发: 仅 FH6 存档 + 游戏运行中; 后台只读扫描游戏内存。
@@ -1070,8 +1535,9 @@ class App(tk.Tk):
                                 parent=self)
 
     def _applied_rescan_tick(self):
-        """任一已喷涂相关开关打开时: 未扫描且游戏在跑则补全量扫描, 已扫描则定期快速重扫。"""
-        want = (self.applied_mark.get() or self.applied_only.get()
+        """已喷涂功能在用(本会话扫描过, 或已喷涂/未喷涂筛选开着)时:
+        未扫描且游戏在跑则补全量扫描, 已扫描则定期快速重扫(保角标/计数实时)。"""
+        want = (self._applied is not None or self.applied_only.get()
                 or self.unapplied_only.get())
         if want and not self._applied_pending:
             if self._applied is None:
@@ -1111,21 +1577,26 @@ class App(tk.Tk):
         name = self.car_table.name("fh6", it.car_id)
         return fh6save.car_brand(name) if name else ""
 
+    def _on_group_select(self, _e=None):
+        """「分组显示」切换: 选「车厂/作者」时把主选排序同步为对应模式,
+        组间顺序(跟随排序链)自然按该字段排列; 切回「无」不动排序。"""
+        want = {"车厂": "车厂", "作者": "作者", "车型": "车型"}.get(self.group_var.get())
+        if want and self.sort_var.get() != want:
+            self.sort_var.set(want)
+        self.rebuild_grid()
+
     def _filtered(self) -> list[SaveItem]:
-        q = self.search_var.get().strip().lower()
+        # 双搜索关键字: 都非空才都要求命中(与); 单框使用时等同旧版单关键字
+        qwords = [s.strip().lower() for s in
+                  (self.search_var.get(), self.search2_var.get())]
+        qwords = [s for s in qwords if s]
         brand = self.brand_var.get()
-        active_rules = [tag for tag, _ in DUP_RULES if self.rule_vars[tag].get()]
         out = []
         for it in self.items:
             if it.itype != "Livery":          # 仅限涂装
                 continue
-            if self.dup_only.get() or active_rules:
-                gid = self._dup_group.get(it.base, 0)
-                if not gid:
-                    continue
-                # 多规则 OR: 组命中任一选中的场景即保留
-                if active_rules and not any(
-                        r in self._dup_rules.get(gid, []) for r in active_rules):
+            if self.dup_only.get():
+                if not self._dup_group.get(it.base, 0):
                     continue
             unique = self._car_unique.get(it.car_id, 0)
             if self.multi_only.get() and unique < 2:
@@ -1144,59 +1615,40 @@ class App(tk.Tk):
                     continue
             if brand != "全部车厂" and self._brand_of(it) != brand:
                 continue
-            if q:
+            qf = self.quick_filter             # 右键快筛(车型/作者维度)
+            if qf:
+                if qf[0] == "car" and it.car_id != qf[1]:
+                    continue
+                if qf[0] == "creator" and (it.creator or "") != qf[1]:
+                    continue
+            if qwords:
                 hay = f"{it.name} {it.creator} {it.car_id} {self.car_display(it)}".lower()
-                if q not in hay:
+                if any(t not in hay for t in qwords):
                     continue
             out.append(it)
         return out
 
-    def _sorted(self, items: list[SaveItem]) -> list[SaveItem]:
-        from datetime import datetime as _dt, timezone as _tz
-        tmin = _dt.min.replace(tzinfo=_tz.utc)
-        tmax = _dt.max.replace(tzinfo=_tz.utc)
-        mode = self.sort_var.get()
-        if mode == "下载日期(新→旧)":
-            return sorted(items, key=lambda i: i.ts or tmin, reverse=True)
-        if mode == "下载日期(旧→新)":
-            return sorted(items, key=lambda i: i.ts or tmax)
-        if mode == "名称":
-            return sorted(items, key=lambda i: (i.name or "").lower())
-        if mode == "车型":
-            def _car_key(i: SaveItem):
-                n = self.car_table.name("fh6", i.car_id)
-                if not n:
-                    return (1, f"{i.car_id:06d}")        # 未识别的排最后, 按 ID 排
-                n = re.sub(r"^\d{4}\s+", "", n)          # 剥掉年份前缀, 按品牌车型排
-                return (0, n.lower())
-            return sorted(items, key=_car_key)
-        if mode == "作者":
-            return sorted(items, key=lambda i: (i.creator or "").lower())
-        if mode == "游戏内顺序":
-            # 与游戏内「我的涂装」排列一致: 车型 ID 升序, 同车型按时间戳升序
-            return sorted(items, key=lambda i: (i.car_id, i.base))
-        return items
-
     # ------------------------------------------------------------ 选中与预览
 
     def select(self, base: str | None):
+        prev = self._selected
         self._selected = base
-        for b, card in self.cards.items():
-            card.set_selected(b == base)
+        if prev != base:
+            self._recolor_card(prev)            # 新旧两张就地换色(不在可视区的自动跳过)
+            self._recolor_card(base)
         self.show_preview()
 
     def selected_item(self) -> SaveItem | None:
         return self.item_map.get(self._selected) if self._selected else None
 
-    def _load_thumb(self, path: Path | None, max_w: int, max_h: int,
-                    badge: str = "", applied: bool = False):
+    def _load_thumb(self, path: Path | None, max_w: int, max_h: int, badge: str = ""):
         """优先用 PIL(支持 webp/jpg 且缩放质量好), 否则退回 tk.PhotoImage。
-        badge 非空时把位置角标画到图片右上角(浅色底黑字);
-        applied 为真时在左上角贴「已喷在车上」喷漆罐角标(仅 PIL 路径支持角标)。"""
+        badge 非空时把位置角标画到图片右上角——仅详情面板大图预览用;
+        卡片缩略图不烙任何角标(v1.4.0 起位置/喷涂角标都画在卡片层)。"""
         if not path or not path.exists():
             return None
         if HAS_PIL:
-            img = self._compose_thumb(path, max_w, max_h, badge, applied)
+            img = self._compose_thumb(path, max_w, max_h, badge)
             return ImageTk.PhotoImage(img) if img is not None else None
         try:
             img = tk.PhotoImage(file=str(path))
@@ -1207,19 +1659,15 @@ class App(tk.Tk):
             img = img.subsample(factor, factor)
         return img
 
-    def _compose_thumb(self, path: Path, max_w: int, max_h: int,
-                       badge: str = "", applied: bool = False):
+    def _compose_thumb(self, path: Path, max_w: int, max_h: int, badge: str = ""):
         """PIL 解码+缩放+角标合成, 返回 PIL 图(失败 None)。
         纯 PIL 无 tk 依赖, 可在工作线程里跑(缩略图线程池用)。"""
         try:
             img = Image.open(path)
             img.thumbnail((max_w, max_h))
-            if badge or applied:
+            if badge:
                 img = img.convert("RGBA")
-                if badge:
-                    self._draw_badge(img, badge)
-                if applied:
-                    self._draw_applied_badge(img)
+                self._draw_badge(img, badge)
             return img
         except Exception:
             return None
@@ -1241,12 +1689,6 @@ class App(tk.Tk):
                             radius=r, fill="#f0f0f0")
         d.text((x1 + pad - bbox[0], y1 + pad - bbox[1]), text,
                font=font, fill="#000000")
-
-    @staticmethod
-    def _draw_applied_badge(img):
-        """把预制的「已喷在车上」喷漆罐角标素材贴到图片左上角(一次 alpha_composite,
-        不再逐张调用绘图原语; 素材见模块级 _applied_badge_sprite())。"""
-        img.alpha_composite(_applied_badge_sprite(), (0, 0))
 
     def show_preview(self):
         it = self.selected_item()
@@ -1281,9 +1723,7 @@ class App(tk.Tk):
         gid = self._dup_group.get(it.base, 0)
         if gid:
             n = sum(1 for g in self._dup_group.values() if g == gid)
-            rules = "、".join(self._dup_rules.get(gid, []))
-            suffix = f" ({rules})" if rules else ""
-            lines.append(f"重复: 第 {gid} 组, 共 {n} 个相同涂装{suffix}")
+            lines.append(f"重复: 第 {gid} 组, 共 {n} 个相同涂装")
         if it.layer_count:
             lines.append(f"层数: {it.layer_count}")
         lines.append(f"文件: {it.base}")
@@ -1325,12 +1765,11 @@ class App(tk.Tk):
         return True
 
     def confirm_detect_applied(self):
-        """顶栏「⚠ 检测喷涂状态」: 确认后开始内存扫描并打开喷涂标记(喷漆角标);
-        检测完成由 _applied_ready 弹「已标记喷涂」。"""
+        """顶栏「⚠ 检测喷涂状态」: 确认后开始内存扫描, 完成即用喷漆角标标出
+        (角标常显, 无需开关); 检测完成由 _applied_ready 弹「已标记喷涂」。"""
         if not self._confirm_applied_scan():
             return
         self._applied_from_button = True     # 标记本次扫描来自确认流程, 完成后弹结果
-        self.applied_mark.set(True)          # 检测完即用喷漆角标标出
         self._ensure_applied_scan(force=True)
 
     def open_settings(self):

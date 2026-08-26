@@ -63,7 +63,8 @@ class SaveItem:
     base: str                 # 共同前缀, 如 Livery_2182_20230820011901
     itype: str                # 原始类型前缀, 如 Livery
     car_id: int               # 车型 ID (来自文件名)
-    ts: datetime | None       # 文件名里的时间戳
+    ts: datetime | None       # 文件名里的时间戳(≈作者创作时间)
+    mtime: float | None = None   # 分片文件 mtime 最大值(≈玩家下载落盘时间); 字段级重复规则用
     is_dir: bool = False      # True = pgs 目录型条目, False = Steam 平铺文件
     files: dict = field(default_factory=dict)   # 分片名 -> 完整路径
     # 以下由 header 解析填充
@@ -323,6 +324,14 @@ def scan_folder(game: str, steam_user: str, folder: Path) -> list[SaveItem]:
             it.files[part or ""] = f
 
     for it in items.values():
+        # mtime: 取各分片 mtime 最大值(最后写入时间 ≈ 玩家下载落盘时间); 字段级重复规则用
+        mt = 0.0
+        for p in it.files.values():
+            try:
+                mt = max(mt, p.stat().st_mtime)
+            except OSError:
+                pass
+        it.mtime = mt or None
         hdr = it.files.get("header")
         if hdr:
             try:
@@ -381,10 +390,39 @@ def locate_keys(x: int, y: int, total: int) -> list[tuple[str, int]]:
 # header 里游戏自动填入的默认字符串(哨兵值)
 SENTINELS = ("Forza BaseLivery", "Forza Livery", "Forza SoulBoundLivery")
 
-# 重复判定阈值(固定"标准"档): T1/T2 = 图片哈希汉明距离, S2/S3/S4 = 名称相似度
-# (见 detect_duplicates 规则说明; 原三档容差已简化为单一标准)
-DUP_T1, DUP_T2 = 6, 10
-DUP_S2, DUP_S3, DUP_S4 = 0.6, 0.6, 0.9
+# 默认图片距离阈值(「图片: 距离≤N」条件的出厂值); 其余条件出厂默认不参与
+DUP_T1 = 6
+
+
+@dataclass(frozen=True)
+class DupRule:
+    """一条重复判定条件(v1.4.0 规则引擎; 无预制模式, 条件由用户在
+    app 的「重复检测参数」里自由组合, 全部底层参数直接暴露)。
+
+    car:    "same"=车型相同 | "diff"=车型不同
+    author: "same"=同作者 | "diff"=双方实名且不同 | "any"=不限
+            (作者为 Forza 哨兵名视为匿名, 匿名条目不参与 same/diff 判定)
+    img:    None=不比对 | ("dist", 最大汉明距离) | "missing"=任一方无预览图文件
+            (感知哈希汉明距离 0~64, 越小要求越像; 解码失败不视作无图)
+    name:   None=不比对 | ("min", 相似度下限) | ("max", 相似度上限)
+            (difflib 比率 0~1; 双方名称任一为空时相似度按 0 处理)
+    created/downloaded: None=不参与 | "same" | "diff"
+            (created=文件名时间戳≈作者创作时间; downloaded=条目 mtime≈下载落盘时间;
+             任一方缺该时间则条件不成立)
+    key 仅作为命中标签进入组规则列表; label 为界面展示短语。
+    字段默认全部中立(不比对/不参与); 出厂默认条件见 DEFAULT_DUP_RULE。"""
+    key: str = "重复"
+    label: str = ""
+    car: str = "same"
+    author: str = "any"
+    img: object = None
+    name: object = None
+    created: str | None = None
+    downloaded: str | None = None
+
+
+# 出厂默认条件: 同车型 + 图片距离≤6(即原「同车复刻」语义), 其余条件不参与
+DEFAULT_DUP_RULE = DupRule(img=("dist", DUP_T1))
 
 
 def _clean_texts(it: SaveItem) -> tuple[str, str, str]:
@@ -425,14 +463,17 @@ def extract_dup_features(items: list[SaveItem]) -> dict[str, dict]:
     def _one(it: SaveItem) -> tuple[str, dict]:
         title, desc, author = _clean_texts(it)
         img_hash = None
+        has_img = it.thumb_big is not None
         # 只取大图(bigThumb.png/webp), 大图缺失回退 thumb.webp; 不同规格的图不混用
         for k in ("bigThumb.webp", "bigThumb.png", "thumb.webp"):
             p = it.files.get(k)
             if p:
                 img_hash = _dhash(p)
                 break
+        # noimg = 条目确实没有任何预览图文件(区别于「有文件但解码失败」,
+        # 后者不参与「无图同名」类规则)
         return it.base, {"title": title, "desc": desc, "author": author,
-                         "hash": img_hash}
+                         "hash": img_hash, "noimg": not has_img}
 
     liveries = [it for it in items if it.itype == "Livery"]
     workers = min(8, os.cpu_count() or 4)
@@ -445,29 +486,28 @@ def extract_dup_features(items: list[SaveItem]) -> dict[str, dict]:
 
 
 def detect_duplicates(items: list[SaveItem],
-                      features: dict[str, dict] | None = None
+                      features: dict[str, dict] | None = None,
+                      rules: list[DupRule] | None = None
                       ) -> tuple[dict[str, int], dict[int, int], dict[int, list[str]]]:
-    """多条件重复涂装推断: 车型 + 图片内容差异(感知哈希) + 是否同作者 + 名称相似度。
+    """重复涂装推断(规则引擎, v1.4.0; 无预制模式)。
 
-    两两配对, 命中以下任一规则即判重复(并查集合并):
-      R1 经典复刻:   同车型, 图片距离 ≤ T1(作者/名称不限, 经典涂装多人复刻)
-      R2 微调版本:   同车型 + 同作者, 图片距离 ≤ T2 且名称相似度 ≥ S2(xxx v1/v2)
-      R3 跨车型移植: 不同车型 + 同作者, 图片距离 ≤ T1 且名称相似度 ≥ S3
-      R4 无图兜底:   同车型 + 同作者, 任一方无图, 名称相似度 ≥ S4
-    阈值为上方 DUP_T*/DUP_S* 常量(原"标准"档)。
+    两两配对, 命中任一给定条件的对即并查集合并(传递性: A~B、B~C 则三者同组)。
+    条件对象 DupRule 的全部底层参数由用户在 app「重复检测参数」里组合:
+    车型/作者 相同与否 + 图片汉明距离/名称相似度阈值 + 创建/下载时间 相同与否。
 
-    features 为 extract_dup_features() 的预计算结果, 缺省时现场计算。
+    features 为 extract_dup_features() 的预计算结果, 缺省时现场计算;
+    rules 缺省用 [DEFAULT_DUP_RULE](同车型 + 图片距离≤6)。
     返回 (base -> 重复组号(1 起, 0 = 无重复),
           车型 ID -> 唯一涂装数(重复组算 1 种),
-          组号 -> 命中过的规则标签列表["同车复刻"/"同车微调"/"跨车型移植"/"无图同名"])。
-    仅统计 Livery 条目; 组号按本工具扫描序(时间戳降序)首次出现分配。
-    """
+          组号 -> 命中的条件 key 列表(sorted))。
+    仅统计 Livery 条目; 组号按本工具扫描序(时间戳降序)首次出现分配。"""
     import difflib
 
     liveries = [it for it in items if it.itype == "Livery"]
     if features is None:
         features = extract_dup_features(liveries)
-    t1, t2, s2, s3, s4 = DUP_T1, DUP_T2, DUP_S2, DUP_S3, DUP_S4
+    if rules is None:
+        rules = [DEFAULT_DUP_RULE]
 
     index = {it.base: i for i, it in enumerate(liveries)}
     parent = list(range(len(liveries)))
@@ -481,6 +521,12 @@ def detect_duplicates(items: list[SaveItem],
     def union(x: int, y: int):
         parent[find(x)] = find(y)
 
+    def time_cmp(a_val, b_val, want: str) -> bool:
+        """created/downloaded 条件: 双方都有该时间才可比; same=相等, diff=不等。"""
+        if a_val is None or b_val is None:
+            return False
+        return (a_val == b_val) if want == "same" else (a_val != b_val)
+
     n = len(liveries)
     matched: list[tuple[int, int, list[str]]] = []
     for i in range(n):
@@ -492,6 +538,8 @@ def detect_duplicates(items: list[SaveItem],
             same_car = a.car_id == b.car_id
             same_author = bool(fa["author"]) and fa["author"] == fb["author"]
             if not same_car and not same_author:
+                # 现有预设要么要求同车、要么要求同作者(无 car=diff+author=any 形态),
+                # 可安全剪枝; 引入新形态规则时需回看此处
                 continue
             hd = None
             if fa["hash"] is not None and fb["hash"] is not None:
@@ -508,20 +556,39 @@ def detect_duplicates(items: list[SaveItem],
                            if ta and tb else 0.0)
                 return sim
 
-            rules: list[str] = []
-            if same_car:
-                if hd is not None and hd <= t1:                      # R1
-                    rules.append("同车复刻")
-                if (same_author and hd is not None and hd <= t2
-                        and name_sim() >= s2):                         # R2
-                    rules.append("同车微调")
-                if same_author and hd is None and name_sim() >= s4:    # R4
-                    rules.append("无图同名")
-            elif same_author and hd is not None and hd <= t1 and name_sim() >= s3:
-                rules.append("跨车型移植")                             # R3
-            if rules:
+            hit: list[str] = []
+            for r in rules:
+                if r.car == "same" and not same_car:
+                    continue
+                if r.car == "diff" and same_car:
+                    continue
+                if r.author == "same" and not same_author:
+                    continue
+                if r.author == "diff" and same_author:
+                    continue          # 「不同作者」要求双方作者都实名(匿名互配无意义)
+                if r.img is not None:
+                    if r.img == "missing":
+                        if not (fa.get("noimg") or fb.get("noimg")):
+                            continue
+                    else:
+                        if hd is None or hd > r.img[1]:
+                            continue
+                if r.name is not None:
+                    mode, v = r.name
+                    s = name_sim()
+                    if mode == "min" and s < v:
+                        continue
+                    if mode == "max" and s >= v:
+                        continue
+                if r.created is not None and not time_cmp(a.ts, b.ts, r.created):
+                    continue
+                if r.downloaded is not None and not time_cmp(a.mtime, b.mtime,
+                                                             r.downloaded):
+                    continue
+                hit.append(r.key)
+            if hit:
                 union(i, j)
-                matched.append((i, j, rules))
+                matched.append((i, j, hit))
 
     # ---- 汇总: 连通分量 ≥2 的为重复组, 按首次出现顺序编号(1 起)
     sizes: dict[int, int] = {}
@@ -538,12 +605,12 @@ def detect_duplicates(items: list[SaveItem],
         gid = root_gid.setdefault(root, len(root_gid) + 1)
         group_of[it.base] = gid
 
-    # 每组命中过的规则(R1-R4 场景标签)
+    # 每组命中过的规则标签
     _gid_rules: dict[int, set] = {}
-    for i, _j, rules in matched:
+    for i, _j, rules_hit in matched:
         gid = group_of[liveries[i].base]
         if gid:
-            _gid_rules.setdefault(gid, set()).update(rules)
+            _gid_rules.setdefault(gid, set()).update(rules_hit)
     group_rules = {gid: sorted(rs) for gid, rs in _gid_rules.items()}
 
     # 每车型唯一涂装数(重复组算 1 种)
