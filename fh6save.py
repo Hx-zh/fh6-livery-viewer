@@ -282,15 +282,36 @@ def find_saves(steam: Path | None = None) -> list[dict]:
 
 # ---------------------------------------------------------------- 扫描
 
-def scan_folder(game: str, steam_user: str, folder: Path) -> list[SaveItem]:
-    """扫描一个目录, 按共同前缀聚合成条目并解析 header。
-    同时支持 Steam 平铺文件(<前缀>.<分片>)和 pgs 目录型条目(<前缀>/ 内含分片)。"""
-    items: dict[str, SaveItem] = {}
-    try:
-        entries = list(folder.iterdir())
-    except OSError:
-        return []
+def _fill_item(it: SaveItem):
+    """scan_folder 尾部处理的单条目版: mtime 采集(各分片 mtime 最大值
+    ≈ 玩家下载落盘时间, 字段级重复规则用) + header 解析。解析失败只标 header_ok=False。"""
+    mt = 0.0
+    for p in it.files.values():
+        try:
+            mt = max(mt, p.stat().st_mtime)
+        except OSError:
+            pass
+    it.mtime = mt or None
+    hdr = it.files.get("header")
+    if hdr:
+        try:
+            meta = parse_header(hdr.read_bytes())
+            it.name = meta["name"]
+            it.desc = meta["desc"]
+            it.creator = meta["creator"]
+            it.published = meta["published"]
+            it.layer_count = meta["layer_count"]
+            it.header_car_id = meta["header_car_id"]
+            it.header_ok = True
+        except (ValueError, OSError, struct.error):
+            it.header_ok = False
 
+
+def _collect_entries(game: str, steam_user: str, folder: Path, entries: list,
+                     items: dict[str, SaveItem], only_bases: set | None = None):
+    """scan_folder/scan_folder_incremental 共用的目录项聚合: 按共同前缀把分片
+    归入 SaveItem(Steam 平铺文件 <前缀>.<分片> 和 pgs 目录型条目 <前缀>/ 内含分片)。
+    only_bases 给定时只处理这些 base(增量扫描用)。"""
     def _get_item(itype: str, car_id: str, ts: str, base: str, is_dir: bool) -> SaveItem:
         if base not in items:
             try:
@@ -311,6 +332,8 @@ def scan_folder(game: str, steam_user: str, folder: Path) -> list[SaveItem]:
         itype, car_id, ts, part = m.group(1), m.group(2), m.group(3), m.group(4)
         if f.is_dir():
             # pgs 目录型条目: 分片是文件夹内的文件
+            if only_bases is not None and f.name not in only_bases:
+                continue
             it = _get_item(itype, car_id, ts, f.name, True)
             try:
                 for inner in f.iterdir():
@@ -320,32 +343,101 @@ def scan_folder(game: str, steam_user: str, folder: Path) -> list[SaveItem]:
                 pass
         elif f.is_file():
             base = f.name[:-(len(part) + 1)] if part else f.name
+            if only_bases is not None and base not in only_bases:
+                continue
             it = _get_item(itype, car_id, ts, base, False)
             it.files[part or ""] = f
 
-    for it in items.values():
-        # mtime: 取各分片 mtime 最大值(最后写入时间 ≈ 玩家下载落盘时间); 字段级重复规则用
-        mt = 0.0
-        for p in it.files.values():
-            try:
-                mt = max(mt, p.stat().st_mtime)
-            except OSError:
-                pass
-        it.mtime = mt or None
-        hdr = it.files.get("header")
-        if hdr:
-            try:
-                meta = parse_header(hdr.read_bytes())
-                it.name = meta["name"]
-                it.desc = meta["desc"]
-                it.creator = meta["creator"]
-                it.published = meta["published"]
-                it.layer_count = meta["layer_count"]
-                it.header_car_id = meta["header_car_id"]
-                it.header_ok = True
-            except (ValueError, OSError, struct.error):
-                it.header_ok = False
+
+def _sort_items(items: dict[str, SaveItem]) -> list[SaveItem]:
     return sorted(items.values(), key=lambda x: (x.ts or datetime.min), reverse=True)
+
+
+def scan_folder(game: str, steam_user: str, folder: Path) -> list[SaveItem]:
+    """扫描一个目录, 按共同前缀聚合成条目并解析 header。
+    同时支持 Steam 平铺文件(<前缀>.<分片>)和 pgs 目录型条目(<前缀>/ 内含分片)。"""
+    items: dict[str, SaveItem] = {}
+    try:
+        entries = list(folder.iterdir())
+    except OSError:
+        return []
+    _collect_entries(game, steam_user, folder, entries, items)
+    for it in items.values():
+        _fill_item(it)
+    return _sort_items(items)
+
+
+def save_signature(folder: Path) -> dict[str, tuple] | None:
+    """存档目录轻量签名(自动刷新轮询用): {条目 base: (最大 mtime_ns, 总 size)}。
+    只收 ITEM_RE 匹配的条目(与 scan_folder 口径一致); 目录型条目聚合内部文件,
+    平铺文件型条目把各分片聚合到同一 base。os.scandir 的 DirEntry.stat 在
+    Windows 上走目录项缓存, 千余条目仅几十毫秒。
+    目录本身不可读返回 None(区别于「可读但空」), 调用方应跳过本轮。"""
+    sig: dict[str, tuple] = {}
+    try:
+        with os.scandir(folder) as it:
+            entries = list(it)
+    except OSError:
+        return None
+    for e in entries:
+        m = ITEM_RE.match(e.name)
+        if not m:
+            continue
+        part = m.group(4)
+        try:
+            if e.is_dir():
+                base, mt, size = e.name, 0, 0
+                try:
+                    with os.scandir(e.path) as inner:
+                        for ie in inner:
+                            if not ie.is_file():
+                                continue
+                            st = ie.stat()
+                            mt = max(mt, st.st_mtime_ns)
+                            size += st.st_size
+                except OSError:
+                    continue
+            elif e.is_file():
+                base = e.name[:-(len(part) + 1)] if part else e.name
+                st = e.stat()
+                mt, size = st.st_mtime_ns, st.st_size
+            else:
+                continue
+        except OSError:
+            continue
+        old = sig.get(base)
+        sig[base] = (mt, size) if old is None else (max(old[0], mt), old[1] + size)
+    return sig
+
+
+def scan_folder_incremental(game: str, steam_user: str, folder: Path,
+                            old_items: list[SaveItem],
+                            changed_bases: set) -> list[SaveItem]:
+    """scan_folder 的增量版(自动刷新用): changed_bases(新增+有变化)之外的条目
+    直接复用旧 SaveItem 对象——对象身份不变, app 侧的缩略图缓存/选中状态随之存活;
+    changed 条目重新聚合并解析 header; 磁盘上已消失的条目自动剔除(删除场景,
+    无需调用方传入)。返回排序契约与 scan_folder 一致。"""
+    try:
+        entries = list(folder.iterdir())
+    except OSError:
+        entries = []
+    present: set = set()
+    for f in entries:
+        m = ITEM_RE.match(f.name)
+        if not m:
+            continue
+        part = m.group(4)
+        present.add(f.name if f.is_dir()
+                    else (f.name[:-(len(part) + 1)] if part else f.name))
+    items = {it.base: it for it in old_items
+             if it.base in present and it.base not in changed_bases}
+    fresh: dict[str, SaveItem] = {}
+    _collect_entries(game, steam_user, folder, entries, fresh,
+                     only_bases=changed_bases)
+    for it in fresh.values():
+        _fill_item(it)
+    items.update(fresh)
+    return _sort_items(items)
 
 
 def game_layout(items: list[SaveItem]) -> tuple[int, dict[str, tuple[int, int]]]:

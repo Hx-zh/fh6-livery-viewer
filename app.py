@@ -44,7 +44,7 @@ else:
     CARS_JSON = APP_DIR / "cars.json"
 BACKUP_DIR = APP_DIR / "backups"
 
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 PROJECT_URL = "https://github.com/Hx-zh/fh6-livery-viewer"
 RELEASES_URL = PROJECT_URL + "/releases"
 
@@ -62,20 +62,14 @@ GROUP_OPTIONS = ["无", "车厂", "作者", "车型"]   # 「分组显示」维�
 # 由用户在「重复检测参数」对话框里自由组合, 出厂默认见 fh6save.DEFAULT_DUP_RULE。
 # 对话框提供常用「模板」一键填表(仅表单预设, 引擎仍只有单条组合条件)
 DUP_TEMPLATES = [
-    ("同车复刻(出厂默认)", "同车型, 图片距离≤6(不限作者/名称)",
-     dict(img=("dist", 6))),
     ("同车微调(v1/v2)", "同车型+同作者, 图片距离≤10 且名称相似度≥0.6",
      dict(author="same", img=("dist", 10), name=("min", 0.6))),
     ("跨车型移植", "不同车型+同作者, 图片距离≤6 且名称相似度≥0.6",
      dict(car="diff", author="same", img=("dist", 6), name=("min", 0.6))),
-    ("无图同名", "同车型+同作者, 任一方无预览图文件 且名称相似度≥0.9",
-     dict(author="same", img="missing", name=("min", 0.9))),
-    ("多次下载", "车型/名称/作者/创建时间全同而下载时间不同——真重复副本, 可任选保留",
-     dict(author="same", name=("min", 1.0), created="same", downloaded="diff")),
     ("同名异版", "车型/名称/作者相同而创建时间不同——疑似版本迭代",
      dict(author="same", name=("min", 1.0), created="diff")),
-    ("改ID重下", "车型/名称/创建时间相同而作者不同——疑似改 ID 前后的重复下载",
-     dict(author="diff", name=("min", 1.0), created="same", downloaded="diff")),
+    ("多次下载", "车型/名称/作者/创建时间全同而下载时间不同——真重复副本, 可任选保留",
+     dict(author="same", name=("min", 1.0), created="same", downloaded="diff")),
 ]
 
 # 按键节奏默认值(毫秒): 「我的設計」网格二分实测, 周期(按下保持+键间间隔)阈值 ≈30ms, 默认 40ms 留 10ms 余量(低帧率机器保险)
@@ -83,6 +77,12 @@ DUP_TEMPLATES = [
 DEFAULT_KEY_HOLD_MS = 15    # 按下保持
 DEFAULT_KEY_GAP_MS = 25     # 键间间隔(无间隔会把连发合并吞键)
 GAME_EXE = "forzahorizon6.exe"
+
+# 自动刷新(改动1): 存档目录签名轮询周期 + 检测到变化后的稳定等待。
+# 游戏/云同步写存档可能分批, 防抖期间再有变化顺延; 读到写了一半的文件
+# 由现有容错兜底(webp 瞬态失败退避重试, header 解析失败下轮签名再变自愈)
+WATCH_INTERVAL_MS = 3000
+WATCH_DEBOUNCE_MS = 2000
 
 # user32/kernel32 原型: HWND 是 64 位指针, ctypes 默认 restype=int 会截断, 必须显式声明
 _u32, _k32 = ctypes.windll.user32, ctypes.windll.kernel32
@@ -347,6 +347,8 @@ class App(tk.Tk):
         self._detail_img = None
         self._cols = 1
         self._relayout_job = None                 # 变列数防抖 job(重算行布局)
+        self._save_sig: dict | None = None        # 自动刷新: items 当前反映的存档目录签名基线
+        self._watch_job = None                    # 自动刷新: 变化防抖 job(None=无待触发刷新)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_ui()
@@ -354,9 +356,13 @@ class App(tk.Tk):
             _applied_badge_sprite()            # 预热喷漆罐角标素材(贴卡时只做一次 PhotoImage 转换)
         self.rescan_saves()
         self._applied_rescan_tick()          # 启动「已喷涂」定期快速重扫(开关打开且游戏运行时生效)
+        self.after(WATCH_INTERVAL_MS, self._watch_tick)   # 启动「自动刷新」轮询(默认开)
 
     def _on_close(self):
-        """关窗: 停掉缩略图线程池(cancel 未开始的任务)再销毁。"""
+        """关窗: 取消自动刷新防抖 job, 停掉缩略图线程池(cancel 未开始的任务)再销毁。"""
+        if self._watch_job is not None:
+            self.after_cancel(self._watch_job)
+            self._watch_job = None
         if self._thumb_pool is not None:
             self._thumb_pool.shutdown(wait=False, cancel_futures=True)
         self.destroy()
@@ -381,6 +387,10 @@ class App(tk.Tk):
         self.topmost_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(bar, text="置顶", variable=self.topmost_var,
                         command=self._toggle_topmost).pack(side=tk.RIGHT, padx=2)
+        # 自动刷新开关(默认开): 轮询存档目录, 变化时增量插入新卡片(见 _watch_tick)
+        self.auto_refresh = tk.BooleanVar(value=True)
+        ttk.Checkbutton(bar, text="自动刷新",
+                        variable=self.auto_refresh).pack(side=tk.RIGHT, padx=2)
         ttk.Button(bar, text="设置", command=self.open_settings).pack(side=tk.RIGHT,
                                                                       padx=2)
         ttk.Button(bar, text="⚠ 检测喷涂状态",
@@ -1136,6 +1146,10 @@ class App(tk.Tk):
         else:
             self.current = None
             self.items = []
+            self._save_sig = None             # 自动刷新: 无存档, 停掉签名基线
+            if self._watch_job is not None:
+                self.after_cancel(self._watch_job)
+                self._watch_job = None
             self._dup_group, self._car_unique, self._pos_map = {}, {}, {}
             self._dup_rules = {}
             self._dup_feats = None
@@ -1199,7 +1213,128 @@ class App(tk.Tk):
         if self.brand_var.get() not in ("全部车厂", *brands):
             self.brand_var.set("全部车厂")
         # 重复检测按需触发(解码缩略图算哈希很慢): 见 _ensure_dup_analysis
+        # 自动刷新: 重建签名基线并取消待触发的增量刷新(本次全量扫描已是最新)
+        self._save_sig = fh6save.save_signature(Path(self.current["dir"]))
+        if self._watch_job is not None:
+            self.after_cancel(self._watch_job)
+            self._watch_job = None
         self.rebuild_grid()
+
+    # ------------------------------------------------------------ 自动刷新(改动1)
+
+    def _watch_tick(self):
+        """自动刷新轮询: 每 ~3s 对当前存档目录做轻量签名对比, 有变化则(重)启动
+        ~2s 防抖(游戏/云同步分批写, 等写稳定), 稳定后 _watch_fire 增量刷新。
+        触发层与刷新层解耦: 将来若换事件驱动(ReadDirectoryChangesW), 只需让
+        事件回调来(重)启动同一个防抖 job, _refresh_items 保持不变。"""
+        if self.auto_refresh.get() and self.current and self._save_sig is not None:
+            sig = fh6save.save_signature(Path(self.current["dir"]))
+            if sig is not None and sig != self._save_sig:   # None=目录不可读, 跳过本轮
+                if self._watch_job is not None:
+                    self.after_cancel(self._watch_job)
+                self._watch_job = self.after(WATCH_DEBOUNCE_MS, self._watch_fire)
+        self.after(WATCH_INTERVAL_MS, self._watch_tick)
+
+    def _watch_fire(self):
+        """防抖到时: 重新取签名与基线 diff(刷新前最后状态), 增量刷新并更新基线。"""
+        self._watch_job = None
+        if not self.current or self._save_sig is None:
+            return
+        sig = fh6save.save_signature(Path(self.current["dir"]))
+        if sig is None or sig == self._save_sig:
+            return                            # 变化又消失(如临时文件), 无需动作
+        old = self._save_sig
+        self._save_sig = sig
+        added = [b for b in sig if b not in old]
+        removed = [b for b in old if b not in sig]
+        changed = [b for b in sig if b in old and sig[b] != old[b]]
+        self._refresh_items(added, removed, changed)
+
+    def _refresh_items(self, added: list, removed: list, changed: list):
+        """存档变化后的插入式增量刷新: 未变条目复用旧对象(缩略图缓存/选中随
+        对象身份存活), 新条目按当前筛选/排序链进入行模型, 滚动位置按锚点
+        恢复——视觉上就是新卡插入/旧卡消失, 无整墙闪烁与跳动。"""
+        if not self.current:
+            return
+        anchor = self._scroll_anchor()
+        old_bases = {it.base for it in self.items}
+        self.items = fh6save.scan_folder_incremental(
+            "fh6", self.current["steam_user"], Path(self.current["dir"]),
+            self.items, set(added) | set(changed))
+        self.item_map = {it.base: it for it in self.items}
+        gone = old_bases - set(self.item_map)
+        for b in gone:
+            self._img_cache.pop(b, None)
+            self._thumb_fails.pop(b, None)
+        if self._selected in gone:
+            self._selected = None
+            self._set_info("未选择条目")
+            self.thumb_label.configure(image="", text="(无预览)")
+        # 派生数据: 游戏内位置(全量重算仅毫秒级)/喷涂集合求交/车厂下拉
+        self._total_cols, self._layout = fh6save.game_layout(self.items)
+        self._pos_map = {b: f"{x}行{y}列" for b, (x, y) in self._layout.items()}
+        if self._applied is not None:
+            self._applied -= gone
+        brands = sorted({b for it in self.items if it.itype == "Livery"
+                         for b in [self._brand_of(it)] if b}, key=str.lower)
+        self.brand_combo.configure(values=["全部车厂"] + brands)
+        if self.brand_var.get() not in ("全部车厂", *brands):
+            self.brand_var.set("全部车厂")
+        # 重复检测: 分析已跑过 → 增量提取新条目特征后重算; 未跑过 → 保持按需 lazy
+        if self._dup_feats is not None:
+            for b in gone | set(added) | set(changed):
+                self._dup_feats.pop(b, None)
+            fresh = [it for it in self.items if it.base not in self._dup_feats]
+            if fresh:
+                items = self.items
+
+                def _work():
+                    feats = fh6save.extract_dup_features(fresh)
+                    try:
+                        self.after(0, lambda: self._dup_feats_merged(items, feats))
+                    except RuntimeError:
+                        pass                # 窗口已销毁, 结果不再需要
+
+                threading.Thread(target=_work, daemon=True).start()
+            else:
+                self._rerun_dup()
+        self.rebuild_grid()
+        self._restore_anchor(anchor)
+        n_new = sum(1 for b in added if b in self.item_map)
+        self.status_var.set(f"检测到存档更新: +{n_new} 新增 / -{len(gone)} 删除, 已刷新")
+
+    def _dup_feats_merged(self, items: list, feats: dict):
+        """自动刷新触发的增量特征提取完成: 合并特征并按当前条件重算分组。"""
+        if items is not self.items:
+            return                     # 等待期间已切换存档, 丢弃(不碰新存档的状态)
+        self._dup_feats.update(feats)
+        anchor = self._scroll_anchor()
+        self._rerun_dup()
+        self._restore_anchor(anchor)
+
+    def _scroll_anchor(self):
+        """记录滚动锚点(增量刷新后恢复用): 可视区首张卡的 base + 其行顶到视口顶
+        的像素差。hdr 组标题行不作锚(组号/组名随数据变化), 向下找首张卡。"""
+        if not self._rows or not self._content_h:
+            return None
+        ytop = self.canvas.yview()[0] * self._content_h
+        ri = min(len(self._rows) - 1, max(0, bisect_right(self._row_y, ytop) - 1))
+        for rj in range(ri, len(self._rows)):
+            row = self._rows[rj]
+            if row[0] == "cards" and row[1]:
+                return (row[1][0], ytop - self._row_y[rj])
+        return None
+
+    def _restore_anchor(self, anchor):
+        """按锚点恢复滚动位置; 锚点卡被删则保持 Tk 原分数(列表顶端附近时自然正确)。"""
+        if not anchor or not self._rows or not self._content_h:
+            return
+        base, dy = anchor
+        for ri, row in enumerate(self._rows):
+            if row[0] == "cards" and base in row[1]:
+                frac = max(0.0, min(1.0, (self._row_y[ri] + dy) / self._content_h))
+                self.canvas.yview_moveto(frac)
+                return
 
     def _dup_ready(self, items: list[SaveItem], feats: dict):
         if items is not self.items:
