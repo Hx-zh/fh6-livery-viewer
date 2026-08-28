@@ -19,6 +19,8 @@
 - 🟢 **已喷涂检测**：游戏运行时只读扫描游戏进程内存（不写、不 hook、不附加调试器），标记哪些涂装正喷在车上。顶栏「⚠ 检测喷涂状态」按钮一键检测：弹原理与风险确认框，确认后开始扫描并自动用喷漆角标标出已上车涂装（琥珀橙 `#E69F00` 喷漆罐角标贴在卡片左上角，色盲友好；检测结果当次会话内常显，无需任何开关，切换存档后自然消失），完成提示「已标记喷涂」（游戏未运行则提示）；需游戏运行中才可用。另有「仅显示已喷涂」「仅显示未喷涂」两个筛选开关（互斥），加详情面板喷涂状态与状态栏计数；两个筛选开关在本会话未扫描过时打开也会弹同款确认框，取消则开关回退无效，已扫描过后开关直接生效不再弹
 - ⚡ **性能优化**：卡片墙单 Canvas 虚拟绘制（v1.4.0 重构），滚动流畅不闪屏；缩略图线程池后台解码（180 张约 0.36s，不卡 UI）、重复检测并行化（实测 3.74x）、内存全量扫描并行提速（稳定约 3.9s）
 - 🔍 **车型表内存校对**（v1.3.1）：新增 `gamemem.read_car_strings()`，运行时从游戏内存读取 `Data_Car` 的 DisplayName / ModelShort 串表，重新生成并校对 `cars.json`，修正多处车型名；同时优化缩略图解码失败时的保留旧图与退避重试
+- 🌐 **多语言界面**（v1.6.0）：简体中文（默认）、English、日本語、한국어、繁體中文 五种语言，按下载包内 exe 文件名自动选择（如 `FH6LiveryViewer_en.exe` 即英文界面），无需任何设置
+- 🔤 **数据字体 Consolas**（v1.6.0）：卡片与详情里的用户数据文本（涂装名/车型/作者等）用 Consolas 显示，`I` 与 `l` 一眼可辨（微软雅黑里两者都是光杆竖线）；中文/日文/韩文字符经 Windows 字体链接自动回退，无缺字
 
 - 🏭 **车厂筛选**：按车厂快速过滤（保时捷、法拉利……）
 - 🔍 **可缩放预览**：卡片右键菜单「查看缩略图」（或详情面板「查看大图」/ 双击右侧预览图）打开大图，滚轮缩放（5%–1200%）、拖动平移、原始尺寸/适应窗口
@@ -36,6 +38,18 @@
 - Python 3.10+
 - [Pillow](https://pypi.org/project/Pillow/)（`pip install pillow`）——用于解码 FH6 存档的 WebP 预览图；不装也能运行，但涂装缩略图无法显示
 
+## 下载
+
+[Releases](https://github.com/Hx-zh/fh6-livery-viewer/releases) 提供五个 zip，区别只在界面语言（程序按包内 exe 文件名自动选择语言）：
+
+| zip（`vX.Y.Z` 为版本号；语言标签为 BCP 47） | 界面语言 |
+|---|---|
+| `FH6LiveryViewer_vX.Y.Z_win64_zh-CN.zip` | 简体中文 |
+| `FH6LiveryViewer_vX.Y.Z_win64_zh-TW.zip` | 繁體中文 |
+| `FH6LiveryViewer_vX.Y.Z_win64_en.zip` | English |
+| `FH6LiveryViewer_vX.Y.Z_win64_ja.zip` | 日本語 |
+| `FH6LiveryViewer_vX.Y.Z_win64_ko.zip` | 한국어 |
+
 ## 快速开始
 
 ```bash
@@ -51,7 +65,7 @@ python app.py
 python -m PyInstaller FH6LiveryViewer.spec
 ```
 
-产出为单文件 `dist\FH6LiveryViewer.exe`，`cars.json` 已内嵌（运行时只读，不释放到用户目录）。
+产出为单文件 `dist\FH6LiveryViewer.exe`，`cars.json` 已内嵌（运行时只读，不释放到用户目录）。构建一次后，把 exe 复制改名为 `FH6LiveryViewer_zh-CN.exe` / `_zh-TW.exe` / `_en.exe` / `_ja.exe` / `_ko.exe`（BCP 47 语言标签）即得到对应语言的界面（程序按自身文件名选语言；开发时可用环境变量 `FH6_LANG=en` 等覆盖）。
 
 
 ## 使用说明
@@ -90,6 +104,9 @@ python -m PyInstaller FH6LiveryViewer.spec
 ├── app.py      # GUI 主程序（只读查看器）
 ├── fh6save.py  # 存档扫描/header 解析库，可独立运行自检：python fh6save.py
 ├── gamemem.py  # 游戏进程内存只读扫描器（已喷涂检测 / 读取车辆串表）
+├── i18n.py     # 界面多语言（中文源串即 key；FH6_LANG 环境变量 → exe 文件名后缀 → 默认简中）
+├── lang_en.py / lang_ja.py / lang_ko.py / lang_zhtw.py  # 四语言译文表（各 183 条）
+├── check_i18n.py  # i18n 覆盖校验（改 UI 字符串后必跑，发布前要求 COVERAGE OK）
 ├── cars.json   # 车型 ID → 名称对照表（打包时内嵌进 exe，运行时只读）
 └── LICENSE     # AGPL-3.0
 ```
