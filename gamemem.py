@@ -10,6 +10,11 @@ gamemem.py — FH6 运行时内存只读扫描器 (检测「涂装是否喷在�
   均不冲突 (对真值 133/133 精确命中, 条目列表 0 误报)。
 - 游戏同时把 Data_Car VALUES 串表加载进内存，可用 read_car_strings()
   只读取出全部 DisplayName / ModelShort（各 660 条），用于校对 cars.json。
+- 游戏还会为每辆车生成一条「完整车名文案」字符串（含年份），形如
+  "拍摄 1962 年份的 Ferrari 250 GTO"（当前游戏语言为简体中文；年份来自
+  运行时解密后的 GameDB）。read_car_years() 全量提取 (年份, 完整车名) 去重表，
+  得到每辆车的权威年份——Data_Car.str 的 ModelShort 对 406 辆车不携带年份，
+  该文案是这些车年份的唯一运行时来源（2026-08-31 实测 658 条, 全量扫描 ~4s）。
 - 我们只读 (OpenProcess + ReadProcessMemory), 不附加调试器/不写内存/不下 hook。
 
 抗 ASLR: 不硬编码地址, 每次全量扫描定位记录区 (8 线程并行读, 约 3-4 秒,
@@ -49,6 +54,14 @@ APPLIED_RE = re.compile(
 # 前 660 条为 DisplayName, 后 660 条为 ModelShort。
 CAR_STRING_SIG = b"FXX\x00CCGT\x00Lancer Evolution X GSR\x00M3\x00"
 CAR_STRING_COUNT = 1320
+
+# 车辆完整车名文案签名: "拍摄 <YYYY> 年份的 <品牌 车型>" (UTF-8, 简体中文)。
+# 年份来自运行时解密后的 GameDB, 是每辆车的权威年份 (Data_Car.str 的
+# ModelShort 对 406 辆车不携带年份, 此文案是它们的运行时年份来源)。
+CAR_YEAR_PAT = re.compile(
+    rb"\xe6\x8b\x8d\xe6\x94\x9d (\d{4}) "
+    rb"\xe5\xb9\xb4\xe4\xbb\xbd\xe7\x9a\x84 ([^\x00]{1,100})")
+CAR_YEAR_COUNT = 660
 
 
 class _MBI(ctypes.Structure):
@@ -194,6 +207,35 @@ class GameMemoryReader:
             return self.scan_applied_liveries()
         return out
 
+    # ---- 车辆完整车名文案 ----
+
+    def _scan_year_region(self, region: tuple[int, int]):
+        """单区域任务: 读内存 + 提取 (年份, 完整车名) 对。"""
+        base, size = region
+        mem = self._read(base, size)
+        pairs: set[tuple[int, str]] = set()
+        if mem:
+            for m in CAR_YEAR_PAT.finditer(mem):
+                pairs.add((int(m.group(1)), m.group(2).decode("utf-8", "replace")))
+        return base, size, pairs
+
+    def read_car_years(self) -> list[tuple[int, str]] | None:
+        """全量扫描, 返回去重后的 (年份, 完整车名) 列表 (按名称排序)。
+
+        依赖游戏当前语言的该文案 (简体中文为「拍摄 YYYY 年份的 …」,
+        界面语言不同则需换对应文案模式)。找不到内容返回 None。
+        注意: 完整车名使用「官方商标全称」口径 (Mercedes-AMG GT S 等),
+        与 Data_Car 缩写展开口径 (Mercedes-Benz GT S) 不完全一致, 需要
+        名称级模糊匹配才能 join 到车型 ID (见 PLAN.md 数据核对小节)。
+        """
+        out: set[tuple[int, str]] = set()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+            for _base, _size, pairs in ex.map(self._scan_year_region, self._regions()):
+                out |= pairs
+        if not out:
+            return None
+        return sorted(out, key=lambda p: p[1])
+
     # ---- 车辆字符串表 ----
 
     def read_car_strings(self) -> tuple[list[str], list[str]] | None:
@@ -231,6 +273,16 @@ def read_applied_liveries(pid: int | None = None) -> set[str] | None:
         return r.scan_applied_liveries()
 
 
+def read_car_years(pid: int | None = None) -> list[tuple[int, str]] | None:
+    """一次性: 读取游戏内存中全部车辆的 (年份, 完整车名) 去重表。
+    游戏不在运行返回 None; 运行中但未加载该文案(界面语言/进度)返回 None。"""
+    pid = pid or find_game_pid()
+    if not pid:
+        return None
+    with GameMemoryReader(pid) as r:
+        return r.read_car_years()
+
+
 def read_car_strings(pid: int | None = None) -> tuple[list[str], list[str]] | None:
     """一次性: 读取游戏内存中 Data_Car 的 DisplayName/ModelShort 串表。"""
     pid = pid or find_game_pid()
@@ -251,3 +303,6 @@ if __name__ == '__main__':
         print(f'车上涂装 {len(names)} 条 ({time.time()-t0:.1f}s)')
         for n in sorted(names)[:20]:
             print(' ', n)
+        t0 = time.time()
+        years = read_car_years(pid)
+        print(f'车辆年份文案 {len(years) if years else 0} 条 ({time.time()-t0:.1f}s)')
