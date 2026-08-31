@@ -307,6 +307,14 @@ def _fill_item(it: SaveItem):
             it.header_ok = False
 
 
+def retry_item_header(it: SaveItem) -> None:
+    """对单个条目重新解析 header(自动刷新/瞬态失败重试用, 幂等)。
+
+    直接复用 _fill_item 的容错: 失败只标 header_ok=False, 不抛异常;
+    成功则原地更新 meta 相关字段。用于存档被写中时读到半截文件的场景。"""
+    _fill_item(it)
+
+
 def _collect_entries(game: str, steam_user: str, folder: Path, entries: list,
                      items: dict[str, SaveItem], only_bases: set | None = None):
     """scan_folder/scan_folder_incremental 共用的目录项聚合: 按共同前缀把分片

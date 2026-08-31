@@ -16,8 +16,10 @@ import os
 import queue
 import re
 import sys
-from bisect import bisect_right
 import threading
+import time
+import traceback
+from bisect import bisect_right
 import tkinter as tk
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor
@@ -89,9 +91,14 @@ GAME_EXE = "forzahorizon6.exe"
 
 # 自动刷新(改动1): 存档目录签名轮询周期 + 检测到变化后的稳定等待。
 # 游戏/云同步写存档可能分批, 防抖期间再有变化顺延; 读到写了一半的文件
-# 由现有容错兜底(webp 瞬态失败退避重试, header 解析失败下轮签名再变自愈)
+# 由现有容错兜底(webp 瞬态失败退避重试, header 解析失败退避重试见 _header_fails)
 WATCH_INTERVAL_MS = 3000
 WATCH_DEBOUNCE_MS = 2000
+# 防抖顺延上限: 持续写入时不再无限顺延, 排定的防抖按时触发(正在写的半截文件
+# 由缩略图/header 瞬态失败退避重试兜底, 不会永久停在失败态)
+WATCH_DEBOUNCE_MAX_MS = 10000
+# header 解析失败(读到半截文件/被写中)的退避重试封顶次数, 与缩略图瞬态失败同款
+HEADER_RETRY_MAX = 6
 
 # user32/kernel32 原型: HWND 是 64 位指针, ctypes 默认 restype=int 会截断, 必须显式声明
 _u32, _k32 = ctypes.windll.user32, ctypes.windll.kernel32
@@ -358,6 +365,9 @@ class App(tk.Tk):
         self._relayout_job = None                 # 变列数防抖 job(重算行布局)
         self._save_sig: dict | None = None        # 自动刷新: items 当前反映的存档目录签名基线
         self._watch_job = None                    # 自动刷新: 变化防抖 job(None=无待触发刷新)
+        self._watch_armed_at = None               # 自动刷新: 本轮防抖首次启动时刻(monotonic, 顺延上限用)
+        self._watch_offline = False               # 自动刷新: 目录整体不可访问中(状态翻转时提示一次)
+        self._header_fails: dict[str, int] = {}   # 自动刷新: base -> header 解析连续失败次数(退避重试, 封顶放弃)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_ui()
@@ -372,6 +382,7 @@ class App(tk.Tk):
         if self._watch_job is not None:
             self.after_cancel(self._watch_job)
             self._watch_job = None
+            self._watch_armed_at = None
         if self._thumb_pool is not None:
             self._thumb_pool.shutdown(wait=False, cancel_futures=True)
         self.destroy()
@@ -1170,6 +1181,9 @@ class App(tk.Tk):
             if self._watch_job is not None:
                 self.after_cancel(self._watch_job)
                 self._watch_job = None
+            self._watch_armed_at = None
+            self._watch_offline = False
+            self._header_fails.clear()
             self._dup_group, self._car_unique, self._pos_map = {}, {}, {}
             self._dup_rules = {}
             self._dup_feats = None
@@ -1239,6 +1253,9 @@ class App(tk.Tk):
         if self._watch_job is not None:
             self.after_cancel(self._watch_job)
             self._watch_job = None
+        self._watch_armed_at = None
+        self._watch_offline = False
+        self._header_fails.clear()
         self.rebuild_grid()
 
     # ------------------------------------------------------------ 自动刷新(改动1)
@@ -1247,29 +1264,68 @@ class App(tk.Tk):
         """自动刷新轮询: 每 ~3s 对当前存档目录做轻量签名对比, 有变化则(重)启动
         ~2s 防抖(游戏/云同步分批写, 等写稳定), 稳定后 _watch_fire 增量刷新。
         触发层与刷新层解耦: 将来若换事件驱动(ReadDirectoryChangesW), 只需让
-        事件回调来(重)启动同一个防抖 job, _refresh_items 保持不变。"""
-        if self.auto_refresh.get() and self.current and self._save_sig is not None:
+        事件回调来(重)启动同一个防抖 job, _refresh_items 保持不变。
+        加固: ①基线曾不可读(None)时试探重建——目录恢复即可自动恢复刷新;
+        ②目录整体不可访问时状态栏提示(仅状态翻转时提示一次, 恢复同样提示);
+        ③防抖顺延设上限 WATCH_DEBOUNCE_MAX_MS, 持续写入不至于无限拖延;
+        ④整体 try/except 保险丝——任何异常都不会杀断轮询 after 链。"""
+        try:
+            if not (self.auto_refresh.get() and self.current):
+                return
             sig = fh6save.save_signature(Path(self.current["dir"]))
-            if sig is not None and sig != self._save_sig:   # None=目录不可读, 跳过本轮
-                if self._watch_job is not None:
-                    self.after_cancel(self._watch_job)
+            if sig is None:
+                # 目录整体不可访问(盘符丢失/网络盘抖动/被移动): 暂停本轮,
+                # 状态翻转提示一次; 恢复后由下方逻辑重建(见 _save_sig 为 None 分支)
+                if self._save_sig is not None and not self._watch_offline:
+                    self._watch_offline = True
+                    self.status_var.set(_("自动刷新: 存档目录不可访问, 已暂停"))
+                return
+            if self._watch_offline:
+                self._watch_offline = False
+                self.status_var.set(_("自动刷新: 存档目录已恢复"))
+            if self._save_sig is None:
+                self._save_sig = sig        # 基线曾不可读: 目录已可读, 重建基线(不触发刷新)
+                return
+            if sig == self._save_sig:
+                return
+            now = time.monotonic()
+            if self._watch_job is None:
                 self._watch_job = self.after(WATCH_DEBOUNCE_MS, self._watch_fire)
-        self.after(WATCH_INTERVAL_MS, self._watch_tick)
+                self._watch_armed_at = now
+            elif now - self._watch_armed_at < WATCH_DEBOUNCE_MAX_MS:
+                self.after_cancel(self._watch_job)      # 上限内: 顺延等写稳定
+                self._watch_job = self.after(WATCH_DEBOUNCE_MS, self._watch_fire)
+            # 超过上限: 不再顺延, 让已排定的防抖按时触发——正在写的半截文件
+            # 由缩略图/header 瞬态失败退避重试兜底, 不会永久停在失败态
+        except Exception:
+            traceback.print_exc()           # 保险丝: 单轮异常不中断轮询链
+        finally:
+            self.after(WATCH_INTERVAL_MS, self._watch_tick)
 
     def _watch_fire(self):
-        """防抖到时: 重新取签名与基线 diff(刷新前最后状态), 增量刷新并更新基线。"""
+        """防抖到时: 重新取签名与基线 diff(刷新前最后状态), 增量刷新并更新基线。
+        刷新失败则回滚基线——变化留在磁盘上, 下轮照常检测并重试, 不会丢失。"""
         self._watch_job = None
+        self._watch_armed_at = None
         if not self.current or self._save_sig is None:
             return
-        sig = fh6save.save_signature(Path(self.current["dir"]))
-        if sig is None or sig == self._save_sig:
-            return                            # 变化又消失(如临时文件), 无需动作
-        old = self._save_sig
-        self._save_sig = sig
-        added = [b for b in sig if b not in old]
-        removed = [b for b in old if b not in sig]
-        changed = [b for b in sig if b in old and sig[b] != old[b]]
-        self._refresh_items(added, removed, changed)
+        try:
+            sig = fh6save.save_signature(Path(self.current["dir"]))
+            if sig is None or sig == self._save_sig:
+                return                      # 变化又消失(如临时文件), 无需动作
+            old = self._save_sig
+            self._save_sig = sig            # 先推进基线: 防抖窗口内的新变化 diff 进本轮
+            try:
+                added = [b for b in sig if b not in old]
+                removed = [b for b in old if b not in sig]
+                changed = [b for b in sig if b in old and sig[b] != old[b]]
+                self._refresh_items(added, removed, changed)
+            except Exception:
+                self._save_sig = old        # 回滚基线: 这批变化视为未处理, 下轮重试
+                traceback.print_exc()
+                self.status_var.set(_("自动刷新失败, 已等待重试"))
+        except Exception:
+            traceback.print_exc()           # 保险丝: save_signature 等未防护异常
 
     def _refresh_items(self, added: list, removed: list, changed: list):
         """存档变化后的插入式增量刷新: 未变条目复用旧对象(缩略图缓存/选中随
@@ -1279,9 +1335,12 @@ class App(tk.Tk):
             return
         anchor = self._scroll_anchor()
         old_bases = {it.base for it in self.items}
+        stale = {it.base for it in self.items if not it.header_ok}
+        # header 解析失败的存量条目并入重建清单: 每次刷新都重解析它们
+        # (半截文件/被写中的条目靠其它变化也不会再被碰, 借此持续重试)
         self.items = fh6save.scan_folder_incremental(
             "fh6", self.current["steam_user"], Path(self.current["dir"]),
-            self.items, set(added) | set(changed))
+            self.items, set(added) | set(changed) | stale)
         self.item_map = {it.base: it for it in self.items}
         gone = old_bases - set(self.item_map)
         for b in gone:
@@ -1325,6 +1384,40 @@ class App(tk.Tk):
         n_new = sum(1 for b in added if b in self.item_map)
         self.status_var.set(_("检测到存档更新: +{new} 新增 / -{gone} 删除, 已刷新").format(
             new=n_new, gone=len(gone)))
+        # header 解析仍失败的条目(半截文件/被写中): 调度退避重试, 写完自愈
+        stale_now = [it for it in self.items if not it.header_ok]
+        if stale_now:
+            self._schedule_header_retry(stale_now)
+
+    def _schedule_header_retry(self, stale: list):
+        """header 解析失败条目(半截文件/被写中)的退避重试调度: 同 base 连续失败
+        计数累加, 第 n 次失败延迟 n 秒; 封顶 HEADER_RETRY_MAX 次后放弃
+        (与缩略图瞬态失败策略同款)。成功清零见 _retry_stale_headers。"""
+        max_fails = 0
+        for it in stale:
+            self._header_fails[it.base] = self._header_fails.get(it.base, 0) + 1
+            max_fails = max(max_fails, self._header_fails[it.base])
+        if max_fails < HEADER_RETRY_MAX:
+            self.after(1000 * max_fails, self._retry_stale_headers)
+
+    def _retry_stale_headers(self):
+        """退避重试: 重解析 header 失败的条目(游戏/云同步写完文件后恢复);
+        成功清零失败计数并整体刷新, 仍失败的按计数继续退避, 封顶后保持失败态。"""
+        stale = [it for it in self.items if not it.header_ok]
+        if not stale:
+            return
+        n_ok = 0
+        for it in stale:
+            fh6save.retry_item_header(it)
+            if it.header_ok:
+                self._header_fails.pop(it.base, None)
+                n_ok += 1
+        if n_ok:
+            self.status_var.set(_("自动刷新: 已重新解析 {n} 个条目").format(n=n_ok))
+            self.rebuild_grid()
+        left = [it for it in self.items if not it.header_ok]
+        if left:
+            self._schedule_header_retry(left)
 
     def _dup_feats_merged(self, items: list, feats: dict):
         """自动刷新触发的增量特征提取完成: 合并特征并按当前条件重算分组。"""
