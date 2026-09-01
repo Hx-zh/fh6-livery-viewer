@@ -20,6 +20,7 @@ import threading
 import time
 import traceback
 from bisect import bisect_right
+from typing import Any
 import tkinter as tk
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor
@@ -29,14 +30,20 @@ from tkinter import filedialog, font as tkfont, messagebox, ttk
 
 import fh6save
 import gamemem
+import i18n
 from fh6save import CarTable, SaveItem, SaveOps
 from i18n import tr as _
 
+# PIL 图像类: HAS_PIL=False 时保持 None(各使用点均有 HAS_PIL 守卫);
+# 以 Any 注解绑定, 避免 try/except 导入被 Pyright 判为「可能未绑定」
+Image: Any = None
+ImageTk: Any = None
+HAS_PIL = False
 try:
     from PIL import Image, ImageTk
     HAS_PIL = True
 except ImportError:
-    HAS_PIL = False
+    pass
 
 if getattr(sys, "frozen", False):
     # PyInstaller 打包后: cars.json 内嵌在 exe 的临时解包目录(_MEIPASS), 只读使用
@@ -47,9 +54,18 @@ else:
     CARS_JSON = APP_DIR / "cars.json"
 BACKUP_DIR = APP_DIR / "backups"
 
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.7.0"
 PROJECT_URL = "https://github.com/Hx-zh/fh6-livery-viewer"
 RELEASES_URL = PROJECT_URL + "/releases"
+# Gitee 镜像(国内更新加速; 发布时需同步推送到该仓库并建同名 release):
+# 简中版(默认语言)的「更新链接」指向这里, 其余语言仍指向 GitHub
+GITEE_PROJECT_URL = "https://gitee.com/hx_zh/fh6-livery-viewer"
+GITEE_RELEASES_URL = GITEE_PROJECT_URL + "/releases"
+
+
+def update_url() -> str:
+    """更新链接按当前语言解析: 简中 → Gitee Release(国内访问快), 其它语言 → GitHub Release。"""
+    return GITEE_RELEASES_URL if i18n.LANG == "zh" else RELEASES_URL
 
 CARD_W, CARD_H = 196, 200      # 卡片尺寸
 ROW_H = CARD_H + 8             # 网格行距(卡片高 + 上下间距)
@@ -225,6 +241,45 @@ def _applied_badge_sprite():
     return _applied_sprite
 
 
+def _build_auction_badge(applied: bool):
+    """拍卖涂装角标素材(34×34 RGBA, 贴缩略图框左上角)。
+
+    默认灰色=未应用/未检测; 内存扫描确认该涂装正在车上时为琥珀橙
+    (同喷漆罐角标的 Okabe-Ito #E69F00, 色盲安全)。图案 = 贴角三角 +
+    拍卖锤(16px 小图正立绘制后逆时针转 45° 顺斜边, 规格与喷漆罐一致)。"""
+    from PIL import ImageDraw
+    S = 4                                # 超采样倍数(抗锯齿)
+    leg = 34                             # 三角直角边长(贴缩略图框左上角)
+    badge = Image.new("RGBA", (leg * S, leg * S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(badge)
+
+    def p(v):
+        return v * S
+
+    fill = (230, 159, 0, 245) if applied else (138, 146, 158, 245)   # 琥珀橙 / 灰
+    d.polygon([(0, 0), (leg * S - 1, 0), (0, leg * S - 1)], fill=fill)
+    ink = (30, 25, 20, 255)
+    tile = Image.new("RGBA", (p(16), p(16)), (0, 0, 0, 0))
+    t = ImageDraw.Draw(tile)
+    t.rounded_rectangle((p(3), p(3), p(12) - 1, p(7) - 1),
+                        radius=p(1), fill=ink)           # 锤头
+    t.line((p(7.5), p(7), p(7.5), p(15)), fill=ink, width=int(p(2.5)))  # 锤柄
+    tile = tile.rotate(45, resample=Image.Resampling.BICUBIC)
+    badge.alpha_composite(tile, (p(3), p(3)))
+    return badge.resize((leg, leg), Image.Resampling.LANCZOS)
+
+
+_auction_sprites: dict = {}
+
+
+def _auction_badge_sprite(applied: bool):
+    """拍卖锤角标预制素材单例: 灰/橙各一张, 全卡共用。"""
+    key = bool(applied)
+    if key not in _auction_sprites:
+        _auction_sprites[key] = _build_auction_badge(applied)
+    return _auction_sprites[key]
+
+
 class ZoomPreview(tk.Toplevel):
     """可缩放的大图预览: 滚轮/按钮缩放, 左键拖动平移。"""
 
@@ -232,12 +287,14 @@ class ZoomPreview(tk.Toplevel):
 
     def __init__(self, app: "App", item: SaveItem):
         super().__init__(app)
-        self.title(_("{name} — 预览(滚轮缩放, 拖动平移)").format(name=item.name or item.base))
+        self.title(_("{name} — 预览(滚轮缩放, 拖动平移)").format(
+            name=(_("拍卖涂装") if item.itype == "SoulBoundLivery" else item.name)
+            or item.base))
         self.geometry("1000x700")
         self.fit_mode = True
         self.scale = 1.0
         self._tk_img = None
-        self._src: "Image.Image | None" = None
+        self._src: Any = None          # PIL 图像(懒加载; 以 Any 避免 PIL 可选导入的类型表达问题)
         if HAS_PIL and item.thumb_big:
             try:
                 self._src = Image.open(item.thumb_big)
@@ -350,6 +407,8 @@ class App(tk.Tk):
         self._thumb_queue: queue.Queue = queue.Queue()   # 工作线程 -> 主线程的解码结果
         self._thumb_pool = (ThreadPoolExecutor(max_workers=4) if HAS_PIL else None)
         self._applied_photo = None                # 喷漆罐角标的 PhotoImage(卡片角共用一份)
+        self._auction_photo_gray = None           # 拍卖锤角标(灰=默认/未应用) PhotoImage
+        self._auction_photo_amber = None          # 拍卖锤角标(琥珀橙=已喷在车上) PhotoImage
         self._pos_badge_font = None               # 位置角标字体(像素字号, 懒建缓存)
         self._shown: list[str] = []               # 当前显示的 base(行布局展开顺序, 计数用)
         self._rows: list[tuple] = []              # 行模型: ("cards",[base..]) / ("hdr",gid,文本)
@@ -364,6 +423,7 @@ class App(tk.Tk):
         self._cols = 1
         self._relayout_job = None                 # 变列数防抖 job(重算行布局)
         self._save_sig: dict | None = None        # 自动刷新: items 当前反映的存档目录签名基线
+        self._cache_sig: tuple | None = None      # 自动刷新: CacheThumbnails/.manifest 签名基线(拍卖缩略图水合感知)
         self._watch_job = None                    # 自动刷新: 变化防抖 job(None=无待触发刷新)
         self._watch_armed_at = None               # 自动刷新: 本轮防抖首次启动时刻(monotonic, 顺延上限用)
         self._watch_offline = False               # 自动刷新: 目录整体不可访问中(状态翻转时提示一次)
@@ -438,6 +498,10 @@ class App(tk.Tk):
         self.single_only = tk.BooleanVar(value=False)
         self.applied_only = tk.BooleanVar(value=False)
         self.unapplied_only = tk.BooleanVar(value=False)
+        # 拍卖涂装专用应用状态(独立筛选; 状态 = 内存归一化判定, 无内存时回落注册表)
+        self.auction_applied_only = tk.BooleanVar(value=False)
+        self.auction_unapplied_only = tk.BooleanVar(value=False)
+        self.auction_only = tk.BooleanVar(value=False)          # 仅显示拍卖涂装(来源过滤)
         ttk.Label(flt, text=_("车厂:")).pack(side=tk.LEFT, padx=(14, 2))
         self.brand_var = tk.StringVar(value=_("全部车厂"))
         self.brand_combo = ttk.Combobox(flt, textvariable=self.brand_var,
@@ -489,6 +553,18 @@ class App(tk.Tk):
                               command=lambda: self._select_applied_filter("applied"))
         fmenu.add_checkbutton(label=_("仅显示未喷涂(不在车上)"), variable=self.unapplied_only,
                               command=lambda: self._select_applied_filter("unapplied"))
+        fmenu.add_separator()
+        # 拍卖涂装: 来源过滤(仅拍卖) + 应用状态轴(互斥, 且与通用已喷涂筛选互斥)。
+        # 应用状态优先用内存归一化判定, 无内存快照时回落 .manifest 注册表(cache_registered)
+        fmenu.add_checkbutton(label=_("仅显示拍卖涂装"), variable=self.auction_only,
+                              command=lambda: self.rebuild_grid())
+        fmenu.add_separator()
+        fmenu.add_checkbutton(label=_("仅显示已应用拍卖涂装(在车上)"),
+                              variable=self.auction_applied_only,
+                              command=lambda: self._select_auction_filter("applied"))
+        fmenu.add_checkbutton(label=_("仅显示未应用拍卖涂装(不在车上)"),
+                              variable=self.auction_unapplied_only,
+                              command=lambda: self._select_auction_filter("unapplied"))
         self.filter_mb.configure(menu=fmenu)
         self.filter_mb.pack(side=tk.RIGHT)
 
@@ -526,11 +602,12 @@ class App(tk.Tk):
         ttk.Separator(footer).pack(fill=tk.X, pady=(0, 6))
         tk.Label(footer, text=_("FH6 涂装查看器 v{v}").format(v=APP_VERSION),
                  font=(FONT_UI, 9, "bold"), anchor=tk.W).pack(fill=tk.X)
-        link = tk.Label(footer, text=_("更新链接: {url}").format(url=RELEASES_URL),
+        _u = update_url()
+        link = tk.Label(footer, text=_("更新链接: {url}").format(url=_u),
                         fg="#0066cc", cursor="hand2", anchor=tk.W,
                         font=(FONT_DATA, 8, "underline"))
         link.pack(fill=tk.X)
-        link.bind("<Button-1>", lambda _e: webbrowser.open(RELEASES_URL))
+        link.bind("<Button-1>", lambda _e, u=_u: webbrowser.open(u))
         tk.Label(footer, anchor=tk.NW, justify=tk.LEFT, wraplength=400,
                  fg="#777777", font=(FONT_UI, 8),
                  text=_("本工具与 Microsoft、Xbox、Playground Games、Turn 10 无关，Forza 相关商标归其各自所有者。\n"
@@ -836,7 +913,7 @@ class App(tk.Tk):
         # 注意 create_text 一律 anchor=NW(顶端对齐): 旧 Label 的 place(y=..) 是
         # 控件顶边定位, 若用 W(C=W 且垂直居中)整行文字会上移约半个行高压到图片
         ids["name"] = new("text", x + 7, y + THUMB_H + 6, anchor=tk.NW,
-                          text=ellipsize(it.name or _("(未解析)"), 24),
+                          text=ellipsize(self._livery_title(it), 24),
                           font=(FONT_DATA, 9, "bold"), fill=name_fg)
         # 车型名允许换行(最多两行), 尽量完整显示(width=THUMB_W-4 即 wraplength)
         ids["car"] = new("text", x + 7, y + THUMB_H + 26, anchor=tk.NW,
@@ -880,7 +957,14 @@ class App(tk.Tk):
         else:
             ids["ph"] = c.create_text(cx, cy, text=_("加载中…"), fill="#888888",
                                       font=(FONT_UI, 8), tags=(tag,))
-        if (HAS_PIL and self._applied and base in self._applied):
+        if (HAS_PIL and it is not None and it.itype == "SoulBoundLivery"):
+            # 拍卖涂装角标: 默认灰色+拍卖锤; 检测到喷在车上 → 琥珀橙+拍卖锤
+            ids["badge"] = c.create_image(
+                ids["x"], ids["y"], anchor=tk.NW,
+                image=self._auction_badge_photo(
+                    bool(self._applied and it.applied_key in self._applied)),
+                tags=(tag,))
+        elif (HAS_PIL and self._applied and base in self._applied):
             if self._applied_photo is None:
                 self._applied_photo = ImageTk.PhotoImage(_applied_badge_sprite())
             ids["badge"] = c.create_image(ids["x"], ids["y"], anchor=tk.NW,
@@ -901,6 +985,17 @@ class App(tk.Tk):
             ids["post"] = c.create_text(x1 - pad - tw // 2, y0 + th // 2,
                                         anchor=tk.CENTER, text=pos,
                                         font=fnt, fill="#000000", tags=(tag,))
+
+    def _auction_badge_photo(self, applied: bool):
+        """拍卖锤角标 PhotoImage(灰/橙各一张, 按需懒建, 全卡共用)。"""
+        if applied:
+            if self._auction_photo_amber is None:
+                self._auction_photo_amber = ImageTk.PhotoImage(
+                    _auction_badge_sprite(True))
+            return self._auction_photo_amber
+        if self._auction_photo_gray is None:
+            self._auction_photo_gray = ImageTk.PhotoImage(_auction_badge_sprite(False))
+        return self._auction_photo_gray
 
     def _recolor_card(self, base: str | None):
         """就地切换某可视卡的选中配色(不重绘整屏); 不在可视区则是空操作。"""
@@ -956,7 +1051,7 @@ class App(tk.Tk):
             self.auto_locate()
 
     def _set_quick_filter(self, qf: tuple):
-        """右键快筛: 只显示该车型/该作者(会话级; 切存档或「清除快筛」复原)。"""
+        """右键快筛: 只显示该车型/该作者/该来源(会话级; 切存档或「清除快筛」复原)。"""
         self.quick_filter = qf
         self.rebuild_grid()
         what, val = qf
@@ -964,8 +1059,10 @@ class App(tk.Tk):
             rep = next((x for x in self.items if x.car_id == val), None)
             desc = (_("车型 {name}").format(name=self.car_display(rep)) if rep
                     else _("车型 ID {id}").format(id=val))
-        else:
+        elif what == "creator":
             desc = _("作者 {name}").format(name=val)
+        else:                                   # source: 拍卖/我的设计
+            desc = _("拍卖涂装") if val == "auction" else _("我的设计涂装")
         self.status_var.set(_("快筛: 只显示{desc} (右键菜单可清除)").format(desc=desc))
 
     def _clear_quick_filter(self):
@@ -991,6 +1088,13 @@ class App(tk.Tk):
                          state=tk.NORMAL if it.creator else tk.DISABLED,
                          command=lambda: self._set_quick_filter(
                              ("creator", it.creator or "")))
+        # 来源快筛: 拍卖卡 → 只显示拍卖涂装; 我的设计卡 → 只显示我的设计(拍卖涂装
+        # 无作者, 「只显示该作者」置灰, 用来源维度补足同类筛选诉求)
+        menu.add_command(
+            label=(_("只显示拍卖涂装") if it.itype == "SoulBoundLivery"
+                   else _("只显示我的设计")),
+            command=lambda: self._set_quick_filter(
+                ("source", "auction" if it.itype == "SoulBoundLivery" else "my")))
         menu.add_separator()
         menu.add_command(label=_("查看缩略图"),
                          state=tk.NORMAL if it.thumb_big else tk.DISABLED,
@@ -1003,9 +1107,10 @@ class App(tk.Tk):
                          else _("复制游戏内位置"),
                          state=tk.NORMAL if pos else tk.DISABLED,
                          command=lambda: self.copy_text(pos))
+        title = self._livery_title(it)
         menu.add_command(label=_("复制名称"),
-                         state=tk.NORMAL if it.name else tk.DISABLED,
-                         command=lambda: self.copy_text(it.name))
+                         state=tk.NORMAL if title else tk.DISABLED,
+                         command=lambda: self.copy_text(title))
         menu.add_command(label=_("复制车型"),
                          state=tk.NORMAL if car else tk.DISABLED,
                          command=lambda: self.copy_text(car))
@@ -1046,6 +1151,12 @@ class App(tk.Tk):
             parts.append(_("仅已喷涂"))
         if self.unapplied_only.get():
             parts.append(_("仅未喷涂"))
+        if self.auction_only.get():
+            parts.append(_("拍卖涂装"))
+        if self.auction_applied_only.get():
+            parts.append(_("拍卖已应用"))
+        if self.auction_unapplied_only.get():
+            parts.append(_("拍卖未应用"))
         if self.quick_filter:
             parts.append(_("快筛"))
         self.filter_mb.configure(
@@ -1178,6 +1289,7 @@ class App(tk.Tk):
             self.current = None
             self.items = []
             self._save_sig = None             # 自动刷新: 无存档, 停掉签名基线
+            self._cache_sig = None            # 拍卖缩略图缓存签名基线一并停掉
             if self._watch_job is not None:
                 self.after_cancel(self._watch_job)
                 self._watch_job = None
@@ -1250,6 +1362,7 @@ class App(tk.Tk):
         # 重复检测按需触发(解码缩略图算哈希很慢): 见 _ensure_dup_analysis
         # 自动刷新: 重建签名基线并取消待触发的增量刷新(本次全量扫描已是最新)
         self._save_sig = fh6save.save_signature(Path(self.current["dir"]))
+        self._cache_sig = fh6save.thumbnail_cache_signature()   # 拍卖缩略图缓存基线(切存档重建)
         if self._watch_job is not None:
             self.after_cancel(self._watch_job)
             self._watch_job = None
@@ -1292,15 +1405,51 @@ class App(tk.Tk):
             if self._watch_job is None:
                 self._watch_job = self.after(WATCH_DEBOUNCE_MS, self._watch_fire)
                 self._watch_armed_at = now
-            elif now - self._watch_armed_at < WATCH_DEBOUNCE_MAX_MS:
+            elif (self._watch_armed_at is not None
+                  and now - self._watch_armed_at < WATCH_DEBOUNCE_MAX_MS):
                 self.after_cancel(self._watch_job)      # 上限内: 顺延等写稳定
                 self._watch_job = self.after(WATCH_DEBOUNCE_MS, self._watch_fire)
             # 超过上限: 不再顺延, 让已排定的防抖按时触发——正在写的半截文件
             # 由缩略图/header 瞬态失败退避重试兜底, 不会永久停在失败态
+            # 拍卖缩略图缓存水合感知: CacheThumbnails/.manifest 变化(游戏把
+            # GUID.webp 水合出来/更新注册表)不在存档目录内, 单独盯此文件签名
+            self._watch_cache_tick()
         except Exception:
             traceback.print_exc()           # 保险丝: 单轮异常不中断轮询链
         finally:
             self.after(WATCH_INTERVAL_MS, self._watch_tick)
+
+    def _watch_cache_tick(self):
+        """缓存水合感知(随 _watch_tick 每轮执行): 比对 CacheThumbnails/.manifest
+        的轻量签名, 首次(或缓存不可用)仅建基线; 变化 → 重跑拍卖涂装的
+        attach 解析 + 重绘。半截文件/解析失败保持现状, 签名再次变化时重试。
+        与存档刷新的防抖不同, 此处即时处理: attach 幂等 + manifest 签名记忆化,
+        重跑代价毫秒级, 无中间态风险。"""
+        try:
+            cache = fh6save.find_thumbnail_cache()
+            sig = fh6save.thumbnail_cache_signature(cache)
+            if sig == self._cache_sig:
+                return
+            changed = (self._cache_sig is not None and sig is not None)
+            self._cache_sig = sig
+            if changed:
+                self._sync_auction_cache(cache)
+        except Exception:
+            traceback.print_exc()           # 保险丝: 缓存轮询异常不影响存档轮询
+
+    def _sync_auction_cache(self, cache: Path | None):
+        """缓存水合后同步拍卖涂装: 重解析缩略图/注册标记, 清拍卖卡旧图重解码。
+        manifest 解析失败(半截文件)不动现有状态, 签名再变时重试。"""
+        if cache is None or fh6save.load_cache_manifest(cache) is None:
+            return                          # 半截/不可用: 保持现状
+        stats = fh6save.attach_auction_thumbnails(self.items, cache)
+        for it in self.items:
+            if it.itype == "SoulBoundLivery":
+                self._img_cache.pop(it.base, None)
+                self._thumb_fails.pop(it.base, None)
+        self.rebuild_grid()
+        n = int(stats.get("matched", 0)) + int(stats.get("shared", 0))
+        self.status_var.set(_("拍卖缩略图缓存已更新: {n} 张已同步").format(n=n))
 
     def _watch_fire(self):
         """防抖到时: 重新取签名与基线 diff(刷新前最后状态), 增量刷新并更新基线。
@@ -1423,6 +1572,8 @@ class App(tk.Tk):
         """自动刷新触发的增量特征提取完成: 合并特征并按当前条件重算分组。"""
         if items is not self.items:
             return                     # 等待期间已切换存档, 丢弃(不碰新存档的状态)
+        if self._dup_feats is None:
+            return                     # 分析已重置(切存档等), 结果不再需要
         self._dup_feats.update(feats)
         anchor = self._scroll_anchor()
         self._rerun_dup()
@@ -1542,17 +1693,19 @@ class App(tk.Tk):
                 cb_img.set(_("不比对"))
             elif r.img == "missing":
                 cb_img.set(_("任一方无图"))
-            else:
+            elif isinstance(r.img, tuple):
                 cb_img.set(_("距离≤N"))
                 img_var.set(str(r.img[1]))
             if r.name is None:
                 cb_sim.set(_("不比对"))
-            elif r.name[0] == "min":
-                cb_sim.set(_("≥X(找相似名)"))
-                sim_var.set(f"{r.name[1]:.2f}")
-            else:
-                cb_sim.set(_("<X(找不同名)"))
-                sim_var.set(f"{r.name[1]:.2f}")
+            elif isinstance(r.name, tuple):
+                mode, v = r.name
+                if mode == "min":
+                    cb_sim.set(_("≥X(找相似名)"))
+                    sim_var.set(f"{v:.2f}")
+                else:
+                    cb_sim.set(_("<X(找不同名)"))
+                    sim_var.set(f"{v:.2f}")
             cb_created.set(_("不参与") if r.created is None else
                            (_("相同") if r.created == "same" else _("不同")))
             cb_down.set(_("不参与") if r.downloaded is None else
@@ -1723,6 +1876,10 @@ class App(tk.Tk):
             self.unapplied_only.set(False)
         elif which == "unapplied" and self.unapplied_only.get():
             self.applied_only.set(False)
+        if var.get():
+            # 通用已喷涂轴与拍卖应用状态轴互斥(避免矛盾筛选)
+            self.auction_applied_only.set(False)
+            self.auction_unapplied_only.set(False)
         if var.get() and self._applied is None:
             if not self._confirm_applied_scan():
                 var.set(False)
@@ -1731,11 +1888,41 @@ class App(tk.Tk):
         self.rebuild_grid()
         self._ensure_applied_scan()
 
+    def _select_auction_filter(self, which: str):
+        """「拍卖已应用/未应用」独立筛选: 拍卖专用轴内部互斥, 且与通用已喷涂
+        筛选互斥; 未扫描过时走同款确认门, 确认后触发内存扫描, 扫描完成前
+        拍卖状态先用 .manifest 注册表(cache_registered)兜底。"""
+        var = (self.auction_applied_only if which == "applied"
+               else self.auction_unapplied_only)
+        if which == "applied" and self.auction_applied_only.get():
+            self.auction_unapplied_only.set(False)
+        elif which == "unapplied" and self.auction_unapplied_only.get():
+            self.auction_applied_only.set(False)
+        if var.get():
+            self.applied_only.set(False)
+            self.unapplied_only.set(False)
+            if self._applied is None:
+                if not self._confirm_applied_scan():
+                    var.set(False)
+                    return
+                self._applied_from_button = True
+        self.rebuild_grid()
+        self._ensure_applied_scan()
+
+    def _auction_applied(self, it: SaveItem) -> bool | None:
+        """拍卖涂装应用状态: 内存扫描可用时按归一化名(applied_key)权威判定;
+        否则回落 .manifest 注册表(cache_registered); None=无法判定(两侧均不匹配)。"""
+        if self._applied is not None:
+            return it.applied_key in self._applied
+        return it.cache_registered
+
     def _applied_status(self, base: str) -> str:
         """详情面板用: 喷涂状态文案(未扫描/不适用返回空串)。"""
         if self._applied is None:
             return ""
-        return _("已喷在车上 ✓") if base in self._applied else _("未喷在车上")
+        it = self.item_map.get(base)
+        applied = it is not None and it.applied_key in self._applied
+        return _("已喷在车上 ✓") if applied else _("未喷在车上")
 
     def _ensure_applied_scan(self, force: bool = False):
         """已喷涂检测按需触发: 仅 FH6 存档 + 游戏运行中; 后台只读扫描游戏内存。
@@ -1797,7 +1984,9 @@ class App(tk.Tk):
         """已喷涂功能在用(本会话扫描过, 或已喷涂/未喷涂筛选开着)时:
         未扫描且游戏在跑则补全量扫描, 已扫描则定期快速重扫(保角标/计数实时)。"""
         want = (self._applied is not None or self.applied_only.get()
-                or self.unapplied_only.get())
+                or self.unapplied_only.get()
+                or self.auction_applied_only.get()
+                or self.auction_unapplied_only.get())
         if want and not self._applied_pending:
             if self._applied is None:
                 if gamemem.find_game_pid():
@@ -1831,6 +2020,12 @@ class App(tk.Tk):
         name = self.car_table.name("fh6", it.car_id)
         return name if name else _("ID {id}").format(id=it.car_id)
 
+    def _livery_title(self, it: SaveItem) -> str:
+        """卡片/详情显示名: 拍卖涂装(哨兵标题)显示「拍卖涂装」, 其余空标题显示占位。"""
+        if it.itype == "SoulBoundLivery":
+            return _("拍卖涂装")
+        return it.name or _("(未解析)")
+
     def _brand_of(self, it: SaveItem) -> str:
         """条目的车厂名; 车型未标注时为空串。"""
         name = self.car_table.name("fh6", it.car_id)
@@ -1853,36 +2048,53 @@ class App(tk.Tk):
         brand = self.brand_var.get()
         out = []
         for it in self.items:
-            if it.itype != "Livery":          # 仅限涂装
-                continue
-            if self.dup_only.get():
-                if not self._dup_group.get(it.base, 0):
+            if it.itype != "Livery" and it.itype != "SoulBoundLivery":
+                continue                       # 仅显示涂装 + 拍卖涂装
+            auction = it.itype == "SoulBoundLivery"
+            if self.auction_only.get() and not auction:
+                continue                       # 仅显示拍卖涂装: 隐藏「我的设计」
+            if not auction:
+                # 重复/多涂装/单涂装语义只对「我的设计」涂装成立(拍卖不参与重复检测)
+                if self.dup_only.get():
+                    if not self._dup_group.get(it.base, 0):
+                        continue
+                unique = self._car_unique.get(it.car_id, 0)
+                if self.multi_only.get() and unique < 2:
                     continue
-            unique = self._car_unique.get(it.car_id, 0)
-            if self.multi_only.get() and unique < 2:
-                continue
-            if self.single_only.get() and unique != 1:
-                continue
+                if self.single_only.get() and unique != 1:
+                    continue
             if self.applied_only.get():
                 if self._applied is None:
                     self._ensure_applied_scan()     # 未扫描先触发, 扫描完成前不过滤
-                elif it.base not in self._applied:
+                elif it.applied_key not in self._applied:
                     continue
             if self.unapplied_only.get():
                 if self._applied is None:
                     self._ensure_applied_scan()
-                elif it.base in self._applied:
+                elif it.applied_key in self._applied:
+                    continue
+            if self.auction_applied_only.get() or self.auction_unapplied_only.get():
+                # 拍卖应用状态轴: 只作用于拍卖涂装; st 为 None(无法判定)两侧都不匹配
+                if not auction:
+                    continue
+                st = self._auction_applied(it)
+                want_applied = self.auction_applied_only.get()
+                if (want_applied and st is not True) or (not want_applied and st is not False):
                     continue
             if brand != _("全部车厂") and self._brand_of(it) != brand:
                 continue
-            qf = self.quick_filter             # 右键快筛(车型/作者维度)
+            qf = self.quick_filter             # 右键快筛(车型/作者/来源维度)
             if qf:
                 if qf[0] == "car" and it.car_id != qf[1]:
                     continue
                 if qf[0] == "creator" and (it.creator or "") != qf[1]:
                     continue
+                if qf[0] == "source" and (qf[1] == "auction") != auction:
+                    continue
             if qwords:
                 hay = f"{it.name} {it.creator} {it.car_id} {self.car_display(it)}".lower()
+                if auction:
+                    hay = _("拍卖涂装") + " " + hay
                 if any(t not in hay for t in qwords):
                     continue
             out.append(it)
@@ -1963,7 +2175,7 @@ class App(tk.Tk):
             self.thumb_label.configure(image="", text=_("(无预览图)"))
         pos = self._pos_map.get(it.base)
         lines = [
-            _("名称: {name}").format(name=it.name or _("(未解析)")),
+            _("名称: {name}").format(name=self._livery_title(it)),
             _("车型: {car}").format(car=self.car_display(it)),
             _("作者: {creator}").format(creator=it.creator or "?"),
         ]

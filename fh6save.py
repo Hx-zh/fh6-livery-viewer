@@ -12,6 +12,9 @@ fh6save.py — 极限竞速:地平线 Steam 版存档涂装/纹饰/调校解析�
 - header 二进制布局(与 Arstz/FH6_livery_unlocker 一致, 已用本机 FH4/FH5 文件验证):
     u32 version | u32 名称长度 | UTF-16LE 名称 | u32 描述长度(0=未分享) | UTF-16LE 描述
     | u16 年 | u8 月 | ... | [20:24] 作者标签1 | [24:26] 作者标签2 | u32 作者名长度 | UTF-16LE 作者名 ...
+- 拍卖涂装(SoulBoundLivery)的预览图来自游戏的 CacheThumbnails 缓存
+  (见下文「拍卖涂装(CacheThumbnails)」专节): header 末尾 16 字节 → Crockford Base32
+  编码出 26 位 token, 在 .manifest 第一表(GUID/物化表)里定位 → <GUID>.webp。
 """
 
 from __future__ import annotations
@@ -75,6 +78,10 @@ class SaveItem:
     layer_count: int = 0       # 仅 FH6(header v7)已分享条目可靠
     header_car_id: int = 0     # header 内嵌的车型 ID (与文件名交叉校验用)
     header_ok: bool = False
+    # 拍卖涂装(CacheThumbnails)解析结果: 仅 SoulBoundLivery 条目使用(见「拍卖涂装」专节)
+    thumb_cache: Path | None = None      # CacheThumbnails/<GUID>.webp(外部预览图)
+    cache_guid: str = ""                 # 命中的 GUID(唯一候选时)
+    cache_registered: bool | None = None # None=无缓存/未解析; True/False=是否在 .manifest 注册表(第二表)
 
     @property
     def type_cn(self) -> str:
@@ -99,15 +106,29 @@ class SaveItem:
 
     @property
     def thumb_big(self) -> Path | None:
+        """卡片/详情用的大预览图: 容器内 bigThumb 优先, 拍卖涂装无容器缩略图时
+        回退到 CacheThumbnails 解析出的外部预览图(thumb_cache)。"""
         for k in ("bigThumb.png", "bigThumb.webp", "Thumb.png", "Thumb.webp",
                   "image", "thumb"):
             if k in self.files:
                 return self.files[k]
-        return None
+        return self.thumb_cache
 
     @property
     def has_data(self) -> bool:
         return any(k in self.files for k in ("C_livery", "C_group", "Data"))
+
+    @property
+    def applied_key(self) -> str:
+        """内存「已喷涂」集合匹配键: 拍卖(SoulBoundLivery)涂装在游戏运行时
+        内存里的词首完整名是 ``SoulBoundLivery_<车ID>_<时间戳>``(非 Livery_ 前缀!),
+        其后随 Tuning_/GUID 车库签名; gamemem 的 ``find(b"Livery_")`` 粗筛无词首
+        锚定, 在该字符串内部命中子串并以 ``Livery_<车ID>_<时间戳>`` 名义捕获
+        (2026-09-01 真机验证, 13 条拍卖中 11 条签名命中)。归一化后恰好与此
+        捕获名对齐, 故直接与内存扫描结果集合比较即可。"""
+        if self.itype == "SoulBoundLivery" and self.base.startswith("SoulBoundLivery_"):
+            return "Livery_" + self.base[len("SoulBoundLivery_"):]
+        return self.base
 
 
 # ---------------------------------------------------------------- header 解析
@@ -361,9 +382,12 @@ def _sort_items(items: dict[str, SaveItem]) -> list[SaveItem]:
     return sorted(items.values(), key=lambda x: (x.ts or datetime.min), reverse=True)
 
 
-def scan_folder(game: str, steam_user: str, folder: Path) -> list[SaveItem]:
+def scan_folder(game: str, steam_user: str, folder: Path,
+                with_auction: bool = True) -> list[SaveItem]:
     """扫描一个目录, 按共同前缀聚合成条目并解析 header。
-    同时支持 Steam 平铺文件(<前缀>.<分片>)和 pgs 目录型条目(<前缀>/ 内含分片)。"""
+    同时支持 Steam 平铺文件(<前缀>.<分片>)和 pgs 目录型条目(<前缀>/ 内含分片)。
+    with_auction=True(默认)时顺带为拍卖涂装(SoulBoundLivery)解析 CacheThumbnails
+    预览图(只读; 缓存缺失/损坏只降级为「无缩略图」, 不影响扫描)。"""
     items: dict[str, SaveItem] = {}
     try:
         entries = list(folder.iterdir())
@@ -372,7 +396,10 @@ def scan_folder(game: str, steam_user: str, folder: Path) -> list[SaveItem]:
     _collect_entries(game, steam_user, folder, entries, items)
     for it in items.values():
         _fill_item(it)
-    return _sort_items(items)
+    result = _sort_items(items)
+    if with_auction:
+        attach_auction_thumbnails(result)
+    return result
 
 
 def save_signature(folder: Path) -> dict[str, tuple] | None:
@@ -420,11 +447,13 @@ def save_signature(folder: Path) -> dict[str, tuple] | None:
 
 def scan_folder_incremental(game: str, steam_user: str, folder: Path,
                             old_items: list[SaveItem],
-                            changed_bases: set) -> list[SaveItem]:
+                            changed_bases: set,
+                            with_auction: bool = True) -> list[SaveItem]:
     """scan_folder 的增量版(自动刷新用): changed_bases(新增+有变化)之外的条目
     直接复用旧 SaveItem 对象——对象身份不变, app 侧的缩略图缓存/选中状态随之存活;
     changed 条目重新聚合并解析 header; 磁盘上已消失的条目自动剔除(删除场景,
-    无需调用方传入)。返回排序契约与 scan_folder 一致。"""
+    无需调用方传入)。返回排序契约与 scan_folder 一致, 尾部同样挂接拍卖缩略图解析
+    (附件式: 复用对象的 thumb_cache/cache_guid/cache_registered 字段保持不变)。"""
     try:
         entries = list(folder.iterdir())
     except OSError:
@@ -445,7 +474,10 @@ def scan_folder_incremental(game: str, steam_user: str, folder: Path,
     for it in fresh.values():
         _fill_item(it)
     items.update(fresh)
-    return _sort_items(items)
+    result = _sort_items(items)
+    if with_auction:
+        attach_auction_thumbnails(result)
+    return result
 
 
 def game_layout(items: list[SaveItem]) -> tuple[int, dict[str, tuple[int, int]]]:
@@ -670,16 +702,17 @@ def detect_duplicates(items: list[SaveItem],
                     if r.img == "missing":
                         if not (fa.get("noimg") or fb.get("noimg")):
                             continue
-                    else:
+                    elif isinstance(r.img, tuple):
                         if hd is None or hd > r.img[1]:
                             continue
                 if r.name is not None:
-                    mode, v = r.name
-                    s = name_sim()
-                    if mode == "min" and s < v:
-                        continue
-                    if mode == "max" and s >= v:
-                        continue
+                    if isinstance(r.name, tuple):
+                        mode, v = r.name
+                        s = name_sim()
+                        if mode == "min" and s < v:
+                            continue
+                        if mode == "max" and s >= v:
+                            continue
                 if r.created is not None and not time_cmp(a.ts, b.ts, r.created):
                     continue
                 if r.downloaded is not None and not time_cmp(a.mtime, b.mtime,
@@ -795,6 +828,332 @@ class CarTable:
 
     def known_count(self, game: str) -> int:
         return len(self._data.get(game, {}))
+
+
+# ---------------------------------------------------------------- 拍卖涂装(CacheThumbnails)
+
+# FH6 CacheThumbnails/.manifest 二进制布局(本机实测 + 社区逆向印证):
+#   头部: u32 version(=2) | u32 count
+#   第一表(GUID/物化表): count × (u32 名称长度 | UTF-8 逻辑名 | 16B Windows GUID)
+#   第二表(逻辑名注册表, 可选): u32 registry_version(=1) | u64 generation 标识
+#                              | u32 注册数 | 注册数 × (u32 名称长度 | UTF-8 逻辑名)
+# 逻辑名格式: <4位车型ID>_<16hex instanceKey>(bm<N> | u<26位 livery_token>)_bigThumb.webp
+#   (bm<N> = 基础材质/车漆, 无 token; u<token> = 涂装, 其中 token 由 header 尾字节编码)
+# 拍卖涂装缩略图定位链(已验证): SoulBoundLivery header 末 16 字节
+#   → Crockford Base32(RFC 风格位分组, 字母表 0123456789abcdefghjkmnpqrstvwxyz)
+#   → 26 位 token → 第一表 u<token> 的 GUID → CacheThumbnails/<GUID>.webp
+
+CACHE_MANIFEST_VERSION = 2
+CACHE_REGISTRY_VERSION = 1
+_CROCKFORD32 = "0123456789abcdefghjkmnpqrstvwxyz"
+
+CACHE_THUMB_NAME_RE = re.compile(
+    r"^(?P<car_id>\d{3,6})_(?P<instance>[0-9a-f]{16})"
+    r"(?P<appearance>bm\d+|u(?P<token>[0-9a-z]{26}))_bigThumb\.webp$",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class CacheThumbEntry:
+    """.manifest 第一表的一条合法记录(仅带 token 的涂装条目)。"""
+    logical_name: str
+    car_id: int
+    token: str                 # 26 位 livery_token; 基础材质(bm*)不进入本结构
+    guid: str
+    path: Path                 # CacheThumbnails/<GUID>.webp(可能不存在, 调用方用 is_file() 判断)
+
+
+@dataclass(frozen=True)
+class CacheManifest:
+    """CacheThumbnails/.manifest 解析结果(只读缓存数据, 与存档无关)。"""
+    cache_dir: Path
+    version: int
+    count: int
+    entries: tuple            # tuple[CacheThumbEntry, ...] 第一表(带 token 的涂装行)
+    registry: frozenset = frozenset()      # 第二表逻辑名集合(无第二表时为空)
+    registry_generation: int = 0
+    registry_ok: bool = False
+
+
+def crockford32_rfc(raw: bytes) -> str:
+    """FH6 的 RFC 风格位分组 + Crockford Base32 编码(字母表去掉 i/l/o)。
+
+    header 末 16 字节经此编码得到 26 字符 token, 与 CacheThumbnails 逻辑名的
+    ``u<token>`` 段直接对应(本机 13 个 SoulBoundLivery 全部验证通过)。"""
+    out: list[str] = []
+    acc = 0
+    bits = 0
+    for byte in raw:
+        acc = (acc << 8) | byte
+        bits += 8
+        while bits >= 5:
+            bits -= 5
+            out.append(_CROCKFORD32[(acc >> bits) & 0x1F])
+            acc &= (1 << bits) - 1 if bits else 0
+    if bits:
+        out.append(_CROCKFORD32[(acc << (5 - bits)) & 0x1F])
+    return "".join(out)
+
+
+def livery_token(header_bytes: bytes) -> str:
+    """从 header 末尾 16 字节提取拍卖涂装的 26 位 token; 长度不符返回 ""。"""
+    if len(header_bytes) < 16:
+        return ""
+    return crockford32_rfc(header_bytes[-16:])
+
+
+def find_thumbnail_cache(local_appdata: Path | None = None) -> Path | None:
+    """自动定位 FH6 的 CacheThumbnails 目录(必须含 .manifest 才有效)。
+
+    候选(均以 .manifest 存在为准):
+      - %LOCALAPPDATA%\\Packages\\Microsoft.*\\LocalCache\\Local\\LocalStorage_Cache\\CacheThumbnails
+      - %LOCALAPPDATA%\\ForzaHorizon6\\LocalStorage_Cache\\CacheThumbnails
+    实证: 商店版(pgs)存档的机器也在 ForzaHorizon6 路径下, 故两个位置都试。
+    找不到返回 None(不抛异常, 拍卖缩略图特性降级为「无」)。"""
+    if local_appdata is None:
+        raw = os.environ.get("LOCALAPPDATA", "").strip()
+        if not raw:
+            return None
+        local_appdata = Path(raw)
+    else:
+        local_appdata = Path(local_appdata)
+    rel = Path("LocalCache") / "Local" / "LocalStorage_Cache" / "CacheThumbnails"
+    candidates: list[Path] = [
+        local_appdata / "ForzaHorizon6" / "LocalStorage_Cache" / "CacheThumbnails",
+    ]
+    packages = local_appdata / "Packages"
+    if packages.is_dir():
+        try:
+            candidates.extend(
+                (packages / p.name / rel)
+                for p in sorted(packages.iterdir(), key=lambda p: p.name.casefold())
+                if p.is_dir() and p.name.startswith("Microsoft.")
+            )
+        except OSError:
+            pass
+    seen: set = set()
+    for c in candidates:
+        key = str(c).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        if c.is_dir() and (c / ".manifest").is_file():
+            return c
+    return None
+
+
+def read_cache_manifest(cache_dir: Path) -> CacheManifest:
+    """解析 .manifest 的两张表; 版本/结构不符抛 ValueError(调用方需容错)。"""
+    cache_dir = Path(cache_dir)
+    data = (cache_dir / ".manifest").read_bytes()
+    if len(data) < 8:
+        raise ValueError("manifest 太短")
+    version, count = struct.unpack_from("<II", data, 0)
+    if version != CACHE_MANIFEST_VERSION:
+        raise ValueError(f"不支持的 manifest 版本: {version}")
+    if count > 1_000_000:
+        raise ValueError(f"manifest 记录数异常: {count}")
+
+    def _read_names(offset: int, n: int, guid_per: bool) -> tuple[list, int, bool]:
+        names: list = []
+        for i in range(n):
+            if offset + 4 > len(data):
+                return names, offset, False
+            nlen = struct.unpack_from("<I", data, offset)[0]
+            offset += 4
+            if nlen <= 0 or nlen > 4096:
+                return names, offset, False
+            end = offset + nlen + (16 if guid_per else 0)
+            if end > len(data):
+                return names, offset, False
+            try:
+                names.append(data[offset:offset + nlen].decode("utf-8"))
+            except UnicodeDecodeError:
+                names.append("")
+            offset = end
+        return names, offset, True
+
+    names, offset, ok = _read_names(8, count, guid_per=True)
+    if not ok or len(names) != count:
+        raise ValueError("第一表(GUID)不完整")
+
+    entries: list[CacheThumbEntry] = []
+    off = 8
+    for name in names:
+        nlen = struct.unpack_from("<I", data, off)[0]
+        off += 4
+        guid_bytes = data[off + nlen:off + nlen + 16]
+        off += nlen + 16
+        m = CACHE_THUMB_NAME_RE.match(name)
+        if not m or not m.group("token"):
+            continue
+        try:
+            car_id = int(m.group("car_id"))
+        except ValueError:
+            continue
+        guid = "-".join([
+            guid_bytes[0:4][::-1].hex(), guid_bytes[4:6][::-1].hex(),
+            guid_bytes[6:8][::-1].hex(),
+            guid_bytes[8:10].hex(), guid_bytes[10:16].hex(),
+        ])
+        entries.append(CacheThumbEntry(
+            logical_name=name, car_id=car_id,
+            token=m.group("token").lower(), guid=guid,
+            path=cache_dir / f"{guid}.webp",
+        ))
+
+    # 第二表(注册表): 可选; 失败只降级 registry_ok=False
+    registry: frozenset = frozenset()
+    registry_generation = 0
+    registry_ok = False
+    if offset + 16 <= len(data):
+        reg_version = struct.unpack_from("<I", data, offset)[0]
+        if reg_version == CACHE_REGISTRY_VERSION:
+            registry_generation = struct.unpack_from("<Q", data, offset + 4)[0]
+            reg_count = struct.unpack_from("<I", data, offset + 12)[0]
+            if reg_count <= 1_000_000:
+                reg_names, off2, ok2 = _read_names(offset + 16, reg_count, guid_per=False)
+                if ok2 and len(reg_names) == reg_count:
+                    registry = frozenset(n for n in reg_names if n)
+                    registry_ok = True
+
+    return CacheManifest(cache_dir=cache_dir, version=version, count=count,
+                         entries=tuple(entries), registry=registry,
+                         registry_generation=registry_generation,
+                         registry_ok=registry_ok)
+
+
+# 一次进程内只解析一份 manifest(按 (size, mtime_ns) 签名); 便于增量刷新时复用
+_MANIFEST_MEMO: list = []   # [cache_dir_str, sig, CacheManifest | None]
+
+
+def load_cache_manifest(cache_dir: Path | None) -> CacheManifest | None:
+    """带签名单例的 manifest 加载: 目录/文件未变时直接复用上次结果。
+
+    失败(不存在/损坏/版本不符)返回 None, 不抛异常。"""
+    if cache_dir is None:
+        return None
+    try:
+        st = (cache_dir / ".manifest").stat()
+    except OSError:
+        return None
+    sig = (st.st_size, st.st_mtime_ns)
+    key = str(cache_dir)
+    if _MANIFEST_MEMO and _MANIFEST_MEMO[0] == key and _MANIFEST_MEMO[1] == sig:
+        return _MANIFEST_MEMO[2]
+    try:
+        man = read_cache_manifest(cache_dir)
+    except (OSError, ValueError, struct.error):
+        man = None
+    _MANIFEST_MEMO[:] = [key, sig, man]
+    return man
+
+
+def thumbnail_cache_signature(cache_dir: Path | None = None) -> tuple | None:
+    """CacheThumbnails/.manifest 的轻量签名 (size, mtime_ns); 不可用返回 None。
+
+    自动刷新轮询用它感知「拍卖缩略图缓存水合」: 游戏渲染出 GUID.webp / 更新
+    注册表时会改写 .manifest——该变化不在存档目录内, 存档签名感知不到,
+    单独盯这一个文件的签名即可毫秒级检出, 无需扫描缓存目录。"""
+    cache_dir = cache_dir or find_thumbnail_cache()
+    if cache_dir is None:
+        return None
+    try:
+        st = (cache_dir / ".manifest").stat()
+    except OSError:
+        return None
+    return (int(st.st_size), int(st.st_mtime_ns))
+
+
+def attach_auction_thumbnails(items: list[SaveItem],
+                              cache_dir: Path | None = None) -> dict:
+    """为拍卖涂装(SoulBoundLivery)条目解析 CacheThumbnails 预览图(只读, 幂等)。
+
+    对每个拍卖条目:
+      1. 由 header 末 16 字节算 26 位 token;
+      2. (车型ID, token) 精确查第一表, 只保留 GUID.webp 真实存在的候选;
+      3. 恰好 1 个 → 采用(写入 it.thumb_cache/it.cache_guid);
+         多个 → 记 ambiguous 不猜(同设计多实例的历史行);
+         0 个 → 回退「共享设计」: 同 token 跨车型的唯一现存 WebP;
+      4. it.cache_registered = 该 token 是否在第二表(注册表)中。
+    无法访问缓存/解析失败时所有拍卖条目保持默认值并计入 unmatched。
+    返回统计 dict(状态栏/调试用)。"""
+    out = {
+        "cache_dir": None, "manifest_ok": False, "entries": 0, "registry_count": 0,
+        "total": 0, "matched": 0, "shared": 0, "ambiguous": 0, "unmatched": 0,
+    }
+    auction = [it for it in items if it.itype == "SoulBoundLivery"]
+    out["total"] = len(auction)
+    for it in auction:                       # 幂等: 每次重新解析, 覆盖旧值
+        it.thumb_cache = None
+        it.cache_guid = ""
+        it.cache_registered = None
+    if not auction:
+        return out
+
+    cache_dir = cache_dir or find_thumbnail_cache()
+    if cache_dir is None:
+        out["unmatched"] = len(auction)
+        return out
+    out["cache_dir"] = str(cache_dir)
+
+    man = load_cache_manifest(cache_dir)
+    if man is None:
+        out["unmatched"] = len(auction)
+        return out
+    out["manifest_ok"] = True
+    out["entries"] = len(man.entries)
+    if man.registry_ok:
+        out["registry_count"] = len(man.registry)
+
+    by_identity: dict[tuple[int, str], list[CacheThumbEntry]] = {}
+    by_token: dict[str, list[CacheThumbEntry]] = {}
+    for e in man.entries:
+        by_identity.setdefault((e.car_id, e.token), []).append(e)
+        by_token.setdefault(e.token, []).append(e)
+    # 注册表里的 token 集合(第二表条目若带 token)
+    registry_tokens = {m.group("token").lower()
+                       for name in man.registry
+                       if (m := CACHE_THUMB_NAME_RE.match(name)) and m.group("token")}
+
+    for it in auction:
+        hdr = it.files.get("header")
+        token = ""
+        if hdr:
+            try:
+                token = livery_token(hdr.read_bytes())
+            except OSError:
+                token = ""
+        if not token:
+            out["unmatched"] += 1
+            continue
+        it.cache_registered = token in registry_tokens
+
+        candidates = [e for e in by_identity.get((it.car_id, token), [])
+                      if e.path.is_file()]
+        if len(candidates) == 1:
+            it.thumb_cache, it.cache_guid = candidates[0].path, candidates[0].guid
+            out["matched"] += 1
+            continue
+        if len(candidates) > 1:
+            out["ambiguous"] += 1
+            continue
+
+        # 共享设计回退: 同 token 跨车型, 只取唯一现存 WebP(绝不任选)
+        seen: dict[str, CacheThumbEntry] = {}
+        for e in by_token.get(token, []):
+            if e.path.is_file():
+                seen.setdefault(str(e.path).casefold(), e)
+        if len(seen) == 1:
+            e = next(iter(seen.values()))
+            it.thumb_cache, it.cache_guid = e.path, e.guid
+            out["shared"] += 1
+        elif len(seen) > 1:
+            out["ambiguous"] += 1
+        else:
+            out["unmatched"] += 1
+    return out
 
 
 # ---------------------------------------------------------------- 操作(只读)

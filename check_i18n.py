@@ -6,7 +6,7 @@
   python check_i18n.py dump     # 打印全部 key(每行一个, repr)"""
 import ast, sys
 
-sys.stdout.reconfigure(encoding="utf-8")
+sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[reportAttributeAccessIssue]  # TextIO 存根未声明 reconfigure(CPython 3.7+ 支持)
 
 def extract_keys(path="app.py"):
     tree = ast.parse(open(path, encoding="utf-8").read())

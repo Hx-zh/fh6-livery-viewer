@@ -49,6 +49,18 @@ APPLIED_RE = re.compile(
     rb'(?:Tuning_[0-9]{3,6}_[0-9]{14}'
     rb'|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})')
 
+# 拍卖涂装(SoulBoundLivery)的车库记录签名(2026-09-01 真机验证):
+# 内存里它们的词首完整名就是 SoulBoundLivery_<车>_<ts>, 后随 (Tuning_<车>_<ts> | GUID)
+# 车库签名。下方 find(b"Livery_") 粗筛无词首锚定, 会在 SoulBoundLivery_ 字符串
+# 内部天然命中其子串并以 Livery_<车>_<ts> 名义捕获(归一化名, 与 fh6save.applied_key
+# 对齐)——现有行为即依赖此机制。SOUL_APPLIED_RE 是同一事实的显式分支:
+# 集合结果不变(set 幂等), 语义文档化 + 防御性加固(防止未来有人给粗筛加词首
+# 锚定导致拍卖涂装的「在车上」判定静默失效)。
+SOUL_APPLIED_RE = re.compile(
+    rb'(SoulBoundLivery_[0-9]{3,6}_[0-9]{14})'
+    rb'(?:Tuning_[0-9]{3,6}_[0-9]{14}'
+    rb'|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})')
+
 # 车辆字符串表签名: 游戏内加载的 Data_Car VALUES 串表本体。
 # 顺序 = Data_Car.str 的键序 (IDS_DisplayName_* 按 ID 字符串字典序),
 # 前 660 条为 DisplayName, 后 660 条为 ModelShort。
@@ -162,13 +174,25 @@ class GameMemoryReader:
 
     @staticmethod
     def _find_hits(mem: bytes, out: set[str]):
-        """在区域缓冲里找车库记录签名: find 粗筛 + 正则精验 (与 finditer 语义等价)。"""
+        """在区域缓冲里找车库记录签名: find 粗筛 + 正则精验 (与 finditer 语义等价)。
+
+        普通涂装的词首完整名就是 Livery_<车>_<ts>; 拍卖涂装(SoulBoundLivery)的
+        词首完整名是 SoulBoundLivery_<车>_<ts> —— find(b"Livery_") 在它内部
+        命中子串并以归一化名 Livery_<车>_<ts> 捕获(现有「在车上」判定依赖此
+        机制), 下方 SOUL 分支显式重收一遍以保证语义清晰、行为不变。"""
         pos = mem.find(b"Livery_")
         while pos >= 0:
             m = APPLIED_RE.match(mem, pos)
             if m:
                 out.add(m.group(1).decode())
             pos = mem.find(b"Livery_", pos + 1)
+        pos = mem.find(b"SoulBoundLivery_")
+        while pos >= 0:
+            m = SOUL_APPLIED_RE.match(mem, pos)
+            if m:
+                raw = m.group(1).decode()
+                out.add("Livery_" + raw[len("SoulBoundLivery_"):])
+            pos = mem.find(b"SoulBoundLivery_", pos + 1)
 
     def _scan_region(self, base: int, size: int, out: set[str]):
         mem = self._read(base, size)

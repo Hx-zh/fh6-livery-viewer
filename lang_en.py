@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """lang_en.py — English UI strings. key = 中文源串(app.py 里 _() 的实参)。
 
 占位符约定: {name} 形式的命名占位符必须在译文中原样保留(个数与名字一致)。
@@ -142,6 +142,17 @@ STRINGS = {
     '分组:': 'Group:',
     '更新链接: {url}': 'Update link: {url}',
     '本工具与 Microsoft、Xbox、Playground Games、Turn 10 无关，Forza 相关商标归其各自所有者。\n工具仅读取本地内容，不提供任何修改、解锁或联机功能。\n使用本工具产生的任何后果由使用者自行承担。\n': 'This tool is not affiliated with Microsoft, Xbox, Playground Games, or Turn 10; Forza-related trademarks belong to their respective owners.\nThe tool only reads local content and provides no modification, unlock, or online features.\nYou assume all consequences of using this tool.\n',
+    '拍卖涂装': 'Auction livery',
+    '仅显示已应用拍卖涂装(在车上)': 'Show only applied auction liveries (on car)',
+    '仅显示未应用拍卖涂装(不在车上)': 'Show only unapplied auction liveries (not on car)',
+    '拍卖已应用': 'Auction applied',
+    '拍卖未应用': 'Auction unapplied',
+    '只显示拍卖涂装': 'Show only auction liveries',
+    '只显示我的设计': 'Show only My Designs liveries',
+    '我的设计涂装': 'My Designs liveries',
+
+    '仅显示拍卖涂装': 'Show only auction liveries',
+    '拍卖缩略图缓存已更新: {n} 张已同步': 'Auction thumbnail cache updated: {n} synced',
     '(未解析)': '(Unparsed)',
     '加载中…': 'Loading…',
     '车型 {name}': 'Model {name}',
