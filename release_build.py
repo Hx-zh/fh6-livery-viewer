@@ -5,12 +5,16 @@
     python release_build.py                 # 本地产物: 校验 → 打包 → 五语言 exe/zip
     python release_build.py --publish       # 上述 + git tag + push origin + gh release create
     python release_build.py --publish --gitee   # 发布后顺带推送 Gitee 镜像(remote 需已配置)
+    python release_build.py --gitee-release     # 仅在 Gitee 建 release + 传 5 zip(需 GITEE_TOKEN)
 
 参数:
     --publish       执行发布: git tag vX.Y.Z → push origin tag → gh release create
                     (说明优先读 dist/release_notes_v{version}.md, 无则 --generate-notes)
     --gitee         发布后推送 gitee 镜像(main+tags); Gitee 的 release 需在网页端手动创建并
                     上传同样的五个 zip(附件单文件上限 100MB, 见 AGENTS.md「Gitee 镜像」)
+    --gitee-release 经 Gitee API v5 创建同名 release 并上传 5 zip 附件;
+                    需环境变量 GITEE_TOKEN(私人令牌, projects 权限); tag 不存在时 Gitee 会在
+                    main 上自动创建
     --skip-checks   跳过 check_i18n / pyright / git 干净度门禁(仅应急, 发布不应使用)
     --allow-dirty   允许工作区有未提交改动(只放宽 git 干净度; 发布建议每次从提交点出包)
 
@@ -22,9 +26,14 @@
 版本唯一来源: app.py 的 APP_VERSION(--version 传参时校验一致性)。
 """
 import argparse
+import json
+import mimetypes
 import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 import zipfile
 from pathlib import Path
 
@@ -33,6 +42,8 @@ DIST = ROOT / "dist"
 LANGS = ("zh-CN", "zh-TW", "en", "ja", "ko")
 PYINSTALLER = ROOT / ".venv-build" / "Scripts" / "python.exe"
 GH = r"C:\Program Files\GitHub CLI\gh.exe"
+GITEE_REPO = "hx_zh/fh6-livery-viewer"
+GITEE_API = f"https://gitee.com/api/v5/repos/{GITEE_REPO}"
 PYRIGHT_FILES = ("app.py", "fh6save.py", "gamemem.py", "i18n.py", "check_i18n.py",
                  "lang_en.py", "lang_ja.py", "lang_ko.py", "lang_zhtw.py")
 
@@ -150,10 +161,75 @@ def publish(version: str, zips: list[Path], gitee: bool) -> None:
             print("[Gitee] 未配置 gitee remote, 跳过推送(AGENTS.md: git remote add gitee https://gitee.com/hx_zh/fh6-livery-viewer.git)")
 
 
+def gitee_upload(version: str, zips: list[Path]) -> None:
+    """Gitee release: 用 API v5 创建 release 并上传 5 个 zip 附件。
+
+    需要环境变量 GITEE_TOKEN(Gitee 私人令牌, 账号设置 → 私人令牌, 勾选 projects 权限)。
+    tag 若仓库中不存在, Gitee 会在指定 target_commitish(=main) 上自动创建。
+    Gitee 附件单文件上限 100MB(我们 zip ~19MB, 无碍)。"""
+    import os
+    token = os.environ.get("GITEE_TOKEN", "").strip()
+    if not token:
+        raise SystemExit("缺少 GITEE_TOKEN 环境变量(Gitee 设置 → 私人令牌, 勾选 projects 权限)")
+    q = urllib.parse.urlencode({"access_token": token})
+    notes = DIST / f"release_notes_v{version}.md"
+    body = notes.read_text(encoding="utf-8") if notes.is_file() else f"FH6 Livery Viewer v{version}"
+
+    def _api(method: str, path: str, data=None, headers=None) -> dict:
+        req = urllib.request.Request(f"{GITEE_API}/{path}?{q}", data=data, method=method,
+                                     headers=headers or {})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            raise SystemExit(f"Gitee API {method} {path} 失败 {e.code}: {e.read().decode('utf-8', 'replace')[:300]}")
+
+    release = _api("POST", "releases", urllib.parse.urlencode({
+        "tag_name": f"v{version}",
+        "target_commitish": "main",
+        "name": f"FH6 Livery Viewer v{version}",
+        "body": body,
+    }).encode(), {"Content-Type": "application/x-www-form-urlencoded"})
+    rid = release.get("id")
+    if not rid:
+        raise SystemExit("Gitee release 创建成功但未返回 id: " + str(release)[:200])
+
+    def _attach(path: Path) -> None:
+        boundary = "----DSH" + str(hash(path))[:12]
+        parts = []
+        for name, value in (("access_token", token),):
+            parts.append(
+                (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n"
+                 + value + "\r\n").encode())
+        fmime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        data = path.read_bytes()
+        parts.append(
+            (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; "
+             f"filename=\"{path.name}\"\r\nContent-Type: {fmime}\r\n\r\n").encode() + data + b"\r\n")
+        parts.append(f"--{boundary}--\r\n".encode())
+        payload = b"".join(parts)
+        req = urllib.request.Request(
+            f"{GITEE_API}/releases/{rid}/attach_files",
+            data=payload, method="POST",
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        try:
+            with urllib.request.urlopen(req, timeout=300) as r:
+                j = json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            raise SystemExit(f"Gitee 附件上传 {path.name} 失败 {e.code}: {e.read().decode('utf-8', 'replace')[:300]}")
+        print(f"[Gitee] 附件已上传: {path.name} -> {j.get('download_url') or j.get('name')}")
+
+    for z in zips:
+        _attach(z)
+    print(f"[Gitee] release v{version} 完成: https://gitee.com/{GITEE_REPO}/releases/v{version}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="FH6LiveryViewer 自动编译/发布")
     ap.add_argument("--publish", action="store_true")
-    ap.add_argument("--gitee", action="store_true")
+    ap.add_argument("--gitee", action="store_true", help="发布后推送 gitee 镜像(remote 需已配置)")
+    ap.add_argument("--gitee-release", action="store_true",
+                    help="在 Gitee 创建同名 release 并上传 5 个 zip(需 GITEE_TOKEN 环境变量)")
     ap.add_argument("--skip-checks", action="store_true")
     ap.add_argument("--pyright", action="store_true", help="强制运行 pyright 门禁")
     ap.add_argument("--allow-dirty", action="store_true")
@@ -170,8 +246,12 @@ def main() -> int:
     print(f"\n本地产物就绪(dist/, v{version}): 基础 exe + {len(LANGS)} 语言变体 + {len(zips)} zip")
     if args.publish:
         publish(version, zips, args.gitee)
-    else:
+    if args.gitee_release:
+        gitee_upload(version, zips)
+    if not (args.publish or args.gitee_release):
         print("未加 --publish: 只产包不发布; 手动测试通过后再运行 --publish。")
+    if args.gitee_release and not args.publish:
+        print("(仅做了 Gitee release; GitHub 侧未动)")
     return 0
 
 
