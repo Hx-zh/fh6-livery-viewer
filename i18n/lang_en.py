@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """lang_en.py — English UI strings. key = 中文源串(app.py 里 _() 的实参)。
 
 占位符约定: {name} 形式的命名占位符必须在译文中原样保留(个数与名字一致)。
@@ -152,6 +152,8 @@ STRINGS = {
     '我的设计涂装': 'My Designs liveries',
 
     '仅显示拍卖涂装': 'Show only auction liveries',
+    '只显示非拍卖涂装': 'Show only non-auction liveries',
+    '显示无预览图的拍卖涂装': 'Show auction liveries without preview image',
     '拍卖缩略图缓存已更新: {n} 张已同步': 'Auction thumbnail cache updated: {n} synced',
     '(未解析)': '(Unparsed)',
     '加载中…': 'Loading…',

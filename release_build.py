@@ -44,8 +44,8 @@ PYINSTALLER = ROOT / ".venv-build" / "Scripts" / "python.exe"
 GH = r"C:\Program Files\GitHub CLI\gh.exe"
 GITEE_REPO = "hx_zh/fh6-livery-viewer"
 GITEE_API = f"https://gitee.com/api/v5/repos/{GITEE_REPO}"
-PYRIGHT_FILES = ("app.py", "fh6save.py", "gamemem.py", "i18n.py", "check_i18n.py",
-                 "lang_en.py", "lang_ja.py", "lang_ko.py", "lang_zhtw.py")
+PYRIGHT_FILES = ("app.py", "fh6save.py", "gamemem.py", "i18n/__init__.py", "check_i18n.py",
+                 "i18n/lang_en.py", "i18n/lang_ja.py", "i18n/lang_ko.py", "i18n/lang_zhtw.py")
 
 
 def _run(cmd: list, *, check: bool = True) -> subprocess.CompletedProcess:

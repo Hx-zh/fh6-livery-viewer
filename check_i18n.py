@@ -37,15 +37,15 @@ def main():
     ok = True
     for lang in ("en", "ja", "ko", "zhtw"):
         try:
-            mod = __import__(f"lang_{lang}")
+            mod = __import__(f"i18n.lang_{lang}", fromlist=["STRINGS"])
             strings = mod.STRINGS
         except ImportError:
-            print(f"lang_{lang}.py: 缺失!")
+            print(f"i18n/lang_{lang}.py: 缺失!")
             ok = False
             continue
         missing = [k for k in uniq if k not in strings]
         extra = [k for k in strings if k not in uniq]
-        print(f"lang_{lang}.py: 条目 {len(strings)}, 缺 {len(missing)}, 多余 {len(extra)}")
+        print(f"i18n/lang_{lang}.py: 条目 {len(strings)}, 缺 {len(missing)}, 多余 {len(extra)}")
         for k in missing[:15]:
             print("   缺:", repr(k))
         for k in extra[:10]:
@@ -57,12 +57,12 @@ def main():
     ph = lambda s: sorted(re.findall(r"\{(\w+)\}", s))
     for lang in ("en", "ja", "ko", "zhtw"):
         try:
-            strings = __import__(f"lang_{lang}").STRINGS
+            strings = __import__(f"i18n.lang_{lang}", fromlist=["STRINGS"]).STRINGS
         except ImportError:
             continue
         for k, v in strings.items():
             if ph(k) != ph(v):
-                print(f"!! lang_{lang} 占位符不匹配: {k!r} -> {v!r}")
+                print(f"!! i18n/lang_{lang} 占位符不匹配: {k!r} -> {v!r}")
                 ok = False
     print("\n" + ("COVERAGE OK" if ok else "COVERAGE FAILED"))
 

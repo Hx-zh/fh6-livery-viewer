@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""i18n.py — 界面多语言(简中默认 + en/ja/ko/繁中)。
+"""i18n 包(__init__.py) — 界面多语言(简中默认 + en/ja/ko/繁中)。
 
 语言标签命名遵循 BCP 47(IETF; 语言码 = ISO 639-1 / 国标 GB/T 4880,
 地区码 = ISO 3166-1 / GB/T 2659): 简体 = zh-CN, 繁体 = zh-TW,
@@ -15,7 +15,7 @@ English = en, 日本語 = ja, 한국어 = ko。
     _("中文源串")                          # 静态文案
     _("共 {n} 个条目").format(n=n)         # 插值: 源串即 key, 内嵌 {name} 占位符
 
-译文数据在 lang_en.py / lang_ja.py / lang_ko.py / lang_zhtw.py(各含 STRINGS dict,
+译文数据在同包 lang_en.py / lang_ja.py / lang_ko.py / lang_zhtw.py(各含 STRINGS dict,
 key = 中文源串)。zh 原样返回; 其他语言缺 key 时回退中文源串(安全兜底)。
 """
 import os
@@ -46,10 +46,10 @@ LANG = _detect_lang()
 
 # 静态导入四个语言文件: PyInstaller 静态分析才能识别并打包它们
 # (动态 __import__(f"lang_{LANG}") 分析不到, 打包后会全部回退中文)
-import lang_en
-import lang_ja
-import lang_ko
-import lang_zhtw
+from . import lang_en
+from . import lang_ja
+from . import lang_ko
+from . import lang_zhtw
 
 _TABLES = {"en": lang_en.STRINGS, "ja": lang_ja.STRINGS,
            "ko": lang_ko.STRINGS, "zhtw": lang_zhtw.STRINGS}
