@@ -54,7 +54,7 @@ else:
     CARS_JSON = APP_DIR / "cars.json"
 BACKUP_DIR = APP_DIR / "backups"
 
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.7.1"
 PROJECT_URL = "https://github.com/Hx-zh/fh6-livery-viewer"
 RELEASES_URL = PROJECT_URL + "/releases"
 # Gitee 镜像(国内更新加速; 发布时需同步推送到该仓库并建同名 release):
@@ -67,10 +67,10 @@ def update_url() -> str:
     """更新链接按当前语言解析: 简中 → Gitee Release(国内访问快), 其它语言 → GitHub Release。"""
     return GITEE_RELEASES_URL if i18n.LANG == "zh" else RELEASES_URL
 
-CARD_W, CARD_H = 196, 200      # 卡片尺寸
+CARD_W, CARD_H = 224, 232      # 卡片尺寸(用户反馈偏小, 与字号 +1 同步整体放大)
 ROW_H = CARD_H + 8             # 网格行距(卡片高 + 上下间距)
 COL_W = CARD_W + 8             # 网格列距
-THUMB_W, THUMB_H = 184, 120    # 卡片缩略图区域
+THUMB_W, THUMB_H = 212, 140    # 卡片缩略图区域
 HEADER_H = 28                  # 重复分组标题行高(通栏色带)
 
 # 字体: UI 铬件(按钮/菜单/标签/状态)用微软雅黑; 用户数据文本(涂装名/作者/车型/
@@ -79,6 +79,11 @@ HEADER_H = 28                  # 重复分组标题行高(通栏色带)
 # 经 Windows 字体链接自动回退渲染(已实测 tkinter 下 CJK/假名/谚文无缺字)
 FONT_UI = "Microsoft YaHei UI"
 FONT_DATA = "Consolas"
+# 卡片三行文字字号(用户反馈偏小, 整体 +1; 与卡片尺寸放大同步, 行距留有数 px 余量,
+# 名称字符数/车型换行宽度由 ellipsize/wraplength 自适应)
+CARD_FONT_NAME = (FONT_DATA, 10, "bold")
+CARD_FONT_CAR = (FONT_DATA, 9)
+CARD_FONT_SUB = (FONT_DATA, 9)
 
 SORT_OPTIONS = [_("下载日期(新→旧)"), _("下载日期(旧→新)"), _("名称"), _("车型"),
                 _("作者"), _("车厂"), _("游戏内顺序")]
@@ -99,10 +104,11 @@ DUP_TEMPLATES = [
      dict(author="same", name=("min", 1.0), created="same", downloaded="diff")),
 ]
 
-# 按键节奏默认值(毫秒): 「我的設計」网格二分实测, 周期(按下保持+键间间隔)阈值 ≈30ms, 默认 40ms 留 10ms 余量(低帧率机器保险)
+# 按键节奏默认值(毫秒): 「我的設計」网格二分实测, 周期(按下保持+键间间隔)阈值 ≈30ms。
+# 玩家反馈游戏卡顿(低帧率)时原默认(周期 40ms)仍会吞键, 键间间隔默认放宽到 50ms(周期 65ms)
 # 用户可在「设置」里调整; 为保持单文件零外部文件零注册表, 设置仅本次运行有效, 不落盘
 DEFAULT_KEY_HOLD_MS = 15    # 按下保持
-DEFAULT_KEY_GAP_MS = 25     # 键间间隔(无间隔会把连发合并吞键)
+DEFAULT_KEY_GAP_MS = 50     # 键间间隔(无间隔会把连发合并吞键; 卡顿机器需更大)
 GAME_EXE = "forzahorizon6.exe"
 
 # 自动刷新(改动1): 存档目录签名轮询周期 + 检测到变化后的稳定等待。
@@ -502,6 +508,10 @@ class App(tk.Tk):
         self.auction_applied_only = tk.BooleanVar(value=False)
         self.auction_unapplied_only = tk.BooleanVar(value=False)
         self.auction_only = tk.BooleanVar(value=False)          # 仅显示拍卖涂装(来源过滤)
+        self.no_auction_only = tk.BooleanVar(value=False)       # 只显示非拍卖涂装(隐藏拍卖)
+        # 拍卖涂装无容器缩略图, 预览依赖 CacheThumbnails 匹配; 匹配不到预览图的
+        # 拍卖卡只有占位符、信息价值低, 默认不显示(需要时可在涂装筛选菜单打开)
+        self.auction_noimg = tk.BooleanVar(value=False)         # 显示无预览图的拍卖涂装
         ttk.Label(flt, text=_("车厂:")).pack(side=tk.LEFT, padx=(14, 2))
         self.brand_var = tk.StringVar(value=_("全部车厂"))
         self.brand_combo = ttk.Combobox(flt, textvariable=self.brand_var,
@@ -554,9 +564,14 @@ class App(tk.Tk):
         fmenu.add_checkbutton(label=_("仅显示未喷涂(不在车上)"), variable=self.unapplied_only,
                               command=lambda: self._select_applied_filter("unapplied"))
         fmenu.add_separator()
-        # 拍卖涂装: 来源过滤(仅拍卖) + 应用状态轴(互斥, 且与通用已喷涂筛选互斥)。
-        # 应用状态优先用内存归一化判定, 无内存快照时回落 .manifest 注册表(cache_registered)
+        # 拍卖涂装: 来源过滤(仅拍卖/仅非拍卖, 互斥) + 应用状态轴(互斥, 且与通用
+        # 已喷涂筛选互斥)。应用状态优先用内存归一化判定, 无内存快照时回落
+        # .manifest 注册表(cache_registered)
         fmenu.add_checkbutton(label=_("仅显示拍卖涂装"), variable=self.auction_only,
+                              command=lambda: self._select_source_filter("auction"))
+        fmenu.add_checkbutton(label=_("只显示非拍卖涂装"), variable=self.no_auction_only,
+                              command=lambda: self._select_source_filter("mine"))
+        fmenu.add_checkbutton(label=_("显示无预览图的拍卖涂装"), variable=self.auction_noimg,
                               command=lambda: self.rebuild_grid())
         fmenu.add_separator()
         fmenu.add_checkbutton(label=_("仅显示已应用拍卖涂装(在车上)"),
@@ -912,22 +927,22 @@ class App(tk.Tk):
         self._paint_thumb(base, ids)
         # 注意 create_text 一律 anchor=NW(顶端对齐): 旧 Label 的 place(y=..) 是
         # 控件顶边定位, 若用 W(C=W 且垂直居中)整行文字会上移约半个行高压到图片
-        ids["name"] = new("text", x + 7, y + THUMB_H + 6, anchor=tk.NW,
+        ids["name"] = new("text", x + 7, y + THUMB_H + 8, anchor=tk.NW,
                           text=ellipsize(self._livery_title(it), 24),
-                          font=(FONT_DATA, 9, "bold"), fill=name_fg)
+                          font=CARD_FONT_NAME, fill=name_fg)
         # 车型名允许换行(最多两行), 尽量完整显示(width=THUMB_W-4 即 wraplength)
-        ids["car"] = new("text", x + 7, y + THUMB_H + 26, anchor=tk.NW,
+        ids["car"] = new("text", x + 7, y + THUMB_H + 30, anchor=tk.NW,
                          justify=tk.LEFT, text=self.car_display(it),
                          width=THUMB_W - 4,
-                         font=(FONT_DATA, 8), fill=car_fg)
+                         font=CARD_FONT_CAR, fill=car_fg)
         # 第三行: 车型已识别(或无车型 ID) → 显示作者; 未识别 → 显示 ID 和日期(便于排查)
         known = bool(self.car_table.name("fh6", it.car_id))
         date = it.ts.strftime("%Y-%m-%d") if it.ts else ""
         third = ((it.creator or "?") if known or not it.car_id
                  else _("ID {id}  {date}").format(id=it.car_id, date=date))
-        ids["sub"] = new("text", x + 7, y + THUMB_H + 58, anchor=tk.NW,
+        ids["sub"] = new("text", x + 7, y + THUMB_H + 66, anchor=tk.NW,
                          text=ellipsize(third, 30),
-                         font=(FONT_DATA, 8), fill=sub_fg)
+                         font=CARD_FONT_SUB, fill=sub_fg)
         self._vis_cards[base] = ids
 
     def _paint_thumb(self, base: str, ids: dict):
@@ -953,10 +968,10 @@ class App(tk.Tk):
                                         image=photo, tags=(tag,))
         elif it is None or it.thumb_big is None or self._thumb_fails.get(base, 0) >= 6:
             ids["ph"] = c.create_text(cx, cy, text=_("(无预览图)"), fill="#888888",
-                                      font=(FONT_UI, 8), tags=(tag,))
+                                      font=(FONT_UI, 9), tags=(tag,))
         else:
             ids["ph"] = c.create_text(cx, cy, text=_("加载中…"), fill="#888888",
-                                      font=(FONT_UI, 8), tags=(tag,))
+                                      font=(FONT_UI, 9), tags=(tag,))
         if (HAS_PIL and it is not None and it.itype == "SoulBoundLivery"):
             # 拍卖涂装角标: 默认灰色+拍卖锤; 检测到喷在车上 → 琥珀橙+拍卖锤
             ids["badge"] = c.create_image(
@@ -1888,6 +1903,14 @@ class App(tk.Tk):
         self.rebuild_grid()
         self._ensure_applied_scan()
 
+    def _select_source_filter(self, which: str):
+        """来源维度: 「仅显示拍卖涂装」与「只显示非拍卖涂装」互斥。"""
+        if which == "auction" and self.auction_only.get():
+            self.no_auction_only.set(False)
+        elif which == "mine" and self.no_auction_only.get():
+            self.auction_only.set(False)
+        self.rebuild_grid()
+
     def _select_auction_filter(self, which: str):
         """「拍卖已应用/未应用」独立筛选: 拍卖专用轴内部互斥, 且与通用已喷涂
         筛选互斥; 未扫描过时走同款确认门, 确认后触发内存扫描, 扫描完成前
@@ -2051,6 +2074,10 @@ class App(tk.Tk):
             if it.itype != "Livery" and it.itype != "SoulBoundLivery":
                 continue                       # 仅显示涂装 + 拍卖涂装
             auction = it.itype == "SoulBoundLivery"
+            if auction and it.thumb_big is None and not self.auction_noimg.get():
+                continue                       # 默认不显示无预览图的拍卖涂装(缓存缺失/未匹配)
+            if self.no_auction_only.get() and auction:
+                continue                       # 只显示非拍卖涂装: 隐藏拍卖涂装
             if self.auction_only.get() and not auction:
                 continue                       # 仅显示拍卖涂装: 隐藏「我的设计」
             if not auction:
