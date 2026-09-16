@@ -9,7 +9,7 @@ Browse the liveries in your local *Forza Horizon 6* save outside the game: a til
 ## Features
 
 - 🖼️ **Tiled thumbnails**: reads the `bigThumb` previews stored in the save itself and lays all liveries out as a card wall
-- 🏎️ **Real car names**: ships with a 660-car ID table (aligned entry-by-entry with in-game data; re-checked against game 6.420.696.0 for v1.3.0 — no new cars, 9 model-year fixes per the in-game ModelShort year suffixes) — no more guessing from a bare number
+- 🏎️ **Real car names**: ships with a 671-car ID table (aligned entry-by-entry with in-game data; re-checked against game 6.420.696.0 for v1.3.0 — no new cars, 9 model-year fixes per the in-game ModelShort year suffixes; manually re-verified entry-by-entry in 2026-09 — 11 new cars added, 48 existing entries fixed) — no more guessing from a bare number
 - 📍 **In-game position**: every livery is labeled with its row/column in the game's "My Liveries" grid (thumbnail badge + details), and the wall can follow the in-game order
 - 🎯 **Auto-locate**: the details panel shows the shortest arrow-key path from row 1 / column 1 (using edge wrap-around), and the "auto-locate" button brings the game to the foreground and sends those keystrokes, landing exactly on the chosen livery
 - 📌 **Always on top**: pin the window above the game so you can look up and locate liveries without leaving it
@@ -124,7 +124,7 @@ The save-header parsing logic is based on the reverse-engineering work of the up
 real local FH4/FH5/FH6 saves (the FH6 header v7 layer-count / car-ID offsets were contributed by this project).
 Following the upstream, this project is licensed under **AGPL-3.0** as well.
 
-The car ID table originally came from [HDR's FH6 Car Ordinals](https://gist.github.com/HDR/0659d1717bc61504bf83750628963f4f) and has since been aligned entry-by-entry with the game's `Data_Car.str` string table (660 cars).
+The car ID table originally came from [HDR's FH6 Car Ordinals](https://gist.github.com/HDR/0659d1717bc61504bf83750628963f4f) and has since been aligned entry-by-entry with the game's `Data_Car.str` string table (671 cars); it was manually re-verified entry-by-entry in 2026-09 by McEvofusion (11 new cars, 48 fixes).
 
 ## Disclaimer
 
