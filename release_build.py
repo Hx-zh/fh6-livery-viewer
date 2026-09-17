@@ -346,9 +346,12 @@ def gitee_upload(version: str, zips: list[Path], token: str) -> None:
 
 
 def verify_remote_cars(tries: int = 5, wait_s: float = 10.0) -> None:
-    """双端 raw 与本地 cars.json 字节级比对(gitee/github 必须一致, 重试兜传播抖动;
-    jsdelivr 对分支引用有缓存滞后, 仅提示不阻断)。"""
-    local = (ROOT / "cars.json").read_bytes()
+    """双端 raw 与仓库 cars.json 字节级比对(gitee/github 必须一致, 重试兜传播抖动;
+    jsdelivr 对分支引用有缓存滞后, 仅提示不阻断)。
+    比对基准用 HEAD blob 而非工作区文件——autocrlf 可能把工作区 CRLF 转成
+    入库 LF, raw 端点返回 blob 字节, 与工作区直接比会因换行符误报。"""
+    local = subprocess.run(["git", "show", "HEAD:cars.json"],
+                           capture_output=True, check=True).stdout
     pending = {"gitee": carupdate.SOURCE_URLS["gitee"],
                "github": carupdate.SOURCE_URLS["github"]}
     for attempt in range(1, tries + 1):
