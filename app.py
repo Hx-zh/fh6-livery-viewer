@@ -3,7 +3,8 @@
 app.py — FH6 涂装查看器 (GUI)
 
 仅查看《极限竞速:地平线 6》存档中的涂装, 主视图为缩略图平铺, 只读。
-车型名表 cars.json 随程序分发(打包时内嵌进 exe, 不再释放到用户目录)。
+车型名表 cars.json 随程序分发(打包时内嵌进 exe, 不再释放到用户目录),
+并支持在线更新(仓库 raw 三源回退, 见 carupdate.py; 发布数据用 release_build.py --data-only)。
 
 用法: python app.py
 打包: python -m PyInstaller FH6LiveryViewer.spec(勿用损坏的 pyinstaller.exe shim)
@@ -28,6 +29,7 @@ from ctypes import wintypes
 from pathlib import Path
 from tkinter import filedialog, font as tkfont, messagebox, ttk
 
+import carupdate
 import fh6save
 import gamemem
 import i18n
@@ -54,13 +56,17 @@ else:
     CARS_JSON = APP_DIR / "cars.json"
 BACKUP_DIR = APP_DIR / "backups"
 
-APP_VERSION = "1.7.2"
+APP_VERSION = "1.8.0"
 PROJECT_URL = "https://github.com/Hx-zh/fh6-livery-viewer"
 RELEASES_URL = PROJECT_URL + "/releases"
 # Gitee 镜像(国内更新加速; 发布时需同步推送到该仓库并建同名 release):
 # 简中版(默认语言)的「更新链接」指向这里, 其余语言仍指向 GitHub
 GITEE_PROJECT_URL = "https://gitee.com/hx_zh/fh6-livery-viewer"
 GITEE_RELEASES_URL = GITEE_PROJECT_URL + "/releases"
+
+# 车型名表在线更新(数据源/缓存见 carupdate 模块; 发布数据用 release_build.py --data-only)
+CARS_UA = f"FH6LiveryViewer/{APP_VERSION}"   # 请求 UA(各源日志可区分本工具流量)
+CARS_CHECK_DELAY_MS = 8000                   # 启动后自动检查的延迟(避开存档首扫)
 
 
 def update_url() -> str:
@@ -177,6 +183,22 @@ def force_foreground(hwnd) -> bool:
         if tgt_tid != fg_tid:
             _u32.AttachThreadInput(cur, tgt_tid, False)
     return _u32.GetForegroundWindow() == hwnd
+
+
+def fmt_local(dt) -> str:
+    """把本地时区感知的 datetime 格式化为 'YYYY-MM-DD HH:MM:SS (UTC±hh:mm)'。
+    创建/下载时间都带时区后缀, 让用户一眼看清显示的是本地时间, 避免跨时区误读。"""
+    if dt is None:
+        return "?"
+    out = dt.strftime("%Y-%m-%d %H:%M:%S")
+    off = dt.utcoffset()
+    if off is not None:
+        total = int(off.total_seconds())
+        sign = "+" if total >= 0 else "-"
+        total = abs(total)
+        hh, mm = divmod(total // 60, 60)
+        out += f" (UTC{sign}{hh:02d}:{mm:02d})"
+    return out
 
 
 def fmt_size(n: int) -> str:
@@ -379,6 +401,18 @@ class App(tk.Tk):
         self.minsize(1000, 620)
 
         self.car_table = CarTable(CARS_JSON)
+        # 车型名表在线更新: 启动读缓存(本地读, 零网络), 有效且不旧于内嵌则采用——
+        # 首次建墙即正确数据, 整页重载只发生在真实数据变更日(见 carupdate 模块头)
+        self._cars_builtin_n = self.car_table.known_count("fh6")  # 内置表条数(设置界面展示)
+        self._cars_src = ""            # 当前生效的在线数据来源(""=内置表)
+        self._cars_checking = False    # 在线检查进行中(防重入)
+        self._cars_dlg: tk.Toplevel | None = None   # 设置对话框存活引用(messagebox 父窗口)
+        self._cars_info_var = tk.StringVar(value="")
+        carupdate.init_cache_dir()
+        cached, self._cars_state = carupdate.load_cached()
+        if cached is not None and self._cars_adopt_cached(cached):
+            self.car_table.replace(cached)
+            self._cars_src = str(self._cars_state.get("source", ""))
         self.ops = SaveOps(BACKUP_DIR)
         self.saves: list[dict] = []
         self.current: dict | None = None
@@ -393,7 +427,8 @@ class App(tk.Tk):
         self._dup_pending = False                 # 重复分析进行中(防重入)
         self._dup_cfg = fh6save.DEFAULT_DUP_RULE  # 重复判定条件(参数对话框可改, 会话级)
         self.quick_filter: tuple | None = None    # 右键快筛 ("car",id)/("creator",name)/None
-        self._applied: set[str] | None = None     # 车上涂装 base 集合(运行时内存扫描, None=未扫描)
+        self._applied: set[str] | None = None     # 车上涂装 base 集合(清单法/内存扫描, None=未检测)
+        self._applied_n = 0                       # 已喷涂条目数(计数展示用, 与 _applied 同步维护)
         self._applied_pending = False             # 已喷涂扫描进行中(防重入)
         self._mem_reader = None                   # 常驻 gamemem.GameMemoryReader(缓存命中区域)
         self._mem_pid = None                      # 上次扫描时的游戏 PID(变了则重建 reader)
@@ -442,6 +477,13 @@ class App(tk.Tk):
         self.rescan_saves()
         self._applied_rescan_tick()          # 启动「已喷涂」定期快速重扫(开关打开且游戏运行时生效)
         self.after(WATCH_INTERVAL_MS, self._watch_tick)   # 启动「自动刷新」轮询(默认开)
+        # 车型名表在线更新: 自动开关开且距上次检查 ≥24h 才后台检查(延迟避开首扫)
+        if (carupdate.cache_dir() is not None
+                and bool(self._cars_state.get("auto", True))
+                and time.time() - float(self._cars_state.get("checked_at", 0.0))
+                >= carupdate.CHECK_INTERVAL_S):
+            self.after(CARS_CHECK_DELAY_MS,
+                       lambda: self.check_cars_online(manual=False))
 
     def _on_close(self):
         """关窗: 取消自动刷新防抖 job, 停掉缩略图线程池(cancel 未开始的任务)再销毁。"""
@@ -623,6 +665,14 @@ class App(tk.Tk):
                         font=(FONT_DATA, 8, "underline"))
         link.pack(fill=tk.X)
         link.bind("<Button-1>", lambda _e, u=_u: webbrowser.open(u))
+        # Star 引导: 与更新链接同语言的仓库页(简中 Gitee, 其余 GitHub)
+        _s = GITEE_PROJECT_URL if i18n.LANG == "zh" else PROJECT_URL
+        star = tk.Label(footer,
+                        text=_("觉得好用? 去 {url} 点个 ⭐ Star 支持一下").format(url=_s),
+                        fg="#0066cc", cursor="hand2", anchor=tk.W,
+                        font=(FONT_DATA, 8, "underline"))
+        star.pack(fill=tk.X)
+        star.bind("<Button-1>", lambda _e, u=_s: webbrowser.open(u))
         tk.Label(footer, anchor=tk.NW, justify=tk.LEFT, wraplength=400,
                  fg="#777777", font=(FONT_UI, 8),
                  text=_("本工具与 Microsoft、Xbox、Playground Games、Turn 10 无关，Forza 相关商标归其各自所有者。\n"
@@ -1316,6 +1366,7 @@ class App(tk.Tk):
             self._dup_feats = None
             self._dup_pending = False
             self._applied = None
+            self._applied_n = 0
             self._applied_pending = False
             self.quick_filter = None
             self._layout, self._total_cols = {}, 0
@@ -1355,6 +1406,7 @@ class App(tk.Tk):
         self._dup_feats = None
         self._dup_pending = False
         self._applied = None                 # 车上涂装标记与游戏实时档案绑定, 切存档即失效
+        self._applied_n = 0
         self._applied_pending = False
         self.quick_filter = None
         self._img_cache.clear()
@@ -1369,11 +1421,7 @@ class App(tk.Tk):
         self._set_info(_("未选择条目"))
         self.thumb_label.configure(image="", text=_("(无预览)"))
         # 车厂下拉: 只列出当前存档涂装实际涉及的车厂
-        brands = sorted({b for it in self.items if it.itype == "Livery"
-                         for b in [self._brand_of(it)] if b}, key=str.lower)
-        self.brand_combo.configure(values=[_("全部车厂")] + brands)
-        if self.brand_var.get() not in (_("全部车厂"), *brands):
-            self.brand_var.set(_("全部车厂"))
+        self._refresh_brands()
         # 重复检测按需触发(解码缩略图算哈希很慢): 见 _ensure_dup_analysis
         # 自动刷新: 重建签名基线并取消待触发的增量刷新(本次全量扫描已是最新)
         self._save_sig = fh6save.save_signature(Path(self.current["dir"]))
@@ -1385,6 +1433,8 @@ class App(tk.Tk):
         self._watch_offline = False
         self._header_fails.clear()
         self.rebuild_grid()
+        # 喷涂状态主路径(清单法): 不开游戏即可判定, 启动/切存档后自动标记
+        self.refresh_applied_from_manifest(quiet=True)
 
     # ------------------------------------------------------------ 自动刷新(改动1)
 
@@ -1448,6 +1498,9 @@ class App(tk.Tk):
             changed = (self._cache_sig is not None and sig is not None)
             self._cache_sig = sig
             if changed:
+                # 清单变化 = 车库外观变动/缩略图水合: 先刷新喷涂状态(清单法,
+                # 游戏运行中喷/卸涂装会实时改写第二表), 再同步拍卖缩略图
+                self.refresh_applied_from_manifest(quiet=True)
                 self._sync_auction_cache(cache)
         except Exception:
             traceback.print_exc()           # 保险丝: 缓存轮询异常不影响存档轮询
@@ -1520,11 +1573,7 @@ class App(tk.Tk):
                          for b, (x, y) in self._layout.items()}
         if self._applied is not None:
             self._applied -= gone
-        brands = sorted({b for it in self.items if it.itype == "Livery"
-                         for b in [self._brand_of(it)] if b}, key=str.lower)
-        self.brand_combo.configure(values=[_("全部车厂")] + brands)
-        if self.brand_var.get() not in (_("全部车厂"), *brands):
-            self.brand_var.set(_("全部车厂"))
+        self._refresh_brands()
         # 重复检测: 分析已跑过 → 增量提取新条目特征后重算; 未跑过 → 保持按需 lazy
         if self._dup_feats is not None:
             for b in gone | set(added) | set(changed):
@@ -1696,9 +1745,11 @@ class App(tk.Tk):
         ttk.Label(body, text=_("difflib 相似度 0~1; 任一方名称为空按 0 处理"),
                   foreground="#777777").grid(row=4, column=4, sticky=tk.W)
         cb_created = _opt(5, _("创建时间:"), T3,
-                          _("文件名时间戳(≈作者创作时间); 任一方缺失则条件不成立"))
+                          _("header 内嵌的作者创作时间; 任一方缺失则条件不成立"))
         cb_down = _opt(6, _("下载时间:"), T3,
                        _("文件 mtime(≈玩家下载落盘时间); 任一方缺失则条件不成立"))
+        cb_layers = _opt(7, _("层数:"), T3,
+                         _("header 内嵌图层数; 同层数是重复的强信号; 任一方未解析则条件不成立"))
 
         def _fill_form(r: fh6save.DupRule, tmpl_name: str | None = None):
             """把条件对象回填到表单(打开时回填上次应用的值 / 选模板时填表)。"""
@@ -1725,6 +1776,8 @@ class App(tk.Tk):
                            (_("相同") if r.created == "same" else _("不同")))
             cb_down.set(_("不参与") if r.downloaded is None else
                         (_("相同") if r.downloaded == "same" else _("不同")))
+            cb_layers.set(_("不参与") if r.layers is None else
+                          (_("相同") if r.layers == "same" else _("不同")))
             if tmpl_name:
                 tmpl_desc.configure(
                     text=next(d for n, d, _ in DUP_TEMPLATES if n == tmpl_name))
@@ -1755,7 +1808,7 @@ class App(tk.Tk):
                   text=_("判定方式: 两两配对, 同时满足以上启用条件的两条涂装判为重复;"
                          "并按传递关系合并成组(A~B、B~C ⇒ 三者同组)。"
                          "条件越宽松组越大。改动仅本次运行有效。")).grid(
-            row=7, column=0, columnspan=5, sticky=tk.W, pady=(8, 0))
+            row=8, column=0, columnspan=5, sticky=tk.W, pady=(8, 0))
 
         def _combo3(cb):
             return {_("任意"): "any", _("相同"): "same", _("不同"): "diff"}.get(
@@ -1789,7 +1842,8 @@ class App(tk.Tk):
                 raise
             return fh6save.DupRule(key="重复", car=_combo3(cb_car),
                                    author=_combo3(cb_author), img=img, name=name,
-                                   created=_t3(cb_created), downloaded=_t3(cb_down))
+                                   created=_t3(cb_created), downloaded=_t3(cb_down),
+                                   layers=_t3(cb_layers))
 
         def _save():
             try:
@@ -1896,10 +1950,12 @@ class App(tk.Tk):
             self.auction_applied_only.set(False)
             self.auction_unapplied_only.set(False)
         if var.get() and self._applied is None:
-            if not self._confirm_applied_scan():
-                var.set(False)
-                return
-            self._applied_from_button = True
+            # 未检测: 先试清单法(零风险不开游戏); 不可用才走内存扫描确认门
+            if not self.refresh_applied_from_manifest(quiet=True):
+                if not self._confirm_applied_scan():
+                    var.set(False)
+                    return
+                self._applied_from_button = True
         self.rebuild_grid()
         self._ensure_applied_scan()
 
@@ -1913,8 +1969,9 @@ class App(tk.Tk):
 
     def _select_auction_filter(self, which: str):
         """「拍卖已应用/未应用」独立筛选: 拍卖专用轴内部互斥, 且与通用已喷涂
-        筛选互斥; 未扫描过时走同款确认门, 确认后触发内存扫描, 扫描完成前
-        拍卖状态先用 .manifest 注册表(cache_registered)兜底。"""
+        筛选互斥; 未检测时先走清单法(读缓存清单, 零风险), 清单不可用才走
+        内存扫描确认门; 内存扫描完成前拍卖状态用 .manifest 注册表
+        (cache_registered)兜底。"""
         var = (self.auction_applied_only if which == "applied"
                else self.auction_unapplied_only)
         if which == "applied" and self.auction_applied_only.get():
@@ -1925,10 +1982,12 @@ class App(tk.Tk):
             self.applied_only.set(False)
             self.unapplied_only.set(False)
             if self._applied is None:
-                if not self._confirm_applied_scan():
-                    var.set(False)
-                    return
-                self._applied_from_button = True
+                # 未检测: 先试清单法(零风险不开游戏); 不可用才走内存扫描确认门
+                if not self.refresh_applied_from_manifest(quiet=True):
+                    if not self._confirm_applied_scan():
+                        var.set(False)
+                        return
+                    self._applied_from_button = True
         self.rebuild_grid()
         self._ensure_applied_scan()
 
@@ -1947,8 +2006,49 @@ class App(tk.Tk):
         applied = it is not None and it.applied_key in self._applied
         return _("已喷在车上 ✓") if applied else _("未喷在车上")
 
+    def _livery_token(self, it: SaveItem) -> str:
+        """条目的设计编号: 由内容GUID(即 header 末 16 字节)换算, 普通与拍卖涂装通用。
+        无法换算时返回 ""(无法参与判定)。"""
+        g = (it.content_guid or "").strip()
+        if not g or set(g) == {"0"} or len(g) != 32:
+            return ""
+        try:
+            return fh6save.crockford32_rfc(bytes.fromhex(g))
+        except ValueError:
+            return ""
+
+    def refresh_applied_from_manifest(self, quiet: bool = False) -> bool:
+        """喷涂状态检测(现行主路径): 读游戏缓存清单第二表「在册名单」判定。
+
+        不扫游戏内存、不需要游戏运行; 清单路径取自系统用户目录(随账户变化)。
+        清单不可用(未找到/损坏)时置 _applied=None(待检测)并返回 False,
+        绝不把「读不到」误判成「未喷涂」——由调用方决定是否回退内存扫描。"""
+        if not self.current or self.current.get("game") != "fh6":
+            return False
+        toks = fh6save.manifest_applied_tokens()
+        if toks is None:
+            self._applied = None
+            self._applied_n = 0
+            if not quiet:
+                self.status_var.set(_("喷涂状态: 未找到游戏缓存清单, 无法判定(显示待检测)"))
+            return False
+        hit: set = set()
+        n = 0
+        for it in self.items:
+            tok = self._livery_token(it)
+            if tok and tok in toks:
+                hit.add(it.base)
+                hit.add(it.applied_key)     # 内存扫描集合按归一化名, 两种键都收
+                n += 1
+        self._applied = hit
+        self._applied_n = n
+        self.rebuild_grid()
+        if not quiet:
+            self.status_var.set(_("喷涂状态: 已刷新, {n} 个涂装正在车上").format(n=n))
+        return True
+
     def _ensure_applied_scan(self, force: bool = False):
-        """已喷涂检测按需触发: 仅 FH6 存档 + 游戏运行中; 后台只读扫描游戏内存。
+        """已喷涂检测兜底(内存扫描): 仅清单法不可用且游戏运行时使用。
         确认弹窗不在此处——统一由入口(按钮/开关)的 _confirm_applied_scan() 把关。"""
         if not self.current or self.current.get("game") != "fh6":
             return
@@ -1994,6 +2094,7 @@ class App(tk.Tk):
                     parent=self)
             return
         self._applied = names
+        self._applied_n = len(names)
         self.rebuild_grid()
         self.status_var.set(_("已喷涂检测: {n} 个涂装正在车上").format(n=len(names)))
         if from_button:
@@ -2034,6 +2135,7 @@ class App(tk.Tk):
         self._applied_pending = False
         if names is not None and names != self._applied:
             self._applied = names
+            self._applied_n = len(names)
             self.rebuild_grid()
             self.status_var.set(_("已喷涂检测: {n} 个涂装正在车上").format(n=len(names)))
 
@@ -2053,6 +2155,15 @@ class App(tk.Tk):
         """条目的车厂名; 车型未标注时为空串。"""
         name = self.car_table.name("fh6", it.car_id)
         return fh6save.car_brand(name) if name else ""
+
+    def _refresh_brands(self) -> None:
+        """车厂下拉重算: 只列出当前存档涂装实际涉及的车厂。
+        扫描/自动刷新/车型表在线更新热替换后共用(表更新可能改变车厂集合)。"""
+        brands = sorted({b for it in self.items if it.itype == "Livery"
+                         for b in [self._brand_of(it)] if b}, key=str.lower)
+        self.brand_combo.configure(values=[_("全部车厂")] + brands)
+        if self.brand_var.get() not in (_("全部车厂"), *brands):
+            self.brand_var.set(_("全部车厂"))
 
     def _on_group_select(self, _e=None):
         """「分组显示」切换: 选「车厂/作者」时把主选排序同步为对应模式,
@@ -2214,8 +2325,8 @@ class App(tk.Tk):
             lines.append(_("按键路径: {path}").format(
                 path=path or _("无需按键(就在 1行1列)")))
         lines += [
-            _("日期: {ts}").format(
-                ts=it.ts.strftime("%Y-%m-%d %H:%M:%S") if it.ts else "?"),
+            _("创建时间: {t}").format(t=fmt_local(it.created)),
+            _("下载时间: {t}").format(t=fmt_local(it.ts)),
             _("状态: {status}").format(
                 status=_("已分享") if it.published else _("本地")),
             _("大小: {size}").format(size=fmt_size(it.total_size)),
@@ -2271,12 +2382,143 @@ class App(tk.Tk):
         return True
 
     def confirm_detect_applied(self):
-        """顶栏「⚠ 检测喷涂状态」: 确认后开始内存扫描, 完成即用喷漆角标标出
-        (角标常显, 无需开关); 检测完成由 _applied_ready 弹「已标记喷涂」。"""
+        """顶栏「⚠ 检测喷涂状态」: 优先清单法(读本地缓存文件, 零风险无确认,
+        不需要游戏运行); 清单不可用且游戏在跑时回退内存扫描(风险确认门把关),
+        完成即用喷漆角标标出(角标常显, 无需开关)。"""
+        if self.refresh_applied_from_manifest():
+            messagebox.showinfo(
+                _("检测喷涂状态"),
+                _("已标记喷涂\n\n{n} 个涂装正喷在车上, 已用喷漆角标标出。").format(
+                    n=self._applied_n),
+                parent=self)
+            return
         if not self._confirm_applied_scan():
             return
         self._applied_from_button = True     # 标记本次扫描来自确认流程, 完成后弹结果
         self._ensure_applied_scan(force=True)
+
+    # ------------------------------------------------------------ 车型名表在线更新
+
+    def _cars_adopt_cached(self, cached: dict) -> bool:
+        """启动时决定是否用在线缓存覆盖内嵌表: 条目更多 → 用;
+        条目相同但内容不同 → 仅当缓存抓取时间晚于 exe 构建时间才用(防旧缓存
+        压过新版 exe 内嵌的更新数据; 源码运行无此顾虑直接用); 更少 → 忽略(不删)。"""
+        emb = self.car_table.snapshot()
+        ce, cc = carupdate.fh6_count(emb), carupdate.fh6_count(cached)
+        if cc > ce:
+            return True
+        if cc == ce and cached != emb:
+            if not getattr(sys, "frozen", False):
+                return True
+            try:
+                built = Path(sys.executable).stat().st_mtime
+            except OSError:
+                return False
+            return float(self._cars_state.get("fetched_at", 0.0)) > built
+        return False
+
+    def _cars_parent(self) -> tk.Misc:
+        """在线检查结果弹窗的父窗口: 设置对话框存活时用它(规避 grab_set 模态阻塞)。"""
+        try:
+            if self._cars_dlg is not None and self._cars_dlg.winfo_exists():
+                return self._cars_dlg
+        except tk.TclError:
+            pass
+        return self
+
+    def check_cars_online(self, manual: bool = False) -> None:
+        """车型名表在线检查: daemon 线程逐源 fetch(单源 6s 超时), 结果回主线程。
+        manual=True 立即检查并弹窗反馈; 自动检查静默(失败只丢状态栏, 现有数据不动)。"""
+        if self._cars_checking:
+            if manual:
+                messagebox.showinfo(_("车型名表(在线更新)"),
+                                    _("正在检查车型表更新…"), parent=self._cars_parent())
+            return
+        self._cars_checking = True
+        if manual:
+            self.status_var.set(_("正在检查车型表更新…"))
+        prefer_gitee = i18n.LANG == "zh"
+        min_count = max(carupdate.MIN_FH6,
+                        self.car_table.known_count("fh6") * 9 // 10)
+
+        def _work():
+            try:
+                src, data = carupdate.fetch(CARS_UA, prefer_gitee, min_count)
+                err = ""
+            except carupdate.CarUpdateError as e:
+                src, data, err = "", None, str(e)
+            try:
+                self.after(0, lambda: self._cars_check_done(src, data, err, manual))
+            except RuntimeError:
+                pass                        # 窗口已销毁, 结果不再需要
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _cars_check_done(self, src: str, data: dict | None, err: str,
+                         manual: bool) -> None:
+        self._cars_checking = False
+        carupdate.mark_checked()            # 失败也计入节流, 避免离线用户每启动都打网
+        self._cars_state = carupdate.state()
+        if data is None:
+            if manual:
+                messagebox.showwarning(
+                    _("车型名表(在线更新)"),
+                    _("车型表检查失败({err}); 已继续使用当前数据").format(
+                        err=err or _("读取失败")),
+                    parent=self._cars_parent())
+            return
+        if data == self.car_table.snapshot():
+            if manual:
+                messagebox.showinfo(
+                    _("车型名表(在线更新)"),
+                    _("车型表已是最新({n} 辆)").format(n=carupdate.fh6_count(data)),
+                    parent=self._cars_parent())
+            return
+        old = self.car_table.known_count("fh6")
+        self.car_table.replace(data)
+        carupdate.save_cache(data, src)
+        self._cars_state = carupdate.state()
+        self._cars_src = src
+        self._refresh_brands()
+        self.rebuild_grid()
+        if self._selected:
+            self.select(self._selected)     # 刷新详情面板车型行
+        self._cars_update_info()
+        msg = _("车型表已更新: {old} → {new} 辆(来源 {src})").format(
+            old=old, new=carupdate.fh6_count(data), src=src)
+        self.status_var.set(msg)
+        if manual:
+            messagebox.showinfo(_("车型名表(在线更新)"), msg, parent=self._cars_parent())
+
+    def reset_cars_builtin(self) -> None:
+        """恢复内置车型表: 重读内嵌 cars.json 覆盖当前表 + 清在线缓存。"""
+        self.car_table.replace(CarTable(CARS_JSON).snapshot())
+        carupdate.clear_cache()
+        self._cars_state = carupdate.state()
+        self._cars_src = ""
+        self._refresh_brands()
+        self.rebuild_grid()
+        if self._selected:
+            self.select(self._selected)
+        self._cars_update_info()
+        self.status_var.set(_("已恢复内置车型表({n} 辆)").format(
+            n=self.car_table.known_count("fh6")))
+
+    def _cars_update_info(self) -> None:
+        """设置对话框「车型名表」区的两行信息(内置/在线, 谁在生效标注谁)。"""
+        line1 = _("内置车型表: {n} 辆").format(n=self._cars_builtin_n)
+        line2 = _("在线车型表: 尚未获取")
+        fetched = float(self._cars_state.get("fetched_at", 0.0))
+        if fetched > 0:
+            line2 = _("在线车型表: {n} 辆(更新于 {date}, 来源 {src})").format(
+                n=int(self._cars_state.get("count", 0)),
+                date=time.strftime("%Y-%m-%d %H:%M", time.localtime(fetched)),
+                src=self._cars_state.get("source", "") or "?")
+        if self._cars_src:
+            line2 += " " + _("（当前生效）")
+        else:
+            line1 += " " + _("（当前生效）")
+        self._cars_info_var.set(line1 + "\n" + line2)
 
     def open_settings(self):
         """设置窗口: 自动定位的按键节奏(毫秒), 仅本次运行有效(不落盘)。"""
@@ -2285,6 +2527,14 @@ class App(tk.Tk):
         dlg.resizable(False, False)
         dlg.transient(self)
         dlg.grab_set()                          # 模态
+        self._cars_dlg = dlg                    # 车型表在线检查的结果弹窗父窗口(存活期间)
+
+        def _on_dlg_destroy(e):
+            if e.widget is dlg:
+                self._cars_dlg = None
+
+        dlg.bind("<Destroy>", _on_dlg_destroy, add="+")
+        self._cars_update_info()
 
         body = ttk.Frame(dlg, padding=12)
         body.pack(fill=tk.BOTH, expand=True)
@@ -2299,10 +2549,33 @@ class App(tk.Tk):
         ttk.Spinbox(body, from_=0, to=2000, width=8,
                     textvariable=gap_var).grid(row=2, column=1, sticky=tk.W, pady=2)
         ttk.Label(body, text=_("(仅本次运行有效)")).grid(
-            row=3, column=0, columnspan=2, sticky=tk.W, pady=(2, 0))
+            row=3, column=0, columnspan=2, pady=(2, 0))
+
+        # 车型名表在线更新: 信息两行 + 自动检查开关(唯一落盘设置) + 手动操作
+        cars = ttk.LabelFrame(body, text=_("车型名表(在线更新)"), padding=(8, 4))
+        cars.grid(row=4, column=0, columnspan=2, sticky=tk.EW, pady=(10, 0))
+        cars.columnconfigure(0, weight=1)
+        ttk.Label(cars, textvariable=self._cars_info_var,
+                  font=(FONT_DATA, 9), justify=tk.LEFT).grid(
+            row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 4))
+        auto_var = tk.BooleanVar(value=bool(self._cars_state.get("auto", True)))
+
+        def _toggle_auto():
+            carupdate.set_auto(auto_var.get())
+            self._cars_state = carupdate.state()
+
+        ttk.Checkbutton(cars, text=_("每日自动检查在线更新(联网 Gitee/GitHub)"),
+                        variable=auto_var,
+                        command=_toggle_auto).grid(row=1, column=0, columnspan=2,
+                                                   sticky=tk.W, pady=(0, 6))
+        ttk.Button(cars, text=_("检查更新…"),
+                   command=lambda: self.check_cars_online(manual=True)).grid(
+            row=2, column=0, sticky=tk.W, padx=(0, 6))
+        ttk.Button(cars, text=_("恢复内置数据"),
+                   command=self.reset_cars_builtin).grid(row=2, column=1, sticky=tk.W)
 
         btns = ttk.Frame(body)
-        btns.grid(row=4, column=0, columnspan=2, sticky=tk.E, pady=(10, 0))
+        btns.grid(row=5, column=0, columnspan=2, sticky=tk.E, pady=(10, 0))
 
         def _save():
             try:

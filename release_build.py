@@ -7,6 +7,7 @@
                                             #   + git tag + push origin + gh release create
     python release_build.py --publish --gitee   # 发布后顺带推送 Gitee 镜像
     python release_build.py --gitee-release     # 仅在 Gitee 建 release + 传 5 zip(需 GITEE_TOKEN)
+    python release_build.py --data-only         # 仅发布 cars.json 数据(不发版, 见下)
 
 交互式向导(无参数或 -i): 依次询问
   1) 发布版本号(默认读 app.py APP_VERSION; 不一致时可选择自动改写 app.py,
@@ -23,6 +24,10 @@
                     无令牌时依赖本机 git 凭据; 推送失败仅告警不阻断
     --gitee-release 经 Gitee API v5 创建同名 release 并上传 5 zip 附件;
                     令牌见上方交互说明; tag 不存在时 Gitee 会在 main 上自动创建
+    --data-only     仅发布车型表数据(v1.8.0 起): 校验 git 干净 → push origin main
+                    → 推 Gitee 镜像 → 双端 raw URL 与本地 cars.json 字节比对。
+                    不打 tag、不建 release、不出 exe——客户端在线更新
+                    (carupdate.py) 直接读仓库 raw 文件, 官方加新车后走本通道
     --skip-checks   跳过 check_i18n / pyright / git 干净度门禁(仅应急, 发布不应使用)
     --allow-dirty   允许工作区有未提交改动(只放宽 git 干净度; 发布建议每次从提交点出包)
 
@@ -42,11 +47,14 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
+
+import carupdate   # 数据源 URL 常量单一来源(--data-only 校验用)
 
 ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "dist"
@@ -55,7 +63,8 @@ PYINSTALLER = ROOT / ".venv-build" / "Scripts" / "python.exe"
 GH = r"C:\Program Files\GitHub CLI\gh.exe"
 GITEE_REPO = "hx_zh/fh6-livery-viewer"
 GITEE_API = f"https://gitee.com/api/v5/repos/{GITEE_REPO}"
-PYRIGHT_FILES = ("app.py", "fh6save.py", "gamemem.py", "i18n/__init__.py", "check_i18n.py",
+PYRIGHT_FILES = ("app.py", "carupdate.py", "fh6save.py", "gamemem.py",
+                 "i18n/__init__.py", "check_i18n.py",
                  "i18n/lang_en.py", "i18n/lang_ja.py", "i18n/lang_ko.py", "i18n/lang_zhtw.py")
 
 
@@ -336,6 +345,61 @@ def gitee_upload(version: str, zips: list[Path], token: str) -> None:
     print(f"[Gitee] release v{version} 完成: https://gitee.com/{GITEE_REPO}/releases/v{version}")
 
 
+def verify_remote_cars(tries: int = 5, wait_s: float = 10.0) -> None:
+    """双端 raw 与本地 cars.json 字节级比对(gitee/github 必须一致, 重试兜传播抖动;
+    jsdelivr 对分支引用有缓存滞后, 仅提示不阻断)。"""
+    local = (ROOT / "cars.json").read_bytes()
+    pending = {"gitee": carupdate.SOURCE_URLS["gitee"],
+               "github": carupdate.SOURCE_URLS["github"]}
+    for attempt in range(1, tries + 1):
+        for name in list(pending):
+            try:
+                req = urllib.request.Request(
+                    pending[name], headers={"User-Agent": "release_build"})
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    if resp.read() == local:
+                        print(f"[校验] {name} 线上内容与本地一致 ✓")
+                        del pending[name]
+            except OSError:
+                pass
+        if not pending:
+            break
+        print(f"[校验] 第 {attempt}/{tries} 轮未全一致, 余 {', '.join(pending)}"
+              f", {wait_s:.0f}s 后重试")
+        time.sleep(wait_s)
+    if pending:
+        raise SystemExit("线上内容校验未通过: " + ", ".join(pending)
+                         + " (检查推送是否成功/网络, 稍后可单独重跑)")
+    try:
+        req = urllib.request.Request(carupdate.SOURCE_URLS["jsdelivr"],
+                                     headers={"User-Agent": "release_build"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            same = resp.read() == local
+        print(f"[校验] jsdelivr: "
+              + ("一致 ✓" if same else "仍有分支缓存滞后(数小时级, 不阻断, 兜底源可容忍)"))
+    except OSError as e:
+        print(f"[校验] jsdelivr: 暂不可达({e}), 不阻断")
+
+
+def data_only_publish() -> None:
+    """数据更新发布: cars.json 已提交后把 main 推到双端并校验线上内容一致。
+    不打 tag、不建 release、不出 exe——客户端在线更新(carupdate.py)直接读仓库
+    raw 文件, 官方加新车后用本命令发布, 用户 24h 内自动拿到新表。"""
+    r = _run(["git", "status", "--porcelain"], check=False)
+    dirty = [ln for ln in (r.stdout or "").splitlines()
+             if ln.strip() and not ln.startswith("?? ")]
+    if dirty:
+        raise SystemExit("工作区有未提交改动: " + "; ".join(dirty)
+                         + " —— 数据更新=普通 commit, 先提交再发布")
+    r = _run(["git", "log", "-1", "--oneline", "--", "cars.json"], check=False)
+    print(f"[数据] 最新 cars.json 提交: {(r.stdout or '').strip()}")
+    _run(["git", "push", "origin", "main"])
+    token = os.environ.get("GITEE_TOKEN", "").strip()
+    if not push_gitee_mirror(token):
+        print("[数据] 警告: Gitee 镜像未同步, 国内用户暂时读不到新数据(不阻断)")
+    verify_remote_cars()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="FH6LiveryViewer 自动编译/发布")
     ap.add_argument("-i", "--interactive", action="store_true",
@@ -344,6 +408,8 @@ def main() -> int:
     ap.add_argument("--gitee", action="store_true", help="发布后推送 gitee 镜像(main+tags)")
     ap.add_argument("--gitee-release", action="store_true",
                     help="在 Gitee 创建同名 release 并上传 5 个 zip(令牌见交互说明/GITEE_TOKEN)")
+    ap.add_argument("--data-only", action="store_true",
+                    help="仅发布 cars.json 数据: push 双端 + 线上内容校验(不发版)")
     ap.add_argument("--skip-checks", action="store_true")
     ap.add_argument("--pyright", action="store_true", help="强制运行 pyright 门禁")
     ap.add_argument("--allow-dirty", action="store_true")
@@ -353,6 +419,10 @@ def main() -> int:
     version = read_version()
     if args.version and args.version != version:
         raise SystemExit(f"版本不一致: app.py={version} vs --version={args.version}")
+
+    if args.data_only:
+        data_only_publish()
+        return 0
 
     # 无参数(或显式 -i)进入交互式向导: 问版本 → 问目标 → (后文自动检测说明/问令牌)
     interactive = args.interactive or len(sys.argv) == 1

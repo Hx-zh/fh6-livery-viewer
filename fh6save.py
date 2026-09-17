@@ -66,7 +66,8 @@ class SaveItem:
     base: str                 # 共同前缀, 如 Livery_2182_20230820011901
     itype: str                # 原始类型前缀, 如 Livery
     car_id: int               # 车型 ID (来自文件名)
-    ts: datetime | None       # 文件名里的时间戳(≈作者创作时间)
+    ts: datetime | None       # 文件名里的时间戳(UTC→本地, ≈玩家下载/保存时间; 界面称「下载时间」)
+    created: datetime | None = None   # header 内嵌作者创作时间(s2 段年月日时分秒, UTC→本地; 界面称「创建时间」)
     mtime: float | None = None   # 分片文件 mtime 最大值(≈玩家下载落盘时间); 字段级重复规则用
     is_dir: bool = False      # True = pgs 目录型条目, False = Steam 平铺文件
     files: dict = field(default_factory=dict)   # 分片名 -> 完整路径
@@ -78,6 +79,8 @@ class SaveItem:
     layer_count: int = 0       # 仅 FH6(header v7)已分享条目可靠
     header_car_id: int = 0     # header 内嵌的车型 ID (与文件名交叉校验用)
     header_ok: bool = False
+    content_guid: str = ""     # header 末 16 字节 hex(=内容GUID, 普通涂装实测两者一致);
+                               # 清单法喷涂判定的比对键(换算 26 位设计编号用)
     # 拍卖涂装(CacheThumbnails)解析结果: 仅 SoulBoundLivery 条目使用(见「拍卖涂装」专节)
     thumb_cache: Path | None = None      # CacheThumbnails/<GUID>.webp(外部预览图)
     cache_guid: str = ""                 # 命中的 GUID(唯一候选时)
@@ -169,6 +172,21 @@ def parse_header(data: bytes) -> dict:
         raise ValueError("s2 段太短")
     year = _u16(s2, 0)
     month = s2[2]
+    # 完整创建时间(作者创作时间)位于 s2 段: [0:2]年 / [2:4]月 / [4:6]保留(实测恒0)
+    # / [6:8]日 / [8:10]时 / [10:12]分 / [12:14]秒(u16 小端, UTC)。这是游戏内嵌的
+    # 真·作者创作时刻, 与文件名时间戳(玩家下载/保存时间)是两个独立时间,
+    # 研判重复与界面显示应分别取用; 与 ts 口径一致: 按 UTC 解析后立即转本地。
+    created: datetime | None = None
+    if len(s2) >= 14:
+        try:
+            cy, cm = _u16(s2, 0), _u16(s2, 2)
+            cd, ch, cmin, csec = _u16(s2, 6), _u16(s2, 8), _u16(s2, 10), _u16(s2, 12)
+            if (1 <= cm <= 12 and 1 <= cd <= 31 and ch < 24
+                    and cmin < 60 and csec < 60 and 2000 <= cy <= 2100):
+                created = datetime(cy, cm, cd, ch, cmin, csec,
+                                   tzinfo=timezone.utc).astimezone()
+        except (struct.error, ValueError):
+            created = None
     clen = _u32(s2, 28)
     creator = ""
     if 0 < clen <= 64 and 32 + clen * 2 <= len(s2):
@@ -211,7 +229,7 @@ def parse_header(data: bytes) -> dict:
 
     return {
         "name": name, "desc": desc, "published": published,
-        "year": year, "month": month, "creator": creator,
+        "year": year, "month": month, "creator": creator, "created": created,
         "layer_count": layer_count, "header_car_id": header_car_id,
         "version": version, "nlen": nlen,
     }
@@ -316,13 +334,16 @@ def _fill_item(it: SaveItem):
     hdr = it.files.get("header")
     if hdr:
         try:
-            meta = parse_header(hdr.read_bytes())
+            raw = hdr.read_bytes()
+            meta = parse_header(raw)
             it.name = meta["name"]
             it.desc = meta["desc"]
             it.creator = meta["creator"]
             it.published = meta["published"]
             it.layer_count = meta["layer_count"]
             it.header_car_id = meta["header_car_id"]
+            it.content_guid = raw[-16:].hex() if len(raw) >= 16 else ""
+            it.created = meta["created"]
             it.header_ok = True
         except (ValueError, OSError, struct.error):
             it.header_ok = False
@@ -539,8 +560,11 @@ class DupRule:
     name:   None=不比对 | ("min", 相似度下限) | ("max", 相似度上限)
             (difflib 比率 0~1; 双方名称任一为空时相似度按 0 处理)
     created/downloaded: None=不参与 | "same" | "diff"
-            (created=文件名时间戳≈作者创作时间; downloaded=条目 mtime≈下载落盘时间;
+            (created=header 内嵌作者创作时间; downloaded=条目 mtime≈下载落盘时间;
              任一方缺该时间则条件不成立)
+    layers: None=不参与 | "same" | "diff"
+            (header 内嵌图层数; 双方都解析出层数(>0)才可比——
+             同层数是重复的强信号, 但跨设计撞层数也常见, 宜与同车/同作者联用)
     key 仅作为命中标签进入组规则列表; label 为界面展示短语。
     字段默认全部中立(不比对/不参与); 出厂默认条件见 DEFAULT_DUP_RULE。"""
     key: str = "重复"
@@ -551,6 +575,7 @@ class DupRule:
     name: object = None
     created: str | None = None
     downloaded: str | None = None
+    layers: str | None = None
 
 
 # 出厂默认条件: 同车型 + 图片距离≤6(即原「同车复刻」语义), 其余条件不参与
@@ -625,7 +650,7 @@ def detect_duplicates(items: list[SaveItem],
 
     两两配对, 命中任一给定条件的对即并查集合并(传递性: A~B、B~C 则三者同组)。
     条件对象 DupRule 的全部底层参数由用户在 app「重复检测参数」里组合:
-    车型/作者 相同与否 + 图片汉明距离/名称相似度阈值 + 创建/下载时间 相同与否。
+    车型/作者 相同与否 + 图片汉明距离/名称相似度阈值 + 创建/下载时间/层数 相同与否。
 
     features 为 extract_dup_features() 的预计算结果, 缺省时现场计算;
     rules 缺省用 [DEFAULT_DUP_RULE](同车型 + 图片距离≤6)。
@@ -659,6 +684,13 @@ def detect_duplicates(items: list[SaveItem],
             return False
         return (a_val == b_val) if want == "same" else (a_val != b_val)
 
+    def layer_cmp(a: SaveItem, b: SaveItem, want: str) -> bool:
+        """层数条件: 双方 header 都解析出层数(>0)才可比; same=相等, diff=不等。"""
+        if not a.layer_count or not b.layer_count:
+            return False
+        eq = a.layer_count == b.layer_count
+        return eq if want == "same" else not eq
+
     n = len(liveries)
     matched: list[tuple[int, int, list[str]]] = []
     for i in range(n):
@@ -671,7 +703,8 @@ def detect_duplicates(items: list[SaveItem],
             same_author = bool(fa["author"]) and fa["author"] == fb["author"]
             if not same_car and not same_author:
                 # 现有预设要么要求同车、要么要求同作者(无 car=diff+author=any 形态),
-                # 可安全剪枝; 引入新形态规则时需回看此处
+                # 可安全剪枝; 图片/名称/时间/层数等条件不改变该前提——单独使用且
+                # 车型=任意+作者=任意时, 跨车跨作者对会被剪掉, 属已知限制
                 continue
             hd = None
             if fa["hash"] is not None and fb["hash"] is not None:
@@ -713,10 +746,13 @@ def detect_duplicates(items: list[SaveItem],
                             continue
                         if mode == "max" and s >= v:
                             continue
-                if r.created is not None and not time_cmp(a.ts, b.ts, r.created):
+                if r.created is not None and not time_cmp(a.created, b.created,
+                                                          r.created):
                     continue
                 if r.downloaded is not None and not time_cmp(a.mtime, b.mtime,
                                                              r.downloaded):
+                    continue
+                if r.layers is not None and not layer_cmp(a, b, r.layers):
                     continue
                 hit.append(r.key)
             if hit:
@@ -828,6 +864,14 @@ class CarTable:
 
     def known_count(self, game: str) -> int:
         return len(self._data.get(game, {}))
+
+    def snapshot(self) -> dict:
+        """当前整表数据的引用(只读用途: 在线更新前后比对; 调用方不得改动)。"""
+        return self._data
+
+    def replace(self, data: dict) -> None:
+        """热替换整表数据(在线更新应用; 结构已由 carupdate.validate 把关)。"""
+        self._data = data
 
 
 # ---------------------------------------------------------------- 拍卖涂装(CacheThumbnails)
@@ -1066,6 +1110,29 @@ def thumbnail_cache_signature(cache_dir: Path | None = None) -> tuple | None:
     return (int(st.st_size), int(st.st_mtime_ns))
 
 
+def manifest_applied_tokens(cache_dir: Path | None = None) -> "set[str] | None":
+    """喷涂状态判定(清单法, 不扫内存): 取缓存清单第二表「在册名单」的设计编号集合。
+
+    语义(2026-09 本机实测验证): 第二表 = 车库每辆车当前外观的登记(涂装 token 或
+    bm* 底漆), 即「正喷在车上」的权威名单; generation 字段恰为存档用户 ID,
+    证实该表与车库状态绑定。判定口径: 涂装 header 末 16 字节(=内容GUID,
+    普通涂装实测两者一致)换算成 26 位设计编号后与本集合比对——在集合内即已喷涂。
+
+    返回 None 表示清单不可用(目录未找到 / 文件缺失 / 版本不符 / 名单为空);
+    调用方必须把 None 降级为「待检测」, 绝不可当成「未喷涂」, 否则会严重误导。
+    路径取自系统 LOCALAPPDATA(随 Windows 账户变化), 不写死任何绝对地址。"""
+    cache_dir = cache_dir or find_thumbnail_cache()
+    man = load_cache_manifest(cache_dir)
+    if man is None or not man.registry:
+        return None
+    toks: set[str] = set()
+    for name in man.registry:
+        m = CACHE_THUMB_NAME_RE.match(name)
+        if m and m.group("token"):
+            toks.add(m.group("token").lower())
+    return toks or None
+
+
 def attach_auction_thumbnails(items: list[SaveItem],
                               cache_dir: Path | None = None) -> dict:
     """为拍卖涂装(SoulBoundLivery)条目解析 CacheThumbnails 预览图(只读, 幂等)。
@@ -1074,14 +1141,16 @@ def attach_auction_thumbnails(items: list[SaveItem],
       1. 由 header 末 16 字节算 26 位 token;
       2. (车型ID, token) 精确查第一表, 只保留 GUID.webp 真实存在的候选;
       3. 恰好 1 个 → 采用(写入 it.thumb_cache/it.cache_guid);
-         多个 → 记 ambiguous 不猜(同设计多实例的历史行);
+         多个 → 择优: 先取「在册名单里正登记在车上」的那张(车辆实例键精确匹配),
+                取不到再退回文件 mtime 最新的一张(合理近似, 至少比空白好);
          0 个 → 回退「共享设计」: 同 token 跨车型的唯一现存 WebP;
       4. it.cache_registered = 该 token 是否在第二表(注册表)中。
     无法访问缓存/解析失败时所有拍卖条目保持默认值并计入 unmatched。
     返回统计 dict(状态栏/调试用)。"""
     out = {
         "cache_dir": None, "manifest_ok": False, "entries": 0, "registry_count": 0,
-        "total": 0, "matched": 0, "shared": 0, "ambiguous": 0, "unmatched": 0,
+        "total": 0, "matched": 0, "shared": 0, "ambiguous": 0,
+        "ambiguous_resolved": 0, "unmatched": 0,
     }
     auction = [it for it in items if it.itype == "SoulBoundLivery"]
     out["total"] = len(auction)
@@ -1116,6 +1185,15 @@ def attach_auction_thumbnails(items: list[SaveItem],
     registry_tokens = {m.group("token").lower()
                        for name in man.registry
                        if (m := CACHE_THUMB_NAME_RE.match(name)) and m.group("token")}
+    # 注册表精确键集合(车型ID, 车辆实例编号): 多候选时用于挑「正在车上」的那张
+    registry_keys: set[tuple[int, str]] = set()
+    for name in man.registry:
+        m = CACHE_THUMB_NAME_RE.match(name)
+        if m and m.group("instance"):
+            try:
+                registry_keys.add((int(m.group("car_id")), m.group("instance").lower()))
+            except ValueError:
+                pass
 
     for it in auction:
         hdr = it.files.get("header")
@@ -1137,7 +1215,27 @@ def attach_auction_thumbnails(items: list[SaveItem],
             out["matched"] += 1
             continue
         if len(candidates) > 1:
+            # 多候选(同一设计被渲染成多张图, 对应不同车辆实例): 优先取
+            # 「在册名单里(车辆实例正登记在车上)」的那张; 取不到再退回
+            # 文件 mtime 最新的一张。对单命中零影响。
+            reg_hits = []
+            for e in candidates:
+                m = CACHE_THUMB_NAME_RE.match(e.logical_name)
+                if m and m.group("instance"):
+                    if (int(m.group("car_id")), m.group("instance").lower()) in registry_keys:
+                        reg_hits.append(e)
+            pick = None
+            if len(reg_hits) == 1:
+                pick = reg_hits[0]
+            else:
+                # 0 命中或仍多张: 取文件最后修改时间最新的一张
+                try:
+                    pick = max(candidates, key=lambda e: e.path.stat().st_mtime)
+                except OSError:
+                    pick = candidates[0]
+            it.thumb_cache, it.cache_guid = pick.path, pick.guid
             out["ambiguous"] += 1
+            out["ambiguous_resolved"] += 1
             continue
 
         # 共享设计回退: 同 token 跨车型, 只取唯一现存 WebP(绝不任选)
