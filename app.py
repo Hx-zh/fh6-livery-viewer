@@ -13,6 +13,7 @@ app.py — FH6 涂装查看器 (GUI)
 from __future__ import annotations
 
 import ctypes
+import json
 import os
 import queue
 import re
@@ -20,6 +21,7 @@ import sys
 import threading
 import time
 import traceback
+import urllib.request
 from bisect import bisect_right
 from typing import Any
 import tkinter as tk
@@ -64,6 +66,9 @@ RELEASES_URL = PROJECT_URL + "/releases"
 # 页脚「更新链接」两个蓝链之一(另一个是 GitHub); Star 引导所有语言统一去 GitHub
 GITEE_PROJECT_URL = "https://gitee.com/hx_zh/fh6-livery-viewer"
 GITEE_RELEASES_URL = GITEE_PROJECT_URL + "/releases"
+# 软件更新检查(页脚「检查软件更新」): 双端 release 最新 tag 查询, 简中 Gitee 优先
+GH_API_LATEST = "https://api.github.com/repos/Hx-zh/fh6-livery-viewer/releases/latest"
+GITEE_API_LATEST = "https://gitee.com/api/v5/repos/hx_zh/fh6-livery-viewer/releases/latest"
 
 # 车型名表在线更新(数据源/缓存见 carupdate 模块; 发布数据用 release_build.py --data-only)
 CARS_UA = f"FH6LiveryViewer/{APP_VERSION}"   # 请求 UA(各源日志可区分本工具流量)
@@ -403,6 +408,7 @@ class App(tk.Tk):
         self._cars_builtin_n = self.car_table.known_count("fh6")  # 内置表条数(设置界面展示)
         self._cars_src = ""            # 当前生效的在线数据来源(""=内置表)
         self._cars_checking = False    # 在线检查进行中(防重入)
+        self._appupd_checking = False  # 软件更新检查进行中(防重入)
         self._cars_dlg: tk.Toplevel | None = None   # 设置对话框存活引用(messagebox 父窗口)
         self._cars_info_var = tk.StringVar(value="")
         carupdate.init_cache_dir()
@@ -476,6 +482,7 @@ class App(tk.Tk):
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_ui()
+        self._cars_update_info()          # 页脚车型表状态行初值
         if HAS_PIL:
             _applied_badge_sprite()            # 预热喷漆罐角标素材(贴卡时只做一次 PhotoImage 转换)
         self.rescan_saves()
@@ -665,6 +672,8 @@ class App(tk.Tk):
                            font=(FONT_DATA, 8, "underline"))
             lbl.pack(side=tk.LEFT, padx=(6, 0))
             lbl.bind("<Button-1>", lambda _e, u=url: webbrowser.open(u))
+        ttk.Button(row, text=_("检查软件更新"),
+                   command=self._check_app_update).pack(side=tk.LEFT, padx=(6, 0))
         # Star 引导: 所有语言统一去 GitHub 仓库页(描述普通色, 仅「GitHub」为蓝链)
         row2 = tk.Frame(footer)
         row2.pack(fill=tk.X)
@@ -674,6 +683,14 @@ class App(tk.Tk):
                         font=(FONT_DATA, 8, "underline"))
         star.pack(side=tk.LEFT, padx=(6, 0))
         star.bind("<Button-1>", lambda _e: webbrowser.open(PROJECT_URL))
+        # 车型表状态 + 手动检查(从设置挪来): 单行紧凑展示当前生效来源
+        cars_row = tk.Frame(footer)
+        cars_row.pack(fill=tk.X, pady=(2, 0))
+        tk.Label(cars_row, textvariable=self._cars_info_var,
+                 font=(FONT_DATA, 8)).pack(side=tk.LEFT)
+        ttk.Button(cars_row, text=_("检查车型表更新"),
+                   command=lambda: self.check_cars_online(manual=True)).pack(
+            side=tk.LEFT, padx=(6, 0))
         tk.Label(footer, anchor=tk.NW, justify=tk.LEFT, wraplength=400,
                  fg="#777777", font=(FONT_UI, 8),
                  text=_("本工具与 Microsoft、Xbox、Playground Games、Turn 10 无关，Forza 相关商标归其各自所有者。\n"
@@ -2520,20 +2537,77 @@ class App(tk.Tk):
             n=self.car_table.known_count("fh6")))
 
     def _cars_update_info(self) -> None:
-        """设置对话框「车型名表」区的两行信息(内置/在线, 谁在生效标注谁)。"""
-        line1 = _("内置车型表: {n} 辆").format(n=self._cars_builtin_n)
-        line2 = _("在线车型表: 尚未获取")
+        """页脚「车型表」单行状态: 当前生效来源 + 条数(在线已知时并列展示;
+        v1.8.0 从设置对话框两行式改版挪来, 设置里只留开关与恢复内置)。"""
+        cur = self.car_table.known_count("fh6")
         fetched = float(self._cars_state.get("fetched_at", 0.0))
-        if fetched > 0:
-            line2 = _("在线车型表: {n} 辆(更新于 {date}, 来源 {src})").format(
-                n=int(self._cars_state.get("count", 0)),
-                date=time.strftime("%Y-%m-%d %H:%M", time.localtime(fetched)),
-                src=self._cars_state.get("source", "") or "?")
         if self._cars_src:
-            line2 += " " + _("（当前生效）")
+            txt = _("车型表: 在线 {m} 辆({src}, {date})").format(
+                m=cur, src=self._cars_src,
+                date=time.strftime("%m-%d", time.localtime(fetched)))
+        elif fetched > 0:
+            txt = _("车型表: 内置 {n} 辆(在线 {m} 辆, {date})").format(
+                n=cur, m=int(self._cars_state.get("count", 0)),
+                date=time.strftime("%m-%d", time.localtime(fetched)))
         else:
-            line1 += " " + _("（当前生效）")
-        self._cars_info_var.set(line1 + "\n" + line2)
+            txt = _("车型表: 内置 {n} 辆").format(n=cur)
+        self._cars_info_var.set(txt)
+
+    # ------------------------------------------------------------ 软件更新检查
+
+    def _check_app_update(self) -> None:
+        """检查软件更新: 后台查双端 release 最新 tag 与 APP_VERSION 比对
+        (简中 Gitee API 优先、其余 GitHub 优先; 只读 GET, 无遥测)。"""
+        if self._appupd_checking:
+            return
+        self._appupd_checking = True
+        self.status_var.set(_("正在检查软件更新…"))
+        urls = ([GITEE_API_LATEST, GH_API_LATEST] if i18n.LANG == "zh"
+                else [GH_API_LATEST, GITEE_API_LATEST])
+
+        def _work():
+            latest, err = "", ""
+            for u in urls:
+                try:
+                    req = urllib.request.Request(u, headers={"User-Agent": CARS_UA})
+                    with urllib.request.urlopen(req, timeout=6) as r:
+                        tag = json.loads(r.read().decode("utf-8")).get("tag_name", "")
+                    latest = tag.strip().lstrip("vV")
+                    if latest:
+                        err = ""
+                        break
+                except (OSError, ValueError) as e:
+                    err = str(e)
+            try:
+                self.after(0, lambda: self._appupd_done(latest, err))
+            except RuntimeError:
+                pass                        # 窗口已销毁, 结果不再需要
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _appupd_done(self, latest: str, err: str) -> None:
+        self._appupd_checking = False
+        title = _("检查软件更新")
+        if not latest:
+            messagebox.showwarning(
+                title, _("软件更新检查失败({err})").format(err=err or _("读取失败")),
+                parent=self)
+            return
+        try:
+            newer = (tuple(int(x) for x in latest.split("."))
+                     > tuple(int(x) for x in APP_VERSION.split(".")))
+        except ValueError:
+            newer = False
+        if not newer:
+            messagebox.showinfo(
+                title, _("软件已是最新版本(v{v})").format(v=APP_VERSION), parent=self)
+            return
+        if messagebox.askyesno(
+                title,
+                _("发现新版本 v{new}(当前 v{cur}), 打开下载页?").format(
+                    new=latest, cur=APP_VERSION),
+                parent=self):
+            webbrowser.open(GITEE_RELEASES_URL if i18n.LANG == "zh" else RELEASES_URL)
 
     def open_settings(self):
         """设置窗口: 自动定位的按键节奏(毫秒), 确定后经 appconfig 持久化。"""
@@ -2549,7 +2623,6 @@ class App(tk.Tk):
                 self._cars_dlg = None
 
         dlg.bind("<Destroy>", _on_dlg_destroy, add="+")
-        self._cars_update_info()
 
         body = ttk.Frame(dlg, padding=12)
         body.pack(fill=tk.BOTH, expand=True)
@@ -2578,22 +2651,18 @@ class App(tk.Tk):
         # 车型名表在线更新: 信息两行 + 自动检查开关(唯一落盘设置) + 手动操作
         cars = ttk.LabelFrame(body, text=_("车型名表(在线更新)"), padding=(8, 4))
         cars.grid(row=5, column=0, columnspan=2, sticky=tk.EW, pady=(10, 0))
-        cars.columnconfigure(0, weight=1)
-        ttk.Label(cars, textvariable=self._cars_info_var,
-                  font=(FONT_DATA, 9), justify=tk.LEFT).grid(
-            row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 4))
+        # 状态与手动检查按钮在主界面页脚(v1.8.0 挪出); 此处只留开关与恢复内置
+
         def _toggle_cars_auto():
             appconfig.set_cars_auto_check(self._cars_auto.get())
 
         ttk.Checkbutton(cars, text=_("自动检查车型表更新(联网 Gitee/GitHub)"),
                         variable=self._cars_auto,
-                        command=_toggle_cars_auto).grid(row=1, column=0, columnspan=2,
-                                                        sticky=tk.W, pady=(0, 6))
-        ttk.Button(cars, text=_("检查车型表更新"),
-                   command=lambda: self.check_cars_online(manual=True)).grid(
-            row=2, column=0, sticky=tk.W, padx=(0, 6))
+                        command=_toggle_cars_auto).grid(row=0, column=0, columnspan=2,
+                                                        sticky=tk.W)
         ttk.Button(cars, text=_("恢复内置数据"),
-                   command=self.reset_cars_builtin).grid(row=2, column=1, sticky=tk.W)
+                   command=self.reset_cars_builtin).grid(row=1, column=0,
+                                                         sticky=tk.W, pady=(6, 0))
 
         btns = ttk.Frame(body)
         btns.grid(row=6, column=0, columnspan=2, sticky=tk.E, pady=(10, 0))
