@@ -2553,8 +2553,7 @@ class App(tk.Tk):
         cur = self.car_table.known_count("fh6")
         snap = self.car_table.snapshot()
         dt = carupdate.data_updated_dt(snap)
-        # 完整时刻 → fmt_local(查看者本地时区, "YYYY-MM-DD HH:MM:SS (UTC±hh:mm)");
-        # 旧式纯日期打戳 → 原样展示
+        # fmt_local(查看者本地时区)与涂装创建/下载时间同格式; 解析失败才原样展示
         date = fmt_local(dt) if dt is not None else carupdate.data_updated(snap)
         checked = carupdate.cache_fetched_at() > 0
         self._cars_info_var.set(

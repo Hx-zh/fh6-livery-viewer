@@ -91,17 +91,19 @@ def data_updated(data: object) -> str:
 
 
 def data_updated_dt(data: object):
-    """数据版本时刻: 解析 "_updated" 为 tz-aware datetime 并转**查看者本地时区**
-    (格式 "YYYY-MM-DDTHH:MM:SS±HH:MM", 即 ISO 8601, 恰 25 字符);
-    旧式仅日期的打戳(10 字符)或无法解析返回 None——调用方按纯日期展示。"""
+    """数据版本时刻: 解析 "_updated"(ISO 8601) 为 datetime 并转**查看者本地时区**,
+    显示口径与涂装创建/下载时间对齐("YYYY-MM-DD HH:MM:SS (UTC±h)");
+    带时区偏移的戳直接换算; 无时区的戳视作维护者本地=查看者本地;
+    旧式纯日期("YYYY-MM-DD")解析为当天 00:00; 完全无法解析返回 None。"""
     from datetime import datetime
     s = data_updated(data)
-    if len(s) != 25:
+    if not s:
         return None
     try:
-        return datetime.fromisoformat(s).astimezone()
+        dt = datetime.fromisoformat(s)
     except ValueError:
         return None
+    return dt.astimezone() if dt.tzinfo is not None else dt.astimezone()
 
 
 def fh6_count(data: object) -> int:
