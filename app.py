@@ -2505,6 +2505,22 @@ class App(tk.Tk):
                         err=err or _("读取失败")),
                     parent=self._cars_parent())
             return
+        # 隐藏特性: 本地 _updated 时间戳比远端新 → 保留本地数据(用户自行修改/
+        # 补充 cars_online.json 的场景)。不用远端覆盖内存表, 也不回写缓存
+        # (防止把用户的修改冲掉);「恢复内置数据」仍是回到官方数据的出口。
+        local_dt = carupdate.data_updated_dt(self.car_table.snapshot())
+        remote_dt = carupdate.data_updated_dt(data)
+        if local_dt is not None and (remote_dt is None or remote_dt < local_dt):
+            if manual:
+                self.status_var.set(
+                    _("本地车型表较新({n} 辆), 已保留本地数据").format(
+                        n=self.car_table.known_count("fh6")))
+                messagebox.showinfo(
+                    _("车型名表(在线更新)"),
+                    _("本地车型表较新({n} 辆), 已保留本地数据").format(
+                        n=self.car_table.known_count("fh6")),
+                    parent=self._cars_parent())
+            return
         if data == self.car_table.snapshot():
             # 内容与当前表一致也写缓存: 缓存语义 = "最近一次成功检查的在线内容"——
             # 不写的话 exe 内嵌与线上 HEAD 相同(常态)时设置页永远显示"尚未获取"
