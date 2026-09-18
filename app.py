@@ -2651,21 +2651,18 @@ class App(tk.Tk):
                         command=_toggle_watch).grid(
             row=3, column=0, columnspan=2, sticky=tk.W, pady=(8, 0))
 
-        # 车型名表在线更新: 信息两行 + 自动检查开关(唯一落盘设置) + 手动操作
-        cars = ttk.LabelFrame(body, text=_("车型名表(在线更新)"), padding=(8, 4))
-        cars.grid(row=4, column=0, columnspan=2, sticky=tk.EW, pady=(10, 0))
-        # 状态与手动检查按钮在主界面页脚(v1.8.0 挪出); 此处只留开关与恢复内置
-
+        # 车型名表在线更新: 单行 = 自动检查开关 + 恢复内置
+        # (状态与手动检查按钮在主界面页脚 v1.8.0 挪出; 框架已删仅留此行)
         def _toggle_cars_auto():
             appconfig.set_cars_auto_check(self._cars_auto.get())
 
-        ttk.Checkbutton(cars, text=_("自动检查车型表更新(联网 Gitee/GitHub)"),
+        row_cars = tk.Frame(body)
+        row_cars.grid(row=4, column=0, columnspan=2, sticky=tk.W, pady=(6, 0))
+        ttk.Checkbutton(row_cars, text=_("自动检查车型表更新(Gitee/GitHub/jsDelivr)"),
                         variable=self._cars_auto,
-                        command=_toggle_cars_auto).grid(row=0, column=0, columnspan=2,
-                                                        sticky=tk.W)
-        ttk.Button(cars, text=_("恢复内置数据"),
-                   command=self.reset_cars_builtin).grid(row=1, column=0,
-                                                         sticky=tk.W, pady=(6, 0))
+                        command=_toggle_cars_auto).pack(side=tk.LEFT)
+        ttk.Button(row_cars, text=_("恢复内置数据"),
+                   command=self.reset_cars_builtin).pack(side=tk.LEFT, padx=(8, 0))
 
         btns = ttk.Frame(body)
         btns.grid(row=5, column=0, columnspan=2, sticky=tk.E, pady=(10, 0))

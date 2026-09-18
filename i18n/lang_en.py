@@ -219,7 +219,7 @@ STRINGS = {
     '软件已是最新版本(v{v})': 'You are on the latest version (v{v})',
     '发现新版本 v{new}(当前 v{cur}), 打开下载页?': 'New version v{new} found (current v{cur}). Open the download page?',
     '软件更新检查失败({err})': 'App-update check failed ({err})',
-    '自动检查车型表更新(联网 Gitee/GitHub)': 'Auto-check car-table updates (Gitee/GitHub)',
+    '自动检查车型表更新(Gitee/GitHub/jsDelivr)': 'Auto-check car-table updates (Gitee/GitHub/jsDelivr)',
     '检查车型表更新': 'Check for car-table updates',
     '恢复内置数据': 'Restore built-in data',
     '正在检查车型表更新…': 'Checking car table update…',
