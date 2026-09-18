@@ -2631,25 +2631,27 @@ class App(tk.Tk):
 
         body = ttk.Frame(dlg, padding=12)
         body.pack(fill=tk.BOTH, expand=True)
+        # 第 1 行 = 两组「标签+数值框」并排(紧凑); 标题/开关行跨全部 4 列
         ttk.Label(body, text=_("自动定位按键节奏 (毫秒, 周期 = 保持 + 间隔):")).grid(
-            row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 6))
+            row=0, column=0, columnspan=4, sticky=tk.W, pady=(0, 6))
         ttk.Label(body, text=_("按下保持(ms):")).grid(row=1, column=0, sticky=tk.W, pady=2)
-        ttk.Label(body, text=_("键间间隔(ms):")).grid(row=2, column=0, sticky=tk.W, pady=2)
+        ttk.Label(body, text=_("键间间隔(ms):")).grid(
+            row=1, column=2, sticky=tk.W, pady=2, padx=(14, 0))
         hold_var = tk.StringVar(value=str(self.key_hold_ms))
         gap_var = tk.StringVar(value=str(self.key_gap_ms))
         ttk.Spinbox(body, from_=0, to=2000, width=8,
                     textvariable=hold_var).grid(row=1, column=1, sticky=tk.W, pady=2)
         ttk.Spinbox(body, from_=0, to=2000, width=8,
-                    textvariable=gap_var).grid(row=2, column=1, sticky=tk.W, pady=2)
-        # 自动检测存档更新(v1.8.0 从顶栏移入): 即时生效 + appconfig 持久化
+                    textvariable=gap_var).grid(row=1, column=3, sticky=tk.W, pady=2)
+        # 自动刷新开关(v1.8.0 从顶栏移入): 即时生效 + appconfig 持久化
         # (「保存后重启仍生效」提示语已并入弹窗标题)
         def _toggle_watch():
             appconfig.set_auto_refresh(self.auto_refresh.get())
 
-        ttk.Checkbutton(body, text=_("自动检测存档更新"),
+        ttk.Checkbutton(body, text=_("自动刷新"),
                         variable=self.auto_refresh,
                         command=_toggle_watch).grid(
-            row=3, column=0, columnspan=2, sticky=tk.W, pady=(8, 0))
+            row=2, column=0, columnspan=4, sticky=tk.W, pady=(8, 0))
 
         # 车型名表在线更新: 单行 = 自动检查开关 + 恢复内置
         # (状态与手动检查按钮在主界面页脚 v1.8.0 挪出; 框架已删仅留此行)
@@ -2657,7 +2659,7 @@ class App(tk.Tk):
             appconfig.set_cars_auto_check(self._cars_auto.get())
 
         row_cars = tk.Frame(body)
-        row_cars.grid(row=4, column=0, columnspan=2, sticky=tk.W, pady=(6, 0))
+        row_cars.grid(row=3, column=0, columnspan=4, sticky=tk.W, pady=(6, 0))
         ttk.Checkbutton(row_cars, text=_("自动检查车型表更新(Gitee/GitHub/jsDelivr)"),
                         variable=self._cars_auto,
                         command=_toggle_cars_auto).pack(side=tk.LEFT)
@@ -2665,7 +2667,7 @@ class App(tk.Tk):
                    command=self.reset_cars_builtin).pack(side=tk.LEFT, padx=(8, 0))
 
         btns = ttk.Frame(body)
-        btns.grid(row=5, column=0, columnspan=2, sticky=tk.E, pady=(10, 0))
+        btns.grid(row=4, column=0, columnspan=4, sticky=tk.E, pady=(10, 0))
 
         def _save():
             try:
