@@ -43,7 +43,6 @@ SOURCE_URLS: dict[str, str] = {
 
 CACHE_DIR_NAME = "FH6LiveryViewer"
 CARS_CACHE = "cars_online.json"
-STATE_CACHE_LEGACY = "cars_state.json"   # v1.8.0 前的状态文件, 已废弃, 启动时顺手清除
 
 MIN_BYTES, MAX_BYTES = 1024, 2 * 1024 * 1024   # 下载/缓存大小合法区间(防错误页/截断)
 MIN_FH6 = 600            # fh6 条目数下限(当前 671, 车表只增不减)
@@ -73,10 +72,6 @@ def init_cache_dir() -> bool:
         _cache_dir = None
         return False
     _cache_dir = d
-    try:    # v1.8.0 前的废弃状态文件, 顺手清除(一次性迁移)
-        (d / STATE_CACHE_LEGACY).unlink(missing_ok=True)
-    except OSError:
-        pass
     return True
 
 
