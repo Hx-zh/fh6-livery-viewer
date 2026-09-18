@@ -2617,7 +2617,7 @@ class App(tk.Tk):
     def open_settings(self):
         """设置窗口: 自动定位的按键节奏(毫秒), 确定后经 appconfig 持久化。"""
         dlg = tk.Toplevel(self)
-        dlg.title(_("设置"))
+        dlg.title(_("设置（保存后重启仍生效）"))
         dlg.resizable(False, False)
         dlg.transient(self)
         dlg.grab_set()                          # 模态
@@ -2641,21 +2641,19 @@ class App(tk.Tk):
                     textvariable=hold_var).grid(row=1, column=1, sticky=tk.W, pady=2)
         ttk.Spinbox(body, from_=0, to=2000, width=8,
                     textvariable=gap_var).grid(row=2, column=1, sticky=tk.W, pady=2)
-        ttk.Label(body, text=_("(保存后重启仍生效)")).grid(
-            row=3, column=0, columnspan=2, pady=(2, 0))
-
         # 自动检测存档更新(v1.8.0 从顶栏移入): 即时生效 + appconfig 持久化
+        # (「保存后重启仍生效」提示语已并入弹窗标题)
         def _toggle_watch():
             appconfig.set_auto_refresh(self.auto_refresh.get())
 
         ttk.Checkbutton(body, text=_("自动检测存档更新"),
                         variable=self.auto_refresh,
                         command=_toggle_watch).grid(
-            row=4, column=0, columnspan=2, sticky=tk.W, pady=(8, 0))
+            row=3, column=0, columnspan=2, sticky=tk.W, pady=(8, 0))
 
         # 车型名表在线更新: 信息两行 + 自动检查开关(唯一落盘设置) + 手动操作
         cars = ttk.LabelFrame(body, text=_("车型名表(在线更新)"), padding=(8, 4))
-        cars.grid(row=5, column=0, columnspan=2, sticky=tk.EW, pady=(10, 0))
+        cars.grid(row=4, column=0, columnspan=2, sticky=tk.EW, pady=(10, 0))
         # 状态与手动检查按钮在主界面页脚(v1.8.0 挪出); 此处只留开关与恢复内置
 
         def _toggle_cars_auto():
@@ -2670,7 +2668,7 @@ class App(tk.Tk):
                                                          sticky=tk.W, pady=(6, 0))
 
         btns = ttk.Frame(body)
-        btns.grid(row=6, column=0, columnspan=2, sticky=tk.E, pady=(10, 0))
+        btns.grid(row=5, column=0, columnspan=2, sticky=tk.E, pady=(10, 0))
 
         def _save():
             try:

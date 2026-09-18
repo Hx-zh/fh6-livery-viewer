@@ -189,7 +189,7 @@ STRINGS = {
     '自动定位按键节奏 (毫秒, 周期 = 保持 + 间隔):': 'Auto-locate key timing (ms; cycle = hold + gap):',
     '按下保持:': 'Key hold:',
     '键间间隔:': 'Key gap:',
-    '(保存后重启仍生效)': '(kept after restart)',
+    '设置（保存后重启仍生效）': 'Settings (kept after restart)',
     '请输入整数毫秒值': 'Enter an integer value in milliseconds',
     '按键节奏: 保持 {hold}ms + 间隔 {gap}ms (已保存)': 'Key timing: hold {hold}ms + gap {gap}ms (saved)',
     '自动定位完成: {path}': 'Auto-locate finished: {path}',
