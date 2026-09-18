@@ -101,7 +101,12 @@ def build_once(commit: str) -> bool:
                 if "拒绝访问" in tail or "PermissionError" in tail else "")
         log(f"✗ {commit} PyInstaller 失败: {tail}{hint}")
         return False
-    shutil.copyfile(exe, TARGET)
+    try:
+        shutil.copyfile(exe, TARGET)
+    except OSError as e:
+        log(f"✗ {commit} 拷贝变体失败({e}); 输出/目标 exe 正被运行中的测试窗口占用, "
+            f"关闭后重跑 python tools/dev_build.py")
+        return False
     log(f"✓ {commit} -> {TARGET.name} {TARGET.stat().st_size:,}B ({time.time() - t0:.0f}s)")
     return True
 
