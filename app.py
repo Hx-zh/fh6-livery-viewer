@@ -1437,6 +1437,11 @@ class App(tk.Tk):
         self.rebuild_grid()
         # 喷涂状态主路径(清单法): 不开游戏即可判定, 启动/切存档后自动标记
         self.refresh_applied_from_manifest(quiet=True)
+        # 重扫已把重复分组/特征重置, 但重复类筛选开关仍开着——不重新触发分析的
+        # 话, 普通涂装全被空分组筛掉、拍卖卡(不参与重复筛选)全部放行,
+        # 卡片墙会只剩拍卖涂装(v1.8.0 实测 bug); 分析完成后自动恢复分组视图
+        if self.dup_only.get() or self.multi_only.get() or self.single_only.get():
+            self._ensure_dup_analysis()
 
     # ------------------------------------------------------------ 自动刷新(改动1)
 
