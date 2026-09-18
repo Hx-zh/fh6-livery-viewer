@@ -29,6 +29,7 @@ from ctypes import wintypes
 from pathlib import Path
 from tkinter import filedialog, font as tkfont, messagebox, ttk
 
+import appconfig
 import carupdate
 import fh6save
 import gamemem
@@ -107,7 +108,8 @@ DUP_TEMPLATES = [
 
 # 按键节奏默认值(毫秒): 「我的設計」网格二分实测, 周期(按下保持+键间间隔)阈值 ≈30ms。
 # 玩家反馈游戏卡顿(低帧率)时原默认(周期 40ms)仍会吞键, 键间间隔默认放宽到 50ms(周期 65ms)
-# 用户可在「设置」里调整; 为保持单文件零外部文件零注册表, 设置仅本次运行有效, 不落盘
+# 用户可在「设置」里调整并持久化到 %LOCALAPPDATA%\FH6LiveryViewer\config.json
+# (appconfig.py, 与车型表在线缓存同目录; 目录不可用时退化为仅本次运行有效)
 DEFAULT_KEY_HOLD_MS = 15    # 按下保持
 DEFAULT_KEY_GAP_MS = 50     # 键间间隔(无间隔会把连发合并吞键; 卡顿机器需更大)
 GAME_EXE = "forzahorizon6.exe"
@@ -433,9 +435,10 @@ class App(tk.Tk):
         self._locate_cancel = False               # 取消发送标志(发送线程逐键检查)
         self._locate_keys: list[tuple[str, int]] = []
         self._locate_hwnd = None                  # 游戏窗口句柄
-        # 按键节奏(会话级, 不落盘): 默认 15+25=40ms, 「设置」里可改
-        self.key_hold_ms = DEFAULT_KEY_HOLD_MS
-        self.key_gap_ms = DEFAULT_KEY_GAP_MS
+        # 按键节奏(appconfig 持久化, 缺省回默认): 「设置」里可改
+        _cfg = appconfig.load()
+        self.key_hold_ms = _cfg.get("key_hold_ms", DEFAULT_KEY_HOLD_MS)
+        self.key_gap_ms = _cfg.get("key_gap_ms", DEFAULT_KEY_GAP_MS)
         self._thumb_pending: list[str] = []
         self._thumb_fails: dict[str, int] = {}    # base -> 连续解码失败次数(瞬态重试用, 封顶放弃)
         self._thumb_gen = 0                       # 缩略图解码代次(rebuild 递增, 过期结果丢弃)
@@ -2530,7 +2533,7 @@ class App(tk.Tk):
         self._cars_info_var.set(line1 + "\n" + line2)
 
     def open_settings(self):
-        """设置窗口: 自动定位的按键节奏(毫秒), 仅本次运行有效(不落盘)。"""
+        """设置窗口: 自动定位的按键节奏(毫秒), 确定后经 appconfig 持久化。"""
         dlg = tk.Toplevel(self)
         dlg.title(_("设置"))
         dlg.resizable(False, False)
@@ -2557,7 +2560,7 @@ class App(tk.Tk):
                     textvariable=hold_var).grid(row=1, column=1, sticky=tk.W, pady=2)
         ttk.Spinbox(body, from_=0, to=2000, width=8,
                     textvariable=gap_var).grid(row=2, column=1, sticky=tk.W, pady=2)
-        ttk.Label(body, text=_("(仅本次运行有效)")).grid(
+        ttk.Label(body, text=_("(保存后重启仍生效)")).grid(
             row=3, column=0, columnspan=2, pady=(2, 0))
 
         # 车型名表在线更新: 信息两行 + 自动检查开关(唯一落盘设置) + 手动操作
@@ -2596,8 +2599,9 @@ class App(tk.Tk):
                 messagebox.showerror(_("设置"), _("取值范围 0~2000 毫秒"), parent=dlg)
                 return
             self.key_hold_ms, self.key_gap_ms = hold, gap
+            appconfig.save_key_timing(hold, gap)
             self.status_var.set(
-                _("按键节奏: 保持 {hold}ms + 间隔 {gap}ms (本次运行有效)").format(
+                _("按键节奏: 保持 {hold}ms + 间隔 {gap}ms (已保存)").format(
                     hold=hold, gap=gap))
             dlg.destroy()
 
