@@ -1679,7 +1679,11 @@ class App(tk.Tk):
 
     def _dup_ready(self, items: list[SaveItem], feats: dict):
         if items is not self.items:
-            return                     # 等待期间已切换存档, 丢弃(不碰新存档的状态)
+            # 等待期间条目列表已换代(增量刷新/切存档竞态): 清除防重入并按新列表
+            # 立刻重试——否则 _dup_pending 卡死、分析永不再触发, 重复视图一直空白
+            self._dup_pending = False
+            self._ensure_dup_analysis()
+            return
         self._dup_pending = False
         self._dup_feats = feats
         self._rerun_dup()
