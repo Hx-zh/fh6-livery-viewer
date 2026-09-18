@@ -209,6 +209,8 @@ STRINGS = {
     '喷涂状态: 未找到游戏缓存清单, 无法判定(显示待检测)': 'Applied status: game cache manifest not found; cannot determine (shown as pending)',
     '喷涂状态: 已刷新, {n} 个涂装正在车上': 'Applied status refreshed: {n} liveries currently on cars',
     '车型名表(在线更新)': 'Car name table (online update)',
+    '打开配置目录': 'Open config folder',
+    '配置目录不可用': 'Config folder unavailable',
     '内置车型表: {n} 辆': 'Built-in table: {n} cars',
     '在线车型表: {n} 辆(更新于 {date}, 来源 {src})': 'Online table: {n} cars (updated {date}, via {src})',
     '在线车型表: 尚未获取': 'Online table: not fetched yet',

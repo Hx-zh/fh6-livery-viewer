@@ -2622,6 +2622,20 @@ class App(tk.Tk):
             hold_var.set(str(DEFAULT_KEY_HOLD_MS))
             gap_var.set(str(DEFAULT_KEY_GAP_MS))
 
+        def _open_cfg_dir():
+            """打开配置/缓存目录(%LOCALAPPDATA%\\FH6LiveryViewer, 资源管理器)。"""
+            d = carupdate.cache_dir()
+            if d is None:
+                messagebox.showinfo(_("设置"), _("配置目录不可用"), parent=dlg)
+                return
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+            os.startfile(d)  # noqa: S606
+
+        ttk.Button(btns, text=_("打开配置目录"),
+                   command=_open_cfg_dir).pack(side=tk.LEFT, padx=2)
         ttk.Button(btns, text=_("恢复默认"), command=_reset).pack(side=tk.LEFT, padx=2)
         ttk.Button(btns, text=_("确定"), command=_save).pack(side=tk.LEFT, padx=2)
         ttk.Button(btns, text=_("取消"), command=dlg.destroy).pack(side=tk.LEFT, padx=2)
