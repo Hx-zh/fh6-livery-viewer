@@ -2593,7 +2593,7 @@ class App(tk.Tk):
                         variable=auto_var,
                         command=_toggle_auto).grid(row=1, column=0, columnspan=2,
                                                    sticky=tk.W, pady=(0, 6))
-        ttk.Button(cars, text=_("检查更新…"),
+        ttk.Button(cars, text=_("检查车型表更新"),
                    command=lambda: self.check_cars_online(manual=True)).grid(
             row=2, column=0, sticky=tk.W, padx=(0, 6))
         ttk.Button(cars, text=_("恢复内置数据"),
