@@ -1572,6 +1572,12 @@ class App(tk.Tk):
                          for b, (x, y) in self._layout.items()}
         if self._applied is not None:
             self._applied -= gone
+            # 新并入/变化条目的喷涂状态同步: 清单可能早已登记该设计(如重新下载
+            # 已在车上的涂装——落盘晚于上次清单签名变化, 增量前算好的 _applied
+            # 覆盖不到新卡), 重跑一次清单匹配补齐角标(毫秒级, manifest 按签名
+            # 记忆化)。_applied 未建立时维持 lazy(交给开关/按钮入口触发)。
+            if added or changed:
+                self.refresh_applied_from_manifest(quiet=True)
         self._refresh_brands()
         # 重复检测: 分析已跑过 → 增量提取新条目特征后重算; 未跑过 → 保持按需 lazy
         if self._dup_feats is not None:
@@ -2042,6 +2048,8 @@ class App(tk.Tk):
         self._applied = hit
         self._applied_n = n
         self.rebuild_grid()
+        if self._selected:
+            self.select(self._selected)     # 详情面板「喷涂状态」行同步刷新
         if not quiet:
             self.status_var.set(_("喷涂状态: 已刷新, {n} 个涂装正在车上").format(n=n))
         return True
