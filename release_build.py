@@ -442,6 +442,20 @@ def verify_remote_cars(tries: int = 5, wait_s: float = 10.0) -> None:
         print(f"[校验] jsdelivr: 暂不可达({e}), 不阻断")
 
 
+def check_cars_stamp() -> None:
+    """cars.json 数据版本打戳校验: 顶层 "_updated"(YYYY-MM-DD) 必须存在且等于
+    该文件最近一次提交日期——页脚「车型表: N 辆(已是最新, 更新于 …)」靠它展示,
+    维护者改数据时必须同步打戳(漏打在此拦截, 提示明确)。"""
+    data = json.loads((ROOT / "cars.json").read_text(encoding="utf-8"))
+    stamp = data.get("_updated", "") if isinstance(data, dict) else ""
+    r = _run(["git", "log", "-1", "--format=%cs", "--", "cars.json"], check=False)
+    cdate = (r.stdout or "").strip()
+    if stamp != cdate:
+        raise SystemExit(f"cars.json 打戳不符: _updated={stamp!r} vs 最近提交日期 {cdate!r}"
+                         " —— 改数据时同步更新顶层 _updated 字段(YYYY-MM-DD)")
+    print(f"[数据] 版本打戳一致: {stamp}")
+
+
 def data_only_publish() -> None:
     """数据更新发布: cars.json 已提交后把 main 推到双端并校验线上内容一致。
     不打 tag、不建 release、不出 exe——客户端在线更新(carupdate.py)直接读仓库
@@ -454,6 +468,7 @@ def data_only_publish() -> None:
                          + " —— 数据更新=普通 commit, 先提交再发布")
     r = _run(["git", "log", "-1", "--oneline", "--", "cars.json"], check=False)
     print(f"[数据] 最新 cars.json 提交: {(r.stdout or '').strip()}")
+    check_cars_stamp()
     _run(["git", "push", "origin", "main"])
     token = os.environ.get("GITEE_TOKEN", "").strip()
     if not push_gitee_mirror(token):

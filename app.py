@@ -2537,20 +2537,21 @@ class App(tk.Tk):
             n=self.car_table.known_count("fh6")))
 
     def _cars_update_info(self) -> None:
-        """页脚「车型表」单行状态: 当前生效来源 + 条数(在线已知时并列展示;
-        v1.8.0 从设置对话框两行式改版挪来, 设置里只留开关与恢复内置)。"""
+        """页脚「车型表」单行状态: 条数 + 数据版本日期(cars.json "_updated" 打戳,
+        即维护者最后更新数据的日期) + 已检查过更新则标「已是最新」。
+        不区分内置/在线——用户只关心数据本身新不新。"""
         cur = self.car_table.known_count("fh6")
-        fetched = float(self._cars_state.get("fetched_at", 0.0))
-        if self._cars_src:
-            txt = _("车型表: 在线 {m} 辆({src}, {date})").format(
-                m=cur, src=self._cars_src,
-                date=time.strftime("%m-%d", time.localtime(fetched)))
-        elif fetched > 0:
-            txt = _("车型表: 内置 {n} 辆(在线 {m} 辆, {date})").format(
-                n=cur, m=int(self._cars_state.get("count", 0)),
-                date=time.strftime("%m-%d", time.localtime(fetched)))
+        date = carupdate.data_updated(self.car_table.snapshot())
+        checked = float(self._cars_state.get("fetched_at", 0.0)) > 0
+        if date and checked:
+            txt = _("车型表: {n} 辆(已是最新, 更新于 {date})").format(
+                n=cur, date=date)
+        elif date:
+            txt = _("车型表: {n} 辆(更新于 {date})").format(n=cur, date=date)
+        elif checked:
+            txt = _("车型表: {n} 辆(已是最新)").format(n=cur)
         else:
-            txt = _("车型表: 内置 {n} 辆").format(n=cur)
+            txt = _("车型表: {n} 辆").format(n=cur)
         self._cars_info_var.set(txt)
 
     # ------------------------------------------------------------ 软件更新检查

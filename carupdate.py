@@ -11,6 +11,7 @@ carupdate.py — cars.json 车型名表在线更新(只读 GET, 无遥测)
 
 稳定性口径:
   - 下载内容严格校验(大小/JSON 结构/fh6 条目数下限/键值形态), 不合格即弃用换下源;
+    数据版本日期随文件内 "_updated" 字段走(内置/在线同源同语义);
   - 全部失败抛 CarUpdateError, 调用方静默保持现有数据(内嵌表永远兜底);
   - 缓存写 %LOCALAPPDATA%\\FH6LiveryViewer\\(固定名 tmp + os.replace 原子覆盖,
     绝不写 exe 旁); 过期缓存仅由 app 的启动采用规则忽略、不删除——下次成功下载
@@ -87,6 +88,15 @@ def cache_dir() -> Path | None:
     if not _init_done:
         init_cache_dir()
     return _cache_dir
+
+
+def data_updated(data: object) -> str:
+    """数据版本日期(cars.json 顶层 "_updated" 字段, 维护者更新数据时打戳;
+    旧数据缺字段返回空串, 调用方自行省略日期展示)。"""
+    if isinstance(data, dict):
+        v = data.get("_updated")
+        return v.strip() if isinstance(v, str) else ""
+    return ""
 
 
 def fh6_count(data: object) -> int:
