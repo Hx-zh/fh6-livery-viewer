@@ -411,6 +411,7 @@ class App(tk.Tk):
         self._appupd_checking = False  # 软件更新检查进行中(防重入)
         self._cars_dlg: tk.Toplevel | None = None   # 设置对话框存活引用(messagebox 父窗口)
         self._cars_info_var = tk.StringVar(value="")
+        self._cars_date_var = tk.StringVar(value="")   # 页脚车型表第二行(版本时刻)
         carupdate.init_cache_dir()
         cached = carupdate.load_cached()
         if cached is not None and self._cars_adopt_cached(cached):
@@ -683,11 +684,16 @@ class App(tk.Tk):
                         font=(FONT_DATA, 9, "underline"))
         star.pack(side=tk.LEFT, padx=(6, 0))
         star.bind("<Button-1>", lambda _e: webbrowser.open(PROJECT_URL))
-        # 车型表状态 + 手动检查(从设置挪来): 单行紧凑展示当前生效来源
+        # 车型表状态 + 手动检查(从设置挪来): 左列两行(条数+已检查标记 / 版本时刻)
+        # + 右侧按钮——完整时刻含时区较长, 单行放不下固定宽度右栏, 故拆两行展示
         cars_row = tk.Frame(footer)
         cars_row.pack(fill=tk.X, pady=(2, 0))
-        tk.Label(cars_row, textvariable=self._cars_info_var,
-                 font=(FONT_DATA, 9)).pack(side=tk.LEFT)
+        cars_txt = tk.Frame(cars_row)
+        cars_txt.pack(side=tk.LEFT)
+        tk.Label(cars_txt, textvariable=self._cars_info_var,
+                 font=(FONT_DATA, 9)).pack(anchor=tk.W)
+        tk.Label(cars_txt, textvariable=self._cars_date_var,
+                 font=(FONT_DATA, 9)).pack(anchor=tk.W)
         ttk.Button(cars_row, text=_("检查车型表更新"),
                    command=lambda: self.check_cars_online(manual=True)).pack(
             side=tk.LEFT, padx=(6, 0))
@@ -2538,18 +2544,17 @@ class App(tk.Tk):
         即维护者最后更新数据的日期) + 已检查过更新则标「已是最新」。
         不区分内置/在线——用户只关心数据本身新不新。"""
         cur = self.car_table.known_count("fh6")
-        date = carupdate.data_updated(self.car_table.snapshot())
+        snap = self.car_table.snapshot()
+        dt = carupdate.data_updated_dt(snap)
+        # 完整时刻 → fmt_local(查看者本地时区, "YYYY-MM-DD HH:MM:SS (UTC±hh:mm)");
+        # 旧式纯日期打戳 → 原样展示
+        date = fmt_local(dt) if dt is not None else carupdate.data_updated(snap)
         checked = carupdate.cache_fetched_at() > 0
-        if date and checked:
-            txt = _("车型表: {n} 辆(已是最新, 更新于 {date})").format(
-                n=cur, date=date)
-        elif date:
-            txt = _("车型表: {n} 辆(更新于 {date})").format(n=cur, date=date)
-        elif checked:
-            txt = _("车型表: {n} 辆(已是最新)").format(n=cur)
-        else:
-            txt = _("车型表: {n} 辆").format(n=cur)
-        self._cars_info_var.set(txt)
+        self._cars_info_var.set(
+            _("车型表: {n} 辆(已是最新)").format(n=cur) if checked
+            else _("车型表: {n} 辆").format(n=cur))
+        self._cars_date_var.set(
+            _("更新于 {date}").format(date=date) if date else "")
 
     # ------------------------------------------------------------ 软件更新检查
 

@@ -443,16 +443,17 @@ def verify_remote_cars(tries: int = 5, wait_s: float = 10.0) -> None:
 
 
 def check_cars_stamp() -> None:
-    """cars.json 数据版本打戳校验: 顶层 "_updated"(YYYY-MM-DD) 必须存在且等于
-    该文件最近一次提交日期——页脚「车型表: N 辆(已是最新, 更新于 …)」靠它展示,
-    维护者改数据时必须同步打戳(漏打在此拦截, 提示明确)。"""
+    """cars.json 数据版本打戳校验: 顶层 "_updated" 必须存在且**日期部分**等于该文件
+    最近一次提交日期(完整格式 "YYYY-MM-DDTHH:MM:SS±HH:MM" ISO 8601 含维护者时区,
+    时刻部分 = 定稿数据的时刻, 日期须与提交同日; 旧式纯日期也接受)——
+    页脚「车型表: …(更新于 …)」靠它展示, 漏打/跨日在此拦截。"""
     data = json.loads((ROOT / "cars.json").read_text(encoding="utf-8"))
     stamp = data.get("_updated", "") if isinstance(data, dict) else ""
     r = _run(["git", "log", "-1", "--format=%cs", "--", "cars.json"], check=False)
     cdate = (r.stdout or "").strip()
-    if stamp != cdate:
+    if not stamp or stamp[:10] != cdate:
         raise SystemExit(f"cars.json 打戳不符: _updated={stamp!r} vs 最近提交日期 {cdate!r}"
-                         " —— 改数据时同步更新顶层 _updated 字段(YYYY-MM-DD)")
+                         " —— 改数据时同步更新顶层 _updated(ISO 8601 含时区, 日期与提交同日)")
     print(f"[数据] 版本打戳一致: {stamp}")
 
 

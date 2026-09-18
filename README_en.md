@@ -112,7 +112,7 @@ The tool is **read-only**. These findings come from real on-disk saves plus comm
 ├── gamemem.py  # read-only game process memory scanner (applied-livery detection / car string-table reader)
 ├── carupdate.py # online car-table update (three-source fallback + local cache, stdlib only)
 ├── i18n/__init__.py  # UI localization (Chinese source string = key; FH6_LANG env var → exe file-name suffix → default zh)
-├── i18n/lang_en.py / lang_ja.py / lang_ko.py / lang_zhtw.py  # translation tables (224 entries each)
+├── i18n/lang_en.py / lang_ja.py / lang_ko.py / lang_zhtw.py  # translation tables (223 entries each)
 ├── check_i18n.py  # i18n coverage checker (run after any UI string change; releases require COVERAGE OK)
 ├── cars.json   # car ID → name table (embedded into the exe at build time as the fallback; supports online updates since v1.8.0)
 └── LICENSE     # AGPL-3.0

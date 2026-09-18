@@ -3,7 +3,7 @@
 carupdate.py — cars.json 车型名表在线更新(只读 GET, 无遥测)
 
 数据源 = 双端仓库 main 分支的 cars.json(与程序内嵌文件同源同格式, 不加版本壳——
-下载内容与当前表不同即更新; 数据版本日期随文件顶层 "_updated" 字段走):
+下载内容与当前表不同即更新; 数据版本时刻随文件顶层 "_updated" 字段走, ISO 8601 含时区):
   ① Gitee raw(国内快, 302 → raw.giteeusercontent.com, 实测 ~0.7s)
   ② GitHub raw(海外用户快; 大陆时通时不通)
   ③ fastly.jsdelivr.net(GitHub 仓库的 CDN 镜像, 大陆多数可用; 分支引用缓存有滞后)
@@ -88,6 +88,20 @@ def data_updated(data: object) -> str:
         v = data.get("_updated")
         return v.strip() if isinstance(v, str) else ""
     return ""
+
+
+def data_updated_dt(data: object):
+    """数据版本时刻: 解析 "_updated" 为 tz-aware datetime 并转**查看者本地时区**
+    (格式 "YYYY-MM-DDTHH:MM:SS±HH:MM", 即 ISO 8601, 恰 25 字符);
+    旧式仅日期的打戳(10 字符)或无法解析返回 None——调用方按纯日期展示。"""
+    from datetime import datetime
+    s = data_updated(data)
+    if len(s) != 25:
+        return None
+    try:
+        return datetime.fromisoformat(s).astimezone()
+    except ValueError:
+        return None
 
 
 def fh6_count(data: object) -> int:
