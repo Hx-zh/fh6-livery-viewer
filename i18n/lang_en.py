@@ -215,6 +215,7 @@ STRINGS = {
     '车型表: {n} 辆(已是最新)': 'Car table: {n} cars (up to date)',
     '更新于 {date}': 'Updated {date}',
     '检查软件更新': 'Check for app updates',
+    '发现新版本 v{new}(当前 v{cur})': 'New version v{new} available (current v{cur})',
     '正在检查软件更新…': 'Checking for app updates…',
     '软件已是最新版本(v{v})': 'You are on the latest version (v{v})',
     '发现新版本 v{new}(当前 v{cur}), 打开下载页?': 'New version v{new} found (current v{cur}). Open the download page?',

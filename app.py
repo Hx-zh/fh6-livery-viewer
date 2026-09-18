@@ -2496,6 +2496,9 @@ class App(tk.Tk):
         self._cars_checking = False
         if data is None:
             if manual:
+                self.status_var.set(
+                    _("车型表检查失败({err}); 已继续使用当前数据").format(
+                        err=err or _("读取失败")))
                 messagebox.showwarning(
                     _("车型名表(在线更新)"),
                     _("车型表检查失败({err}); 已继续使用当前数据").format(
@@ -2508,6 +2511,8 @@ class App(tk.Tk):
             carupdate.save_cache(data)
             self._cars_update_info()
             if manual:
+                self.status_var.set(
+                    _("车型表已是最新({n} 辆)").format(n=carupdate.fh6_count(data)))
                 messagebox.showinfo(
                     _("车型名表(在线更新)"),
                     _("车型表已是最新({n} 辆)").format(n=carupdate.fh6_count(data)),
@@ -2594,6 +2599,8 @@ class App(tk.Tk):
         self._appupd_checking = False
         title = _("检查软件更新")
         if not latest:
+            self.status_var.set(_("软件更新检查失败({err})").format(
+                err=err or _("读取失败")))
             messagebox.showwarning(
                 title, _("软件更新检查失败({err})").format(err=err or _("读取失败")),
                 parent=self)
@@ -2604,9 +2611,12 @@ class App(tk.Tk):
         except ValueError:
             newer = False
         if not newer:
+            self.status_var.set(_("软件已是最新版本(v{v})").format(v=APP_VERSION))
             messagebox.showinfo(
                 title, _("软件已是最新版本(v{v})").format(v=APP_VERSION), parent=self)
             return
+        self.status_var.set(_("发现新版本 v{new}(当前 v{cur})").format(
+            new=latest, cur=APP_VERSION))
         if messagebox.askyesno(
                 title,
                 _("发现新版本 v{new}(当前 v{cur}), 打开下载页?").format(
