@@ -412,10 +412,10 @@ class App(tk.Tk):
         self._cars_dlg: tk.Toplevel | None = None   # 设置对话框存活引用(messagebox 父窗口)
         self._cars_info_var = tk.StringVar(value="")
         carupdate.init_cache_dir()
-        cached, self._cars_state = carupdate.load_cached()
+        cached = carupdate.load_cached()
         if cached is not None and self._cars_adopt_cached(cached):
             self.car_table.replace(cached)
-            self._cars_src = str(self._cars_state.get("source", ""))
+            self._cars_src = "cache"
         self.ops = SaveOps(BACKUP_DIR)
         self.saves: list[dict] = []
         self.current: dict | None = None
@@ -2443,7 +2443,7 @@ class App(tk.Tk):
                 built = Path(sys.executable).stat().st_mtime
             except OSError:
                 return False
-            return float(self._cars_state.get("fetched_at", 0.0)) > built
+            return carupdate.cache_fetched_at() > built
         return False
 
     def _cars_parent(self) -> tk.Misc:
@@ -2497,8 +2497,7 @@ class App(tk.Tk):
         if data == self.car_table.snapshot():
             # 内容与当前表一致也写缓存: 缓存语义 = "最近一次成功检查的在线内容"——
             # 不写的话 exe 内嵌与线上 HEAD 相同(常态)时设置页永远显示"尚未获取"
-            carupdate.save_cache(data, src)
-            self._cars_state = carupdate.state()
+            carupdate.save_cache(data)
             self._cars_update_info()
             if manual:
                 messagebox.showinfo(
@@ -2508,8 +2507,7 @@ class App(tk.Tk):
             return
         old = self.car_table.known_count("fh6")
         self.car_table.replace(data)
-        carupdate.save_cache(data, src)
-        self._cars_state = carupdate.state()
+        carupdate.save_cache(data)
         self._cars_src = src
         self._refresh_brands()
         self.rebuild_grid()
@@ -2526,7 +2524,6 @@ class App(tk.Tk):
         """恢复内置车型表: 重读内嵌 cars.json 覆盖当前表 + 清在线缓存。"""
         self.car_table.replace(CarTable(CARS_JSON).snapshot())
         carupdate.clear_cache()
-        self._cars_state = carupdate.state()
         self._cars_src = ""
         self._refresh_brands()
         self.rebuild_grid()
@@ -2542,7 +2539,7 @@ class App(tk.Tk):
         不区分内置/在线——用户只关心数据本身新不新。"""
         cur = self.car_table.known_count("fh6")
         date = carupdate.data_updated(self.car_table.snapshot())
-        checked = float(self._cars_state.get("fetched_at", 0.0)) > 0
+        checked = carupdate.cache_fetched_at() > 0
         if date and checked:
             txt = _("车型表: {n} 辆(已是最新, 更新于 {date})").format(
                 n=cur, date=date)

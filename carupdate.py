@@ -3,7 +3,7 @@
 carupdate.py — cars.json 车型名表在线更新(只读 GET, 无遥测)
 
 数据源 = 双端仓库 main 分支的 cars.json(与程序内嵌文件同源同格式, 不加版本壳——
-下载内容与当前表不同即更新):
+下载内容与当前表不同即更新; 数据版本日期随文件顶层 "_updated" 字段走):
   ① Gitee raw(国内快, 302 → raw.giteeusercontent.com, 实测 ~0.7s)
   ② GitHub raw(海外用户快; 大陆时通时不通)
   ③ fastly.jsdelivr.net(GitHub 仓库的 CDN 镜像, 大陆多数可用; 分支引用缓存有滞后)
@@ -11,18 +11,19 @@ carupdate.py — cars.json 车型名表在线更新(只读 GET, 无遥测)
 
 稳定性口径:
   - 下载内容严格校验(大小/JSON 结构/fh6 条目数下限/键值形态), 不合格即弃用换下源;
-    数据版本日期随文件内 "_updated" 字段走(内置/在线同源同语义);
   - 全部失败抛 CarUpdateError, 调用方静默保持现有数据(内嵌表永远兜底);
-  - 缓存写 %LOCALAPPDATA%\\FH6LiveryViewer\\(固定名 tmp + os.replace 原子覆盖,
-    绝不写 exe 旁); 过期缓存仅由 app 的启动采用规则忽略、不删除——下次成功下载
-    原地覆盖, 崩溃残留的 tmp 至多一个且被下次写入自然消化(固定名), 永不积攒;
+  - 缓存写 %LOCALAPPDATA%\\FH6LiveryViewer\\ 单文件 cars_online.json(固定名 tmp +
+    os.replace 原子覆盖, 绝不写 exe 旁); 抓取时刻 = 文件 mtime(cache_fetched_at),
+    不另设状态文件(v1.8.0 曾有 cars_state.json, 已废弃并在启动时顺手清除);
+    过期缓存仅由 app 的启动采用规则忽略、不删除——下次成功下载原地覆盖,
+    崩溃残留的 tmp 至多一个且被下次写入自然消化(固定名), 永不积攒;
   - 自动检查由 app 侧控制(v1.8.0: 每次启动一次, 开关存 appconfig), 手动检查不受限。
 
 用法(app.py):
     carupdate.init_cache_dir()                    # 启动时准备缓存目录(失败则停用)
-    cached, state = carupdate.load_cached()       # 读缓存 + 状态
+    cached = carupdate.load_cached()              # 读缓存(无/不可用为 None)
     src, data = carupdate.fetch(ua, prefer_gitee, min_count)   # 工作线程里调
-    carupdate.save_cache(data, src)               # 主线程写缓存 + 状态
+    carupdate.save_cache(data)                    # 主线程写缓存
 
 URL 常量同时供 release_build.py 的 --data-only 发布校验复用(单一来源,
 改仓库地址时只改这里)。
@@ -31,7 +32,6 @@ from __future__ import annotations
 
 import json
 import os
-import time
 import urllib.request
 from pathlib import Path
 
@@ -43,20 +43,12 @@ SOURCE_URLS: dict[str, str] = {
 
 CACHE_DIR_NAME = "FH6LiveryViewer"
 CARS_CACHE = "cars_online.json"
-STATE_CACHE = "cars_state.json"
+STATE_CACHE_LEGACY = "cars_state.json"   # v1.8.0 前的状态文件, 已废弃, 启动时顺手清除
 
 MIN_BYTES, MAX_BYTES = 1024, 2 * 1024 * 1024   # 下载/缓存大小合法区间(防错误页/截断)
 MIN_FH6 = 600            # fh6 条目数下限(当前 671, 车表只增不减)
 FETCH_TIMEOUT_S = 6      # 单源超时(三源串行最坏 ~18s, 全程后台线程不碰 UI)
 UA_DEFAULT = "FH6LiveryViewer"
-
-_STATE_DEFAULT: dict[str, object] = {
-    "checked_at": 0.0,   # 上次检查时刻(epoch, 节流用; 检查失败也计入)
-    "fetched_at": 0.0,   # 上次成功下载时刻(启动采用规则「缓存 vs 新 exe」比较用)
-    "source": "",        # 上次成功下载来源名
-    "count": 0,          # 上次成功下载的 fh6 条目数
-    "auto": True,        # 每日自动检查开关(持久化; 唯一落盘设置)
-}
 
 _cache_dir: Path | None = None
 _init_done = False
@@ -68,7 +60,7 @@ class CarUpdateError(RuntimeError):
 
 def init_cache_dir() -> bool:
     """解析并准备缓存目录(%LOCALAPPDATA%\\FH6LiveryViewer)。
-    不可用(无 LOCALAPPDATA/建目录失败)返回 False, 缓存与状态功能整体停用(静默)。"""
+    不可用(无 LOCALAPPDATA/建目录失败)返回 False, 缓存功能整体停用(静默)。"""
     global _cache_dir, _init_done
     _init_done = True
     raw = os.environ.get("LOCALAPPDATA", "").strip()
@@ -81,6 +73,10 @@ def init_cache_dir() -> bool:
         _cache_dir = None
         return False
     _cache_dir = d
+    try:    # v1.8.0 前的废弃状态文件, 顺手清除(一次性迁移)
+        (d / STATE_CACHE_LEGACY).unlink(missing_ok=True)
+    except OSError:
+        pass
     return True
 
 
@@ -144,19 +140,6 @@ def fetch(user_agent: str = "", prefer_gitee: bool = True,
     raise CarUpdateError("; ".join(errs)[:200] or "全部数据源不可用")
 
 
-def state() -> dict:
-    """读取状态文件(缺省/损坏回默认值; 不抛异常)。"""
-    d = cache_dir()
-    if d is not None:
-        try:
-            obj = json.loads((d / STATE_CACHE).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            obj = None
-        if isinstance(obj, dict):
-            return {k: obj.get(k, v) for k, v in _STATE_DEFAULT.items()}
-    return dict(_STATE_DEFAULT)
-
-
 def _atomic_write(path: Path, text: str) -> None:
     """固定名 tmp + os.replace: 崩溃孤儿 tmp 至多一个, 被下次写入自然覆盖。"""
     tmp = path.with_name(path.name + ".tmp")
@@ -164,19 +147,9 @@ def _atomic_write(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def _save_state(st: dict) -> None:
-    d = cache_dir()
-    if d is None:
-        return
-    try:
-        d.mkdir(parents=True, exist_ok=True)
-        _atomic_write(d / STATE_CACHE, json.dumps(st, ensure_ascii=False))
-    except OSError:
-        pass                              # 状态写失败只损失节流/展示, 不影响功能
-
-
-def save_cache(data: dict, source: str) -> bool:
-    """写入在线缓存 + 更新状态(失败返回 False, 调用方继续用内存数据)。"""
+def save_cache(data: dict) -> bool:
+    """写入在线缓存(失败返回 False, 调用方继续用内存数据);
+    抓取时刻由文件 mtime 承载(cache_fetched_at), 不另设状态文件。"""
     d = cache_dir()
     if d is None:
         return False
@@ -185,33 +158,39 @@ def save_cache(data: dict, source: str) -> bool:
         _atomic_write(d / CARS_CACHE, json.dumps(data, ensure_ascii=False))
     except OSError:
         return False
-    st = state()
-    st["fetched_at"] = time.time()
-    st["source"] = source
-    st["count"] = fh6_count(data)
-    _save_state(st)
     return True
 
 
-def load_cached() -> tuple[dict | None, dict]:
-    """读取在线缓存, 返回 (数据|None, 状态)。缓存缺失/损坏/不合法 → 数据为 None。"""
-    st = state()
+def load_cached() -> dict | None:
+    """读取在线缓存; 缓存缺失/损坏/不合法返回 None。"""
     d = cache_dir()
     if d is None:
-        return None, st
+        return None
     try:
         raw = (d / CARS_CACHE).read_bytes()
         if not (MIN_BYTES <= len(raw) <= MAX_BYTES):
-            return None, st
+            return None
         obj = json.loads(raw.decode("utf-8"))
-        return validate(obj, MIN_FH6), st
+        return validate(obj, MIN_FH6)
     except (OSError, ValueError, CarUpdateError):
-        return None, st
+        return None
+
+
+def cache_fetched_at() -> float:
+    """缓存抓取时刻(= cars_online.json 的 mtime; 无缓存返回 0)。
+    承载原状态文件 fetched_at 的两个职责: 启动采用规则的「旧缓存 vs 新 exe」
+    比较基准, 以及页脚「已检查过更新」标记。"""
+    d = cache_dir()
+    if d is None:
+        return 0.0
+    try:
+        return (d / CARS_CACHE).stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def clear_cache() -> bool:
-    """「恢复内置数据」用: 删缓存数据文件, 状态只清 fetch 相关
-    (checked_at/auto 保留——节流与开关不受影响)。"""
+    """「恢复内置数据」用: 删缓存数据文件(抓取时刻随文件一起消失)。"""
     d = cache_dir()
     if d is None:
         return False
@@ -220,9 +199,4 @@ def clear_cache() -> bool:
         (d / (CARS_CACHE + ".tmp")).unlink(missing_ok=True)
     except OSError:
         return False
-    st = state()
-    st["fetched_at"] = 0.0
-    st["source"] = ""
-    st["count"] = 0
-    _save_state(st)
     return True
