@@ -1449,6 +1449,11 @@ class App(tk.Tk):
         try:
             if not (self.auto_refresh.get() and self.current):
                 return
+            # 清单缓存轮询(每轮必查, 独立于存档目录变化): 游戏内换装/喷卸涂装只改
+            # CacheThumbnails/.manifest、完全不动存档文件——必须放在存档签名早退
+            # 之前, 否则喷涂状态/拍卖缩略图的实时通道永远不触发(2026-09-19 实测踩坑:
+            # 搜索视图下换装后角标不更新, 根因即此处的位置)
+            self._watch_cache_tick()
             sig = fh6save.save_signature(Path(self.current["dir"]))
             if sig is None:
                 # 目录整体不可访问(盘符丢失/网络盘抖动/被移动): 暂停本轮,
@@ -1475,9 +1480,6 @@ class App(tk.Tk):
                 self._watch_job = self.after(WATCH_DEBOUNCE_MS, self._watch_fire)
             # 超过上限: 不再顺延, 让已排定的防抖按时触发——正在写的半截文件
             # 由缩略图/header 瞬态失败退避重试兜底, 不会永久停在失败态
-            # 拍卖缩略图缓存水合感知: CacheThumbnails/.manifest 变化(游戏把
-            # GUID.webp 水合出来/更新注册表)不在存档目录内, 单独盯此文件签名
-            self._watch_cache_tick()
         except Exception:
             traceback.print_exc()           # 保险丝: 单轮异常不中断轮询链
         finally:
