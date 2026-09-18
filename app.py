@@ -188,8 +188,9 @@ def force_foreground(hwnd) -> bool:
 
 
 def fmt_local(dt) -> str:
-    """把本地时区感知的 datetime 格式化为 'YYYY-MM-DD HH:MM:SS (UTC±hh:mm)'。
-    创建/下载时间都带时区后缀, 让用户一眼看清显示的是本地时间, 避免跨时区误读。"""
+    """把本地时区感知的 datetime 格式化为 'YYYY-MM-DD HH:MM:SS (UTC+h)'。
+    创建/下载时间都带时区后缀, 让用户一眼看清显示的是本地时间, 避免跨时区误读;
+    整点时区省略分钟(UTC+8), 非整点保留(UTC+5:30)。"""
     if dt is None:
         return "?"
     out = dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -199,7 +200,8 @@ def fmt_local(dt) -> str:
         sign = "+" if total >= 0 else "-"
         total = abs(total)
         hh, mm = divmod(total // 60, 60)
-        out += f" (UTC{sign}{hh:02d}:{mm:02d})"
+        out += (f" (UTC{sign}{hh})" if mm == 0
+                else f" (UTC{sign}{hh}:{mm:02d})")
     return out
 
 
