@@ -1864,8 +1864,13 @@ class App(tk.Tk):
                 self._dup_cfg = _build_rule()
             except ValueError:
                 return                          # 错误框已在 _build_rule 弹过
+            # 改参数即自动进入重复视图: 不勾选的话新条件生效了也看不见, 用户会
+            # 以为没反应; 特征未就绪时先切空视图 + 「分析中」提示, 就绪后自动展示
+            self.dup_only.set(True)
             self._rerun_dup()
-            if self._dup_feats is not None:     # 特征分析中时不覆盖「分析中」提示
+            if self._dup_feats is None:
+                self.rebuild_grid()
+            else:                               # 特征分析中时不覆盖「分析中」提示
                 n_hit = sum(1 for g in self._dup_group.values() if g)
                 n_grp = len({g for g in self._dup_group.values() if g})
                 self.status_var.set(
