@@ -210,7 +210,7 @@ def ellipsize(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
-# 「已喷涂检测」机制与风险说明: 「检测喷涂状态」按钮与已喷涂筛选开关共用的确认框文案
+# 「已喷涂检测」机制与风险说明: 已喷涂筛选开关使用的确认框文案
 # (本会话未扫描过时, 打开任一已喷涂开关也弹同款确认框, 取消则开关回退无效)
 APPLIED_NOTICE = _("""已喷涂检测(标记哪些涂装正喷在车上)通过只读扫描游戏进程内存实现:
 
@@ -519,8 +519,8 @@ class App(tk.Tk):
                         variable=self.auto_refresh).pack(side=tk.RIGHT, padx=2)
         ttk.Button(bar, text=_("设置"), command=self.open_settings).pack(side=tk.RIGHT,
                                                                          padx=2)
-        ttk.Button(bar, text=_("检测喷涂状态"),
-                   command=self.confirm_detect_applied).pack(side=tk.RIGHT, padx=2)
+        # 「已喷涂」检测已全自动(启动/切存档自动标记 + 清单签名轮询实时跟随),
+        # v1.8.0 移除顶栏「检测喷涂状态」按钮; 手动入口只剩筛选开关(未检测时清单优先)
 
         flt = ttk.Frame(self, padding=(6, 0, 6, 6))
         flt.pack(fill=tk.X)
@@ -1504,7 +1504,10 @@ class App(tk.Tk):
             sig = fh6save.thumbnail_cache_signature(cache)
             if sig == self._cache_sig:
                 return
-            changed = (self._cache_sig is not None and sig is not None)
+            # sig 有效即刷新: 覆盖两类变化——清单内容更新(游戏中喷/卸/换装),
+            # 以及清单首次出现(启动时缓存缺失、期间游戏首次落盘)——按钮已移除,
+            # 自动通道必须完整覆盖; 缓存消失(sig=None)只更新基线不动现有状态
+            changed = sig is not None
             self._cache_sig = sig
             if changed:
                 # 清单变化 = 车库外观变动/缩略图水合: 先刷新喷涂状态(清单法,
@@ -1963,7 +1966,7 @@ class App(tk.Tk):
     # ------------------------------------------------------------ 已喷涂检测(运行时内存)
 
     def _select_applied_filter(self, which: str):
-        """「已喷涂」与「未喷涂」筛选互斥; 首次开启须过确认门(与「检测喷涂状态」按钮相同)。"""
+        """「已喷涂」与「未喷涂」筛选互斥; 首次开启须过确认门。"""
         var = self.applied_only if which == "applied" else self.unapplied_only
         if which == "applied" and self.applied_only.get():
             self.unapplied_only.set(False)
@@ -2393,7 +2396,7 @@ class App(tk.Tk):
         self.attributes("-topmost", self.topmost_var.get())
 
     def _confirm_applied_scan(self) -> bool:
-        """机制/风险说明 + 确认框(「检测喷涂状态」按钮与已喷涂筛选开关共用):
+        """机制/风险说明 + 确认框(已喷涂筛选开关使用; v1.8.0 顶栏按钮已移除):
         用户确认且游戏运行中才返回 True。"""
         if not messagebox.askokcancel(_("检测喷涂状态"),
                                       APPLIED_NOTICE + "\n\n" + _("确认开始检测？"),
@@ -2406,22 +2409,6 @@ class App(tk.Tk):
                 parent=self)
             return False
         return True
-
-    def confirm_detect_applied(self):
-        """顶栏「检测喷涂状态」: 优先清单法(读本地缓存文件, 零风险无确认,
-        不需要游戏运行); 清单不可用且游戏在跑时回退内存扫描(风险确认门把关),
-        完成即用喷漆角标标出(角标常显, 无需开关)。"""
-        if self.refresh_applied_from_manifest():
-            messagebox.showinfo(
-                _("检测喷涂状态"),
-                _("已标记喷涂\n\n{n} 个涂装正喷在车上, 已用喷漆角标标出。").format(
-                    n=self._applied_n),
-                parent=self)
-            return
-        if not self._confirm_applied_scan():
-            return
-        self._applied_from_button = True     # 标记本次扫描来自确认流程, 完成后弹结果
-        self._ensure_applied_scan(force=True)
 
     # ------------------------------------------------------------ 车型名表在线更新
 
