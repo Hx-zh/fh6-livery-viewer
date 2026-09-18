@@ -666,10 +666,10 @@ class App(tk.Tk):
         # 更新链接: 描述文字普通色, 仅「Gitee/GitHub」为蓝链(两个都给, 用户自选通道)
         row = tk.Frame(footer)
         row.pack(fill=tk.X)
-        tk.Label(row, text=_("更新链接:"), font=(FONT_DATA, 8)).pack(side=tk.LEFT)
+        tk.Label(row, text=_("更新链接:"), font=(FONT_DATA, 9)).pack(side=tk.LEFT)
         for name, url in (("Gitee", GITEE_RELEASES_URL), ("GitHub", RELEASES_URL)):
             lbl = tk.Label(row, text=name, fg="#0066cc", cursor="hand2",
-                           font=(FONT_DATA, 8, "underline"))
+                           font=(FONT_DATA, 9, "underline"))
             lbl.pack(side=tk.LEFT, padx=(6, 0))
             lbl.bind("<Button-1>", lambda _e, u=url: webbrowser.open(u))
         ttk.Button(row, text=_("检查软件更新"),
@@ -678,16 +678,16 @@ class App(tk.Tk):
         row2 = tk.Frame(footer)
         row2.pack(fill=tk.X)
         tk.Label(row2, text=_("觉得好用? 点个 ⭐ Star 支持一下:"),
-                 font=(FONT_DATA, 8)).pack(side=tk.LEFT)
+                 font=(FONT_DATA, 9)).pack(side=tk.LEFT)
         star = tk.Label(row2, text="GitHub", fg="#0066cc", cursor="hand2",
-                        font=(FONT_DATA, 8, "underline"))
+                        font=(FONT_DATA, 9, "underline"))
         star.pack(side=tk.LEFT, padx=(6, 0))
         star.bind("<Button-1>", lambda _e: webbrowser.open(PROJECT_URL))
         # 车型表状态 + 手动检查(从设置挪来): 单行紧凑展示当前生效来源
         cars_row = tk.Frame(footer)
         cars_row.pack(fill=tk.X, pady=(2, 0))
         tk.Label(cars_row, textvariable=self._cars_info_var,
-                 font=(FONT_DATA, 8)).pack(side=tk.LEFT)
+                 font=(FONT_DATA, 9)).pack(side=tk.LEFT)
         ttk.Button(cars_row, text=_("检查车型表更新"),
                    command=lambda: self.check_cars_online(manual=True)).pack(
             side=tk.LEFT, padx=(6, 0))
