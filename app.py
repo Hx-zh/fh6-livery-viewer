@@ -442,6 +442,9 @@ class App(tk.Tk):
         # 「自动检测存档更新」开关(appconfig 持久化; v1.8.0 从顶栏移入设置)
         self.auto_refresh = tk.BooleanVar(
             value=bool(_cfg.get("auto_refresh", True)))
+        # 「自动检查车型表更新」开关(appconfig 持久化; v1.8.0 起每次启动检查一次)
+        self._cars_auto = tk.BooleanVar(
+            value=bool(_cfg.get("cars_auto_check", True)))
         self._thumb_pending: list[str] = []
         self._thumb_fails: dict[str, int] = {}    # base -> 连续解码失败次数(瞬态重试用, 封顶放弃)
         self._thumb_gen = 0                       # 缩略图解码代次(rebuild 递增, 过期结果丢弃)
@@ -478,11 +481,9 @@ class App(tk.Tk):
         self.rescan_saves()
         self._applied_rescan_tick()          # 启动「已喷涂」定期快速重扫(开关打开且游戏运行时生效)
         self.after(WATCH_INTERVAL_MS, self._watch_tick)   # 启动「自动刷新」轮询(默认开)
-        # 车型名表在线更新: 自动开关开且距上次检查 ≥24h 才后台检查(延迟避开首扫)
-        if (carupdate.cache_dir() is not None
-                and bool(self._cars_state.get("auto", True))
-                and time.time() - float(self._cars_state.get("checked_at", 0.0))
-                >= carupdate.CHECK_INTERVAL_S):
+        # 车型名表在线更新: 开关(appconfig)开则每次启动后台检查一次(8s 延迟避让首扫,
+        # v1.8.0 起不再做 24h 节流——量级 30KB/次, 启动即最新)
+        if self._cars_auto.get():
             self.after(CARS_CHECK_DELAY_MS,
                        lambda: self.check_cars_online(manual=False))
 
@@ -2468,8 +2469,6 @@ class App(tk.Tk):
     def _cars_check_done(self, src: str, data: dict | None, err: str,
                          manual: bool) -> None:
         self._cars_checking = False
-        carupdate.mark_checked()            # 失败也计入节流, 避免离线用户每启动都打网
-        self._cars_state = carupdate.state()
         if data is None:
             if manual:
                 messagebox.showwarning(
@@ -2583,16 +2582,13 @@ class App(tk.Tk):
         ttk.Label(cars, textvariable=self._cars_info_var,
                   font=(FONT_DATA, 9), justify=tk.LEFT).grid(
             row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 4))
-        auto_var = tk.BooleanVar(value=bool(self._cars_state.get("auto", True)))
+        def _toggle_cars_auto():
+            appconfig.set_cars_auto_check(self._cars_auto.get())
 
-        def _toggle_auto():
-            carupdate.set_auto(auto_var.get())
-            self._cars_state = carupdate.state()
-
-        ttk.Checkbutton(cars, text=_("每日自动检查在线更新(联网 Gitee/GitHub)"),
-                        variable=auto_var,
-                        command=_toggle_auto).grid(row=1, column=0, columnspan=2,
-                                                   sticky=tk.W, pady=(0, 6))
+        ttk.Checkbutton(cars, text=_("自动检查车型表更新(联网 Gitee/GitHub)"),
+                        variable=self._cars_auto,
+                        command=_toggle_cars_auto).grid(row=1, column=0, columnspan=2,
+                                                        sticky=tk.W, pady=(0, 6))
         ttk.Button(cars, text=_("检查车型表更新"),
                    command=lambda: self.check_cars_online(manual=True)).grid(
             row=2, column=0, sticky=tk.W, padx=(0, 6))

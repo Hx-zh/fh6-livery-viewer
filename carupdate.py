@@ -15,7 +15,7 @@ carupdate.py — cars.json 车型名表在线更新(只读 GET, 无遥测)
   - 缓存写 %LOCALAPPDATA%\\FH6LiveryViewer\\(固定名 tmp + os.replace 原子覆盖,
     绝不写 exe 旁); 过期缓存仅由 app 的启动采用规则忽略、不删除——下次成功下载
     原地覆盖, 崩溃残留的 tmp 至多一个且被下次写入自然消化(固定名), 永不积攒;
-  - 自动检查 24h 一次(状态文件 checked_at 节流), 手动检查不受限。
+  - 自动检查由 app 侧控制(v1.8.0: 每次启动一次, 开关存 appconfig), 手动检查不受限。
 
 用法(app.py):
     carupdate.init_cache_dir()                    # 启动时准备缓存目录(失败则停用)
@@ -47,7 +47,6 @@ STATE_CACHE = "cars_state.json"
 MIN_BYTES, MAX_BYTES = 1024, 2 * 1024 * 1024   # 下载/缓存大小合法区间(防错误页/截断)
 MIN_FH6 = 600            # fh6 条目数下限(当前 671, 车表只增不减)
 FETCH_TIMEOUT_S = 6      # 单源超时(三源串行最坏 ~18s, 全程后台线程不碰 UI)
-CHECK_INTERVAL_S = 24 * 3600   # 自动检查最小间隔(状态文件节流)
 UA_DEFAULT = "FH6LiveryViewer"
 
 _STATE_DEFAULT: dict[str, object] = {
@@ -164,19 +163,6 @@ def _save_state(st: dict) -> None:
         _atomic_write(d / STATE_CACHE, json.dumps(st, ensure_ascii=False))
     except OSError:
         pass                              # 状态写失败只损失节流/展示, 不影响功能
-
-
-def mark_checked() -> None:
-    """记录一次检查(无论成败)——自动检查的 24h 节流基准。"""
-    st = state()
-    st["checked_at"] = time.time()
-    _save_state(st)
-
-
-def set_auto(value: bool) -> None:
-    st = state()
-    st["auto"] = bool(value)
-    _save_state(st)
 
 
 def save_cache(data: dict, source: str) -> bool:

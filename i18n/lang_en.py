@@ -215,7 +215,7 @@ STRINGS = {
     '在线车型表: {n} 辆(更新于 {date}, 来源 {src})': 'Online table: {n} cars (updated {date}, via {src})',
     '在线车型表: 尚未获取': 'Online table: not fetched yet',
     '（当前生效）': ' (in use)',
-    '每日自动检查在线更新(联网 Gitee/GitHub)': 'Check for online updates daily (Gitee/GitHub)',
+    '自动检查车型表更新(联网 Gitee/GitHub)': 'Auto-check car-table updates (Gitee/GitHub)',
     '检查车型表更新': 'Check for car-table updates',
     '恢复内置数据': 'Restore built-in data',
     '正在检查车型表更新…': 'Checking car table update…',
