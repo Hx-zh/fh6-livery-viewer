@@ -103,7 +103,7 @@ def data_updated_dt(data: object):
         dt = datetime.fromisoformat(s)
     except ValueError:
         return None
-    return dt.astimezone() if dt.tzinfo is not None else dt.astimezone()
+    return dt.astimezone()   # aware→转本地; naive→按本地附加时区
 
 
 def fh6_count(data: object) -> int:

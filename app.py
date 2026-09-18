@@ -1536,7 +1536,8 @@ class App(tk.Tk):
             if changed:
                 # 清单变化 = 车库外观变动/缩略图水合: 先刷新喷涂状态(清单法,
                 # 游戏运行中喷/卸涂装会实时改写第二表), 再同步拍卖缩略图
-                self.refresh_applied_from_manifest(quiet=True)
+                if fh6save.load_cache_manifest(cache) is not None:
+                    self.refresh_applied_from_manifest(quiet=True)
                 self._sync_auction_cache(cache)
         except Exception:
             traceback.print_exc()           # 保险丝: 缓存轮询异常不影响存档轮询
@@ -1608,6 +1609,7 @@ class App(tk.Tk):
         self._pos_map = {b: _("{x}行{y}列").format(x=x, y=y)
                          for b, (x, y) in self._layout.items()}
         if self._applied is not None:
+            self._applied_n -= sum(1 for b in gone if b in self._applied)
             self._applied -= gone
             # 新并入/变化条目的喷涂状态同步: 清单可能早已登记该设计(如重新下载
             # 已在车上的涂装——落盘晚于上次清单签名变化, 增量前算好的 _applied
@@ -2799,7 +2801,10 @@ class App(tk.Tk):
                     time.sleep(gap)                             # 无间隔会吞键(实测)
                 if not finished:
                     break
-            self.after(0, lambda: self._locate_done(finished))
+            try:
+                self.after(0, lambda: self._locate_done(finished))
+            except RuntimeError:
+                pass                        # 窗口已销毁, 结果不再需要
 
         threading.Thread(target=_work, daemon=True).start()
 

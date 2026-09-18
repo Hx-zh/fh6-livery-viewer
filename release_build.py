@@ -305,7 +305,7 @@ def publish_github_release(version: str, zips: list[Path]) -> None:
     """CI 路径: 在已推送的 tag 上创建 GitHub release(gh 用 GH_TOKEN 环境变量鉴权,
     无需登录; 发布说明取 tag 注释)。"""
     gh = gh_exe()
-    if not gh:
+    if not (shutil.which("gh") or Path(GH).is_file()):
         raise SystemExit(f"未找到 gh CLI(本机路径 {GH})")
     cmd = [gh, "release", "create", f"v{version}",
            "--repo", "Hx-zh/fh6-livery-viewer",
@@ -321,7 +321,7 @@ def publish_github_release(version: str, zips: list[Path]) -> None:
 
 def publish(version: str, zips: list[Path], gitee: bool, token: str = "") -> None:
     gh = gh_exe()
-    if not gh:
+    if not (shutil.which("gh") or Path(GH).is_file()):
         raise SystemExit(f"未找到 gh CLI(本机路径 {GH}; AGENTS.md: 用完整路径)")
     _run(["git", "tag", "-a", f"v{version}", "-m", f"FH6 Livery Viewer v{version}"])
     _run(["git", "push", "origin", f"v{version}"])
@@ -498,7 +498,9 @@ def data_only_publish() -> None:
     r = _run(["git", "log", "-1", "--oneline", "--", "cars.json"], check=False)
     print(f"[数据] 最新 cars.json 提交: {(r.stdout or '').strip()}")
     check_cars_stamp()
-    _run(["git", "push", "origin", "main"])
+    r = _run(["git", "push", "origin", "main"], check=False)
+    if r.returncode != 0:
+        raise SystemExit("push origin main 失败: " + _out(r)[:300])
     token = os.environ.get("GITEE_TOKEN", "").strip()
     if not push_gitee_mirror(token):
         print("[数据] 警告: Gitee 镜像未同步, 国内用户暂时读不到新数据(不阻断)")

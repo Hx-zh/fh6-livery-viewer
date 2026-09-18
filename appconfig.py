@@ -37,7 +37,8 @@ def load() -> dict[str, Any]:
     if isinstance(obj, dict):
         for k in ("key_hold_ms", "key_gap_ms"):
             v = obj.get(k)
-            if isinstance(v, int) and 0 <= v <= KEY_TIMING_MAX:
+            if (isinstance(v, int) and not isinstance(v, bool)
+                    and 0 <= v <= KEY_TIMING_MAX):
                 out[k] = v
         for k in ("auto_refresh", "cars_auto_check"):
             v = obj.get(k)
