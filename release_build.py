@@ -181,18 +181,56 @@ def _validate_gitee_token(token: str) -> bool:
         return False
 
 
+def _input_masked(prompt: str) -> str:
+    """掩码式敏感输入(每字符回显 *): getpass 在 cmd 下零回显且 Ctrl+V 常不生效,
+    用户粘了空串还以为输了——逐字符 msvcrt.getch 读取则右键/Ctrl+V 粘贴的字符
+    会逐个进缓冲(掩码星号逐个亮起, 输入成功一目了然); 退格可改, 回车结束,
+    Ctrl+C 中断; 非 Windows/无控制台回退 getpass。"""
+    try:
+        import msvcrt
+    except ImportError:
+        return getpass.getpass(prompt)
+    chars: list[str] = []
+    print(prompt, end="", flush=True)
+    while True:
+        ch = msvcrt.getch()
+        if ch in (b"\r", b"\n"):
+            print()
+            return "".join(chars)
+        if ch in (b"\x00", b"\xe0"):       # 功能键/方向键双字节前缀, 吞掉第二字节
+            msvcrt.getch()
+            continue
+        if ch == b"\x03":                  # Ctrl+C
+            raise KeyboardInterrupt
+        if ch in (b"\x08", b"\x7f"):       # 退格
+            if chars:
+                chars.pop()
+                print("\b \b", end="", flush=True)
+            continue
+        try:
+            s = ch.decode("utf-8")
+        except UnicodeDecodeError:
+            continue                          # 非法字节忽略
+        if s.isprintable():
+            chars.append(s)
+            print("*", end="", flush=True)
+
+
 def get_gitee_token(interactive: bool) -> str:
-    """Gitee 令牌: 环境变量 GITEE_TOKEN 优先; 交互终端缺失时主动询问(getpass 不回显)
-    并用 API 轻量校验(最多 3 次); 非交互终端缺失直接报错。"""
+    """Gitee 令牌: 环境变量 GITEE_TOKEN 优先; 交互终端缺失时主动询问(掩码回显 *,
+    末 4 位确认)并用 API 轻量校验(最多 3 次); 非交互终端缺失直接报错。"""
     token = os.environ.get("GITEE_TOKEN", "").strip()
     if token:
         print("[Gitee] 令牌: 来自 GITEE_TOKEN 环境变量")
         return token
     if not (interactive and sys.stdin.isatty()):
-        raise SystemExit("缺少 GITEE_TOKEN 环境变量(Gitee 设置 → 私人令牌, 勾选 projects 权限)")
+        raise SystemExit("缺少 GITEE_TOKEN 环境变量(Gitee 设置 → 私人令牌, 勾选 projects 权限; "
+                         "或 cmd: set GITEE_TOKEN=xxx 后重跑)")
     for attempt in range(1, 4):
-        token = getpass.getpass(
-            "请输入 Gitee 私人令牌(输入不回显; 也可设 GITEE_TOKEN 环境变量): ").strip()
+        token = _input_masked(
+            "请输入 Gitee 私人令牌(掩码回显, 右键粘贴; 也可 set GITEE_TOKEN 环境变量): ").strip()
+        if token:
+            print(f"[Gitee] 已读取令牌(末 4 位 …{token[-4:]})")
         if not token:
             raise SystemExit("已取消(未输入令牌)")
         if _validate_gitee_token(token):
