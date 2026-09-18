@@ -2479,6 +2479,11 @@ class App(tk.Tk):
                     parent=self._cars_parent())
             return
         if data == self.car_table.snapshot():
+            # 内容与当前表一致也写缓存: 缓存语义 = "最近一次成功检查的在线内容"——
+            # 不写的话 exe 内嵌与线上 HEAD 相同(常态)时设置页永远显示"尚未获取"
+            carupdate.save_cache(data, src)
+            self._cars_state = carupdate.state()
+            self._cars_update_info()
             if manual:
                 messagebox.showinfo(
                     _("车型名表(在线更新)"),
