@@ -95,7 +95,11 @@ def build_once(commit: str) -> bool:
                        cwd=ROOT, capture_output=True, text=True, errors="replace")
     exe = ROOT / "dist" / "FH6LiveryViewer.exe"
     if b.returncode != 0 or not exe.is_file():
-        log(f"✗ {commit} PyInstaller 失败: {(b.stdout or '')[-400:]}")
+        tail = ((b.stdout or "") + "\n" + (b.stderr or "")).strip()[-400:]
+        hint = ("  (提示: 输出 exe 被占用——多半是上次测试的窗口没关,"
+                " 结束 FH6LiveryViewer.exe 进程后重试)"
+                if "拒绝访问" in tail or "PermissionError" in tail else "")
+        log(f"✗ {commit} PyInstaller 失败: {tail}{hint}")
         return False
     shutil.copyfile(exe, TARGET)
     log(f"✓ {commit} -> {TARGET.name} {TARGET.stat().st_size:,}B ({time.time() - t0:.0f}s)")
