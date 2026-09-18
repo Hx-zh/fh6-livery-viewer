@@ -437,8 +437,11 @@ class App(tk.Tk):
         self._locate_hwnd = None                  # 游戏窗口句柄
         # 按键节奏(appconfig 持久化, 缺省回默认): 「设置」里可改
         _cfg = appconfig.load()
-        self.key_hold_ms = _cfg.get("key_hold_ms", DEFAULT_KEY_HOLD_MS)
-        self.key_gap_ms = _cfg.get("key_gap_ms", DEFAULT_KEY_GAP_MS)
+        self.key_hold_ms = int(_cfg.get("key_hold_ms", DEFAULT_KEY_HOLD_MS))
+        self.key_gap_ms = int(_cfg.get("key_gap_ms", DEFAULT_KEY_GAP_MS))
+        # 「自动检测存档更新」开关(appconfig 持久化; v1.8.0 从顶栏移入设置)
+        self.auto_refresh = tk.BooleanVar(
+            value=bool(_cfg.get("auto_refresh", True)))
         self._thumb_pending: list[str] = []
         self._thumb_fails: dict[str, int] = {}    # base -> 连续解码失败次数(瞬态重试用, 封顶放弃)
         self._thumb_gen = 0                       # 缩略图解码代次(rebuild 递增, 过期结果丢弃)
@@ -513,14 +516,9 @@ class App(tk.Tk):
         self.topmost_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(bar, text=_("置顶"), variable=self.topmost_var,
                         command=self._toggle_topmost).pack(side=tk.RIGHT, padx=2)
-        # 自动刷新开关(默认开): 轮询存档目录, 变化时增量插入新卡片(见 _watch_tick)
-        self.auto_refresh = tk.BooleanVar(value=True)
-        ttk.Checkbutton(bar, text=_("自动刷新"),
-                        variable=self.auto_refresh).pack(side=tk.RIGHT, padx=2)
         ttk.Button(bar, text=_("设置"), command=self.open_settings).pack(side=tk.RIGHT,
                                                                          padx=2)
-        # 「已喷涂」检测已全自动(启动/切存档自动标记 + 清单签名轮询实时跟随),
-        # v1.8.0 移除顶栏「检测喷涂状态」按钮; 手动入口只剩筛选开关(未检测时清单优先)
+        # 「自动检测存档更新」开关 v1.8.0 从顶栏移入「设置」并持久化(appconfig)
 
         flt = ttk.Frame(self, padding=(6, 0, 6, 6))
         flt.pack(fill=tk.X)
@@ -2564,9 +2562,18 @@ class App(tk.Tk):
         ttk.Label(body, text=_("(保存后重启仍生效)")).grid(
             row=3, column=0, columnspan=2, pady=(2, 0))
 
+        # 自动检测存档更新(v1.8.0 从顶栏移入): 即时生效 + appconfig 持久化
+        def _toggle_watch():
+            appconfig.set_auto_refresh(self.auto_refresh.get())
+
+        ttk.Checkbutton(body, text=_("自动检测存档更新"),
+                        variable=self.auto_refresh,
+                        command=_toggle_watch).grid(
+            row=4, column=0, columnspan=2, sticky=tk.W, pady=(8, 0))
+
         # 车型名表在线更新: 信息两行 + 自动检查开关(唯一落盘设置) + 手动操作
         cars = ttk.LabelFrame(body, text=_("车型名表(在线更新)"), padding=(8, 4))
-        cars.grid(row=4, column=0, columnspan=2, sticky=tk.EW, pady=(10, 0))
+        cars.grid(row=5, column=0, columnspan=2, sticky=tk.EW, pady=(10, 0))
         cars.columnconfigure(0, weight=1)
         ttk.Label(cars, textvariable=self._cars_info_var,
                   font=(FONT_DATA, 9), justify=tk.LEFT).grid(
@@ -2588,7 +2595,7 @@ class App(tk.Tk):
                    command=self.reset_cars_builtin).grid(row=2, column=1, sticky=tk.W)
 
         btns = ttk.Frame(body)
-        btns.grid(row=5, column=0, columnspan=2, sticky=tk.E, pady=(10, 0))
+        btns.grid(row=6, column=0, columnspan=2, sticky=tk.E, pady=(10, 0))
 
         def _save():
             try:

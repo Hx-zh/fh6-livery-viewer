@@ -136,7 +136,7 @@ STRINGS = {
     '适应窗口': 'Fit to Window',
     'FH6 存档:': 'FH6 Save:',
     '置顶': 'Always on Top',
-    '自动刷新': 'Auto Refresh',
+    '自动检测存档更新': 'Auto-detect save updates',
     '搜索:': 'Search:',
     '车厂:': 'Brand:',
     '排序:': 'Sort:',
