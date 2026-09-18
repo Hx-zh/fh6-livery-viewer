@@ -208,7 +208,7 @@ def ellipsize(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
-# 「已喷涂检测」机制与风险说明: 「⚠ 检测喷涂状态」按钮与已喷涂筛选开关共用的确认框文案
+# 「已喷涂检测」机制与风险说明: 「检测喷涂状态」按钮与已喷涂筛选开关共用的确认框文案
 # (本会话未扫描过时, 打开任一已喷涂开关也弹同款确认框, 取消则开关回退无效)
 APPLIED_NOTICE = _("""已喷涂检测(标记哪些涂装正喷在车上)通过只读扫描游戏进程内存实现:
 
@@ -516,7 +516,7 @@ class App(tk.Tk):
                         variable=self.auto_refresh).pack(side=tk.RIGHT, padx=2)
         ttk.Button(bar, text=_("设置"), command=self.open_settings).pack(side=tk.RIGHT,
                                                                          padx=2)
-        ttk.Button(bar, text=_("⚠ 检测喷涂状态"),
+        ttk.Button(bar, text=_("检测喷涂状态"),
                    command=self.confirm_detect_applied).pack(side=tk.RIGHT, padx=2)
 
         flt = ttk.Frame(self, padding=(6, 0, 6, 6))
@@ -1938,7 +1938,7 @@ class App(tk.Tk):
     # ------------------------------------------------------------ 已喷涂检测(运行时内存)
 
     def _select_applied_filter(self, which: str):
-        """「已喷涂」与「未喷涂」筛选互斥; 首次开启须过确认门(与「⚠ 检测喷涂状态」按钮相同)。"""
+        """「已喷涂」与「未喷涂」筛选互斥; 首次开启须过确认门(与「检测喷涂状态」按钮相同)。"""
         var = self.applied_only if which == "applied" else self.unapplied_only
         if which == "applied" and self.applied_only.get():
             self.unapplied_only.set(False)
@@ -2366,7 +2366,7 @@ class App(tk.Tk):
         self.attributes("-topmost", self.topmost_var.get())
 
     def _confirm_applied_scan(self) -> bool:
-        """机制/风险说明 + 确认框(「⚠ 检测喷涂状态」按钮与已喷涂筛选开关共用):
+        """机制/风险说明 + 确认框(「检测喷涂状态」按钮与已喷涂筛选开关共用):
         用户确认且游戏运行中才返回 True。"""
         if not messagebox.askokcancel(_("检测喷涂状态"),
                                       APPLIED_NOTICE + "\n\n" + _("确认开始检测？"),
@@ -2381,7 +2381,7 @@ class App(tk.Tk):
         return True
 
     def confirm_detect_applied(self):
-        """顶栏「⚠ 检测喷涂状态」: 优先清单法(读本地缓存文件, 零风险无确认,
+        """顶栏「检测喷涂状态」: 优先清单法(读本地缓存文件, 零风险无确认,
         不需要游戏运行); 清单不可用且游戏在跑时回退内存扫描(风险确认门把关),
         完成即用喷漆角标标出(角标常显, 无需开关)。"""
         if self.refresh_applied_from_manifest():

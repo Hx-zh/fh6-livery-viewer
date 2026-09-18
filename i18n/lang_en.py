@@ -137,7 +137,6 @@ STRINGS = {
     'FH6 存档:': 'FH6 Save:',
     '置顶': 'Always on Top',
     '自动刷新': 'Auto Refresh',
-    '⚠ 检测喷涂状态': '⚠ Detect Applied Status',
     '搜索:': 'Search:',
     '车厂:': 'Brand:',
     '排序:': 'Sort:',
