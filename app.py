@@ -60,18 +60,13 @@ APP_VERSION = "1.8.0"
 PROJECT_URL = "https://github.com/Hx-zh/fh6-livery-viewer"
 RELEASES_URL = PROJECT_URL + "/releases"
 # Gitee 镜像(国内更新加速; 发布时需同步推送到该仓库并建同名 release):
-# 简中版(默认语言)的「更新链接」指向这里, 其余语言仍指向 GitHub
+# 页脚「更新链接」两个蓝链之一(另一个是 GitHub); Star 引导所有语言统一去 GitHub
 GITEE_PROJECT_URL = "https://gitee.com/hx_zh/fh6-livery-viewer"
 GITEE_RELEASES_URL = GITEE_PROJECT_URL + "/releases"
 
 # 车型名表在线更新(数据源/缓存见 carupdate 模块; 发布数据用 release_build.py --data-only)
 CARS_UA = f"FH6LiveryViewer/{APP_VERSION}"   # 请求 UA(各源日志可区分本工具流量)
 CARS_CHECK_DELAY_MS = 8000                   # 启动后自动检查的延迟(避开存档首扫)
-
-
-def update_url() -> str:
-    """更新链接按当前语言解析: 简中 → Gitee Release(国内访问快), 其它语言 → GitHub Release。"""
-    return GITEE_RELEASES_URL if i18n.LANG == "zh" else RELEASES_URL
 
 CARD_W, CARD_H = 224, 232      # 卡片尺寸(用户反馈偏小, 与字号 +1 同步整体放大)
 ROW_H = CARD_H + 8             # 网格行距(卡片高 + 上下间距)
@@ -659,20 +654,24 @@ class App(tk.Tk):
         ttk.Separator(footer).pack(fill=tk.X, pady=(0, 6))
         tk.Label(footer, text=_("FH6 涂装查看器 v{v}").format(v=APP_VERSION),
                  font=(FONT_UI, 9, "bold"), anchor=tk.W).pack(fill=tk.X)
-        _u = update_url()
-        link = tk.Label(footer, text=_("更新链接: {url}").format(url=_u),
-                        fg="#0066cc", cursor="hand2", anchor=tk.W,
+        # 更新链接: 描述文字普通色, 仅「Gitee/GitHub」为蓝链(两个都给, 用户自选通道)
+        row = tk.Frame(footer)
+        row.pack(fill=tk.X)
+        tk.Label(row, text=_("更新链接:"), font=(FONT_DATA, 8)).pack(side=tk.LEFT)
+        for name, url in (("Gitee", GITEE_RELEASES_URL), ("GitHub", RELEASES_URL)):
+            lbl = tk.Label(row, text=name, fg="#0066cc", cursor="hand2",
+                           font=(FONT_DATA, 8, "underline"))
+            lbl.pack(side=tk.LEFT, padx=(6, 0))
+            lbl.bind("<Button-1>", lambda _e, u=url: webbrowser.open(u))
+        # Star 引导: 所有语言统一去 GitHub 仓库页(描述普通色, 仅「GitHub」为蓝链)
+        row2 = tk.Frame(footer)
+        row2.pack(fill=tk.X)
+        tk.Label(row2, text=_("觉得好用? 点个 ⭐ Star 支持一下:"),
+                 font=(FONT_DATA, 8)).pack(side=tk.LEFT)
+        star = tk.Label(row2, text="GitHub", fg="#0066cc", cursor="hand2",
                         font=(FONT_DATA, 8, "underline"))
-        link.pack(fill=tk.X)
-        link.bind("<Button-1>", lambda _e, u=_u: webbrowser.open(u))
-        # Star 引导: 与更新链接同语言的仓库页(简中 Gitee, 其余 GitHub)
-        _s = GITEE_PROJECT_URL if i18n.LANG == "zh" else PROJECT_URL
-        star = tk.Label(footer,
-                        text=_("觉得好用? 去 {url} 点个 ⭐ Star 支持一下").format(url=_s),
-                        fg="#0066cc", cursor="hand2", anchor=tk.W,
-                        font=(FONT_DATA, 8, "underline"))
-        star.pack(fill=tk.X)
-        star.bind("<Button-1>", lambda _e, u=_s: webbrowser.open(u))
+        star.pack(side=tk.LEFT, padx=(6, 0))
+        star.bind("<Button-1>", lambda _e: webbrowser.open(PROJECT_URL))
         tk.Label(footer, anchor=tk.NW, justify=tk.LEFT, wraplength=400,
                  fg="#777777", font=(FONT_UI, 8),
                  text=_("本工具与 Microsoft、Xbox、Playground Games、Turn 10 无关，Forza 相关商标归其各自所有者。\n"

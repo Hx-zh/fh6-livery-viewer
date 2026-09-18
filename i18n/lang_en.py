@@ -143,7 +143,7 @@ STRINGS = {
     '排序:': 'Sort:',
     '次选:': 'Then by:',
     '分组:': 'Group:',
-    '更新链接: {url}': 'Update link: {url}',
+    '更新链接:': 'Updates:',
     '本工具与 Microsoft、Xbox、Playground Games、Turn 10 无关，Forza 相关商标归其各自所有者。\n工具仅读取本地内容，不提供任何修改、解锁或联机功能。\n使用本工具产生的任何后果由使用者自行承担。\n': 'This tool is not affiliated with Microsoft, Xbox, Playground Games, or Turn 10; Forza-related trademarks belong to their respective owners.\nThe tool only reads local content and provides no modification, unlock, or online features.\nYou assume all consequences of using this tool.\n',
     '拍卖涂装': 'Auction livery',
     '仅显示已应用拍卖涂装(在车上)': 'Show only applied auction liveries (on car)',
@@ -222,5 +222,5 @@ STRINGS = {
     '车型表已更新: {old} → {new} 辆(来源 {src})': 'Car table updated: {old} → {new} cars (via {src})',
     '车型表检查失败({err}); 已继续使用当前数据': 'Car table check failed ({err}); keeping current data',
     '已恢复内置车型表({n} 辆)': 'Built-in table restored ({n} cars)',
-    '觉得好用? 去 {url} 点个 ⭐ Star 支持一下': 'Finding it useful? Give the project a ⭐ Star at {url}',
+    '觉得好用? 点个 ⭐ Star 支持一下:': 'Finding it useful? Give a ⭐ Star to support the project:',
 }
