@@ -2633,8 +2633,8 @@ class App(tk.Tk):
         body.pack(fill=tk.BOTH, expand=True)
         ttk.Label(body, text=_("自动定位按键节奏 (毫秒, 周期 = 保持 + 间隔):")).grid(
             row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 6))
-        ttk.Label(body, text=_("按下保持:")).grid(row=1, column=0, sticky=tk.W, pady=2)
-        ttk.Label(body, text=_("键间间隔:")).grid(row=2, column=0, sticky=tk.W, pady=2)
+        ttk.Label(body, text=_("按下保持(ms):")).grid(row=1, column=0, sticky=tk.W, pady=2)
+        ttk.Label(body, text=_("键间间隔(ms):")).grid(row=2, column=0, sticky=tk.W, pady=2)
         hold_var = tk.StringVar(value=str(self.key_hold_ms))
         gap_var = tk.StringVar(value=str(self.key_gap_ms))
         ttk.Spinbox(body, from_=0, to=2000, width=8,
