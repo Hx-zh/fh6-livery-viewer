@@ -9,6 +9,14 @@
     python release_build.py --gitee-release     # 仅在 Gitee 建 release + 传 5 zip(需 GITEE_TOKEN)
     python release_build.py --data-only         # 仅发布 cars.json 数据(不发版, 见下)
 
+发布管线(v1.8.0 起, 推荐):
+    ① git commit → post-commit 钩子自动本地编译测试版(tools/dev_build.py)
+    ② 人工测试 dist/FH6LiveryViewer_zh-CN.exe
+    ③ git tag -a v1.8.0 -m "发布说明" 后:
+         python release_build.py --gitee-local   # 本地: 门禁+构建+简中zip+推gitee镜像+建gitee release
+         git push origin main --tags             # 触发 GitHub Action: 门禁+构建+五语言+GitHub release
+       (--publish/--gitee-release 老路径保留作应急)
+
 交互式向导(无参数或 -i): 依次询问
   1) 发布版本号(默认读 app.py APP_VERSION; 不一致时可选择自动改写 app.py,
      改写后需先提交再重新运行——发布要求 git 工作区干净);
@@ -28,6 +36,12 @@
                     → 推 Gitee 镜像 → 双端 raw URL 与本地 cars.json 字节比对。
                     不打 tag、不建 release、不出 exe——客户端在线更新
                     (carupdate.py) 直接读仓库 raw 文件, 官方加新车后走本通道
+    --ci            GitHub Actions 专用(.github/workflows/release.yml, tag 触发):
+                    门禁 → 构建 → 五语言 zip → 在已有 tag 上创建 GitHub release
+                    (GH_TOKEN 环境变量鉴权; 发布说明取 tag 注释, 无则自动生成)
+    --gitee-local   本地发布 Gitee 侧(推荐流程③): 门禁 → 构建 → 仅简中 zip →
+                    推 gitee 镜像(main+tags, tag 先打) → Gitee release 只挂简中 zip
+                    ——Gitee 用户拿到的即本地亲手测试过的二进制
     --skip-checks   跳过 check_i18n / pyright / git 干净度门禁(仅应急, 发布不应使用)
     --allow-dirty   允许工作区有未提交改动(只放宽 git 干净度; 发布建议每次从提交点出包)
 
@@ -66,6 +80,23 @@ GITEE_API = f"https://gitee.com/api/v5/repos/{GITEE_REPO}"
 PYRIGHT_FILES = ("app.py", "carupdate.py", "fh6save.py", "gamemem.py",
                  "i18n/__init__.py", "check_i18n.py",
                  "i18n/lang_en.py", "i18n/lang_ja.py", "i18n/lang_ko.py", "i18n/lang_zhtw.py")
+
+
+def pyinstaller_python() -> str:
+    """打包用 Python 解释器: CI 用 PYINSTALLER_PY 环境变量指定(workflow 的
+    setup-python), 本地用 .venv-build(勿用损坏的 pyinstaller.exe shim)。"""
+    ovr = os.environ.get("PYINSTALLER_PY", "").strip()
+    if ovr:
+        return ovr
+    if PYINSTALLER.is_file():
+        return str(PYINSTALLER)
+    raise SystemExit(f"找不到打包环境 {PYINSTALLER}(本地先建 .venv-build 见 AGENTS.md; "
+                     "CI 设 PYINSTALLER_PY)")
+
+
+def gh_exe() -> str:
+    """gh CLI: 优先 PATH(CI 运行器自带), 回退本机完整路径。"""
+    return shutil.which("gh") or GH
 
 
 def _run(cmd: list, *, check: bool = True, redact: str = "") -> subprocess.CompletedProcess:
@@ -227,10 +258,8 @@ def check_gates(skip: bool, allow_dirty: bool, force_pyright: bool) -> None:
 
 
 def build() -> None:
-    if not PYINSTALLER.is_file():
-        raise SystemExit(
-            f"找不到打包环境 {PYINSTALLER}(先建 .venv-build, 见 AGENTS.md 构建与发布)")
-    r = _run([PYINSTALLER, "-m", "PyInstaller", str(ROOT / "FH6LiveryViewer.spec"),
+    py = pyinstaller_python()
+    r = _run([py, "-m", "PyInstaller", str(ROOT / "FH6LiveryViewer.spec"),
               "--noconfirm", "--distpath", str(DIST), "--workpath", str(ROOT / "build")],
              check=False)
     if r.returncode != 0:
@@ -240,17 +269,18 @@ def build() -> None:
         raise SystemExit("构建完成但未找到 dist/FH6LiveryViewer.exe")
     # 内嵌数据校验: 直接以 stdin 喂 'l' 给 archive_viewer(不经 cmd, 避免引号解析问题)
     r = subprocess.run(
-        [PYINSTALLER, "-m", "PyInstaller.utils.cliutils.archive_viewer", str(exe)],
+        [py, "-m", "PyInstaller.utils.cliutils.archive_viewer", str(exe)],
         input="l\n", cwd=ROOT, capture_output=True, text=True, errors="replace")
     if "cars.json" not in _out(r):
         raise SystemExit("内嵌数据校验失败: 未在 EXE 中找到 cars.json")
     print(f"[构建] {exe.name} {exe.stat().st_size:,}B, cars.json 内嵌校验通过")
 
 
-def make_variants(version: str) -> list[Path]:
+def make_variants(version: str, langs: tuple = LANGS) -> list[Path]:
+    """按语言列表产出变体 exe + 同名 zip(Gitee 本地发布只取简中子集)。"""
     base = DIST / "FH6LiveryViewer.exe"
     zips: list[Path] = []
-    for lang in LANGS:
+    for lang in langs:
         v = DIST / f"FH6LiveryViewer_{lang}.exe"
         shutil.copyfile(base, v)
         z = DIST / f"FH6LiveryViewer_v{version}_win64_{lang}.zip"
@@ -261,13 +291,42 @@ def make_variants(version: str) -> list[Path]:
     return zips
 
 
+def tag_notes(version: str) -> str:
+    """发布说明来源: dist/release_notes_vX.md → tag 注释(git tag -a 时写的)
+    → 空串(GitHub 回退 --generate-notes / Gitee 用默认一句话)。"""
+    notes = DIST / f"release_notes_v{version}.md"
+    if notes.is_file():
+        return notes.read_text(encoding="utf-8")
+    r = _run(["git", "tag", "-l", "--format=%(contents)", f"v{version}"], check=False)
+    return (r.stdout or "").strip()
+
+
+def publish_github_release(version: str, zips: list[Path]) -> None:
+    """CI 路径: 在已推送的 tag 上创建 GitHub release(gh 用 GH_TOKEN 环境变量鉴权,
+    无需登录; 发布说明取 tag 注释)。"""
+    gh = gh_exe()
+    if not gh:
+        raise SystemExit(f"未找到 gh CLI(本机路径 {GH})")
+    cmd = [gh, "release", "create", f"v{version}",
+           "--repo", "Hx-zh/fh6-livery-viewer",
+           "--title", f"FH6 Livery Viewer v{version}"]
+    notes = tag_notes(version)
+    cmd += ["--notes", notes] if notes else ["--generate-notes"]
+    cmd += [str(z) for z in zips]
+    r = _run(cmd, check=False)
+    if r.returncode != 0:
+        raise SystemExit("gh release create 失败:\n" + _out(r))
+    print(f"[发布] GitHub release v{version} 已创建; 资产 {len(zips)} 个 zip")
+
+
 def publish(version: str, zips: list[Path], gitee: bool, token: str = "") -> None:
-    if not Path(GH).is_file():
-        raise SystemExit(f"未找到 gh CLI: {GH}(AGENTS.md: 用完整路径)")
+    gh = gh_exe()
+    if not gh:
+        raise SystemExit(f"未找到 gh CLI(本机路径 {GH}; AGENTS.md: 用完整路径)")
     _run(["git", "tag", "-a", f"v{version}", "-m", f"FH6 Livery Viewer v{version}"])
     _run(["git", "push", "origin", f"v{version}"])
     notes = DIST / f"release_notes_v{version}.md"
-    cmd = [GH, "release", "create", f"v{version}",
+    cmd = [gh, "release", "create", f"v{version}",
            "--repo", "Hx-zh/fh6-livery-viewer",
            "--title", f"FH6 Livery Viewer v{version}"]
     if notes.is_file():
@@ -293,8 +352,7 @@ def gitee_upload(version: str, zips: list[Path], token: str) -> None:
     if not token:
         raise SystemExit("缺少 Gitee 令牌(传参或 GITEE_TOKEN 环境变量)")
     q = urllib.parse.urlencode({"access_token": token})
-    notes = DIST / f"release_notes_v{version}.md"
-    body = notes.read_text(encoding="utf-8") if notes.is_file() else f"FH6 Livery Viewer v{version}"
+    body = tag_notes(version) or f"FH6 Livery Viewer v{version}"
 
     def _api(method: str, path: str, data=None, headers=None) -> dict:
         req = urllib.request.Request(f"{GITEE_API}/{path}?{q}", data=data, method=method,
@@ -413,6 +471,10 @@ def main() -> int:
                     help="在 Gitee 创建同名 release 并上传 5 个 zip(令牌见交互说明/GITEE_TOKEN)")
     ap.add_argument("--data-only", action="store_true",
                     help="仅发布 cars.json 数据: push 双端 + 线上内容校验(不发版)")
+    ap.add_argument("--ci", action="store_true",
+                    help="GitHub Actions 专用: 门禁+构建+五语言+在已有 tag 上建 GitHub release")
+    ap.add_argument("--gitee-local", action="store_true",
+                    help="本地发布 Gitee 侧: 门禁+构建+仅简中 zip+推镜像+建 Gitee release")
     ap.add_argument("--skip-checks", action="store_true")
     ap.add_argument("--pyright", action="store_true", help="强制运行 pyright 门禁")
     ap.add_argument("--allow-dirty", action="store_true")
@@ -425,6 +487,32 @@ def main() -> int:
 
     if args.data_only:
         data_only_publish()
+        return 0
+
+    if args.ci:
+        # CI(.github/workflows/release.yml, tag 触发): tag 已推送, 不再建/推;
+        # 门禁(check_i18n + pyright; git 干净天然满足) → 构建 → 五语言 → GH release
+        check_gates(False, False, force_pyright=True)
+        build()
+        zips = make_variants(version)
+        publish_github_release(version, zips)
+        print(f"\n[CI] GitHub release v{version} 完成(Gitee 侧由本地 --gitee-local 负责)")
+        return 0
+
+    if args.gitee_local:
+        # 推荐 release 流程③的 Gitee 侧: 产物 = 本地亲手测试过的构建
+        if not _run(["git", "rev-parse", "-q", "--verify", f"v{version}"],
+                    check=False).stdout.strip():
+            raise SystemExit(f"tag v{version} 不存在——先 git tag -a v{version} -m '发布说明…'")
+        token = get_gitee_token(sys.stdin.isatty())
+        check_gates(args.skip_checks, args.allow_dirty, args.pyright)
+        build()
+        zh = make_variants(version, langs=("zh-CN",))[0]
+        if not push_gitee_mirror(token):      # main+tags: tag 随镜像到达 Gitee
+            print("[Gitee] 警告: 镜像未同步, release 的 tag 可能落在旧 main 上")
+        gitee_upload(version, [zh], token)
+        print("\n[下一步] git push origin main --tags 触发 GitHub Action"
+              " 构建五语言并发布 GitHub release")
         return 0
 
     # 无参数(或显式 -i)进入交互式向导: 问版本 → 问目标 → (后文自动检测说明/问令牌)

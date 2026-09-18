@@ -1,0 +1,47 @@
+# 发布流水线(GitHub 侧): 推送 v* tag 触发——门禁 → 构建 → 五语言 zip → GitHub release。
+# Gitee 侧不在此处理(由本地 `python release_build.py --gitee-local` 推送亲手测试过的
+# 简中构建), 因此本 workflow 无需配置任何 secret(GITHUB_TOKEN 自动提供)。
+# 本地应急路径: release_build.py --publish 等老参数仍可用(见脚本头注释)。
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 X.Y.Z(须与 app.py APP_VERSION 一致)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # 取完整历史(发布说明兜底 --generate-notes 需要)
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: 安装构建依赖
+        run: pip install pyinstaller pillow
+
+      - name: 解析版本(tag 名去 v 前缀; 手动触发用输入)
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "REL_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "REL_VERSION=${{ inputs.version }}" >> "$GITHUB_ENV"
+          fi
+
+      - name: 门禁 + 构建 + 五语言变体 + GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYINSTALLER_PY: python    # release_build 打包用解释器(本地是 .venv-build)
+        run: python release_build.py --ci --version "$env:REL_VERSION"
