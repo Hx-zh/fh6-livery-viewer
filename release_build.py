@@ -405,7 +405,8 @@ def gitee_upload(version: str, zips: list[Path], token: str) -> None:
 
 def verify_remote_cars(tries: int = 5, wait_s: float = 10.0) -> None:
     """双端 raw 与仓库 cars.json 字节级比对(gitee/github 必须一致, 重试兜传播抖动;
-    jsdelivr 对分支引用有缓存滞后, 仅提示不阻断)。
+    jsdelivr 对分支引用有 ~12h 缓存——先查, 滞后则调官方 purge 接口
+    (purge.jsdelivr.net, 免认证)清缓存后复核, 全程不阻断)。
     比对基准用 HEAD blob 而非工作区文件——autocrlf 可能把工作区 CRLF 转成
     入库 LF, raw 端点返回 blob 字节, 与工作区直接比会因换行符误报。"""
     local = subprocess.run(["git", "show", "HEAD:cars.json"],
@@ -431,15 +432,42 @@ def verify_remote_cars(tries: int = 5, wait_s: float = 10.0) -> None:
     if pending:
         raise SystemExit("线上内容校验未通过: " + ", ".join(pending)
                          + " (检查推送是否成功/网络, 稍后可单独重跑)")
+    # jsdelivr(第三兜底源): 一致即过; 滞后则 purge 清缓存后复核; 任何失败不阻断
+    jsd_url = carupdate.SOURCE_URLS["jsdelivr"]
+    purge_url = jsd_url.replace("fastly.jsdelivr.net", "purge.jsdelivr.net")
+
+    def _jsd_same() -> bool | None:
+        try:
+            req = urllib.request.Request(jsd_url,
+                                         headers={"User-Agent": "release_build"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return resp.read() == local
+        except OSError:
+            return None            # 端点不可达(与内容异同是两回事)
+
+    same = _jsd_same()
+    if same is True:
+        print("[校验] jsdelivr: 一致 ✓")
+        return
     try:
-        req = urllib.request.Request(carupdate.SOURCE_URLS["jsdelivr"],
-                                     headers={"User-Agent": "release_build"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            same = resp.read() == local
-        print(f"[校验] jsdelivr: "
-              + ("一致 ✓" if same else "仍有分支缓存滞后(数小时级, 不阻断, 兜底源可容忍)"))
+        with urllib.request.urlopen(
+                urllib.request.Request(purge_url,
+                                       headers={"User-Agent": "release_build"}),
+                timeout=30):
+            pass
+        print("[校验] jsdelivr: 有缓存滞后, 已请求 purge 清缓存, 复核中…")
     except OSError as e:
-        print(f"[校验] jsdelivr: 暂不可达({e}), 不阻断")
+        print(f"[校验] jsdelivr: purge 请求失败({e})——兜底源容忍滞后, 不阻断")
+        return
+    for _ in (1, 2):
+        time.sleep(5)
+        same = _jsd_same()
+        if same is True:
+            print("[校验] jsdelivr: purge 后复核一致 ✓")
+            return
+    print("[校验] jsdelivr: 复核仍未一致"
+          + ("(端点不可达)" if same is None else "(缓存刷新中)")
+          + ", 不阻断——兜底源稍后自然同步")
 
 
 def check_cars_stamp() -> None:
