@@ -83,7 +83,7 @@ HEADER_H = 28                  # 重复分组标题行高(通栏色带, 不随�
 # 卡片墙缩放(会话级, 不持久化, 每次启动恢复 100%): 右上角 [−] 100% [+] /
 # 画布 Ctrl+滚轮 / Ctrl+加减与 Ctrl+0 重置; 文字字号/偏移/截断长度等比跟随,
 # 缩略图经 LANCZOS 重采样同步缩放(原图小于目标框时同样上采样放大)
-CARD_SCALE_MIN, CARD_SCALE_MAX = 0.2, 2.0
+CARD_SCALE_MIN, CARD_SCALE_MAX = 0.2, 5.0
 CARD_SCALE_STEP = 0.1
 
 # 字体: UI 铬件(按钮/菜单/标签/状态)用微软雅黑; 用户数据文本(涂装名/作者/车型/
@@ -2441,7 +2441,7 @@ class App(tk.Tk):
         """PIL 解码+缩放+角标合成, 返回 PIL 图(失败 None)。
         纯 PIL 无 tk 依赖, 可在工作线程里跑(缩略图线程池用)。
         等比 contain 缩放, 放大缩小同语义: 原图大于目标框缩小、小于则
-        LANCZOS 上采样放大(卡片墙缩放至 200% 时图随卡片同步缩放不留白)。"""
+        LANCZOS 上采样放大(卡片墙放大档图随卡片同步缩放不留白)。"""
         try:
             img = Image.open(path)
             factor = min(max_w / img.width, max_h / img.height)
