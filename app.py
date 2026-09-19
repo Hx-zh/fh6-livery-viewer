@@ -74,11 +74,17 @@ GITEE_API_LATEST = "https://gitee.com/api/v5/repos/hx_zh/fh6-livery-viewer/relea
 CARS_UA = f"FH6LiveryViewer/{APP_VERSION}"   # 请求 UA(各源日志可区分本工具流量)
 CARS_CHECK_DELAY_MS = 8000                   # 启动后自动检查的延迟(避开存档首扫)
 
+# 卡片墙几何基准(=100% 缩放): 运行时按 self.card_scale 派生实际尺寸
+# (见 App._apply_card_geometry), 下方常量只作 100% 基准不再被直接使用
 CARD_W, CARD_H = 224, 232      # 卡片尺寸(用户反馈偏小, 与字号 +1 同步整体放大)
-ROW_H = CARD_H + 8             # 网格行距(卡片高 + 上下间距)
-COL_W = CARD_W + 8             # 网格列距
 THUMB_W, THUMB_H = 212, 140    # 卡片缩略图区域
-HEADER_H = 28                  # 重复分组标题行高(通栏色带)
+HEADER_H = 28                  # 重复分组标题行高(通栏色带, 不随卡片缩放)
+
+# 卡片墙缩放(会话级, 不持久化, 每次启动恢复 100%): 右上角 [−] 100% [+] /
+# 画布 Ctrl+滚轮 / Ctrl+加减与 Ctrl+0 重置; 文字字号/偏移/截断长度等比跟随,
+# 缩略图经 LANCZOS 重采样同步缩放(原图小于目标框时同样上采样放大)
+CARD_SCALE_MIN, CARD_SCALE_MAX = 0.2, 2.0
+CARD_SCALE_STEP = 0.1
 
 # 字体: UI 铬件(按钮/菜单/标签/状态)用微软雅黑; 用户数据文本(涂装名/作者/车型/
 # 详情/搜索输入/位置角标)用 Consolas——实测微软雅黑的 I/l 都是光杆竖线不可区分,
@@ -86,11 +92,9 @@ HEADER_H = 28                  # 重复分组标题行高(通栏色带)
 # 经 Windows 字体链接自动回退渲染(已实测 tkinter 下 CJK/假名/谚文无缺字)
 FONT_UI = "Microsoft YaHei UI"
 FONT_DATA = "Consolas"
-# 卡片三行文字字号(用户反馈偏小, 整体 +1; 与卡片尺寸放大同步, 行距留有数 px 余量,
-# 名称字符数/车型换行宽度由 ellipsize/wraplength 自适应)
-CARD_FONT_NAME = (FONT_DATA, 10, "bold")
-CARD_FONT_CAR = (FONT_DATA, 9)
-CARD_FONT_SUB = (FONT_DATA, 9)
+# 卡片三行文字字号基准: 运行时随卡片缩放派生(100% 时 = 10 bold/9/9,
+# 见 _apply_card_geometry; 行距留有数 px 余量, 名称字符数/车型换行宽度由
+# ellipsize/wraplength 自适应)
 
 SORT_OPTIONS = [_("下载日期(新→旧)"), _("下载日期(旧→新)"), _("名称"), _("车型"),
                 _("作者"), _("车厂"), _("游戏内顺序")]
@@ -229,14 +233,16 @@ APPLIED_NOTICE = _("""已喷涂检测(标记哪些涂装正喷在车上)通过�
 但不能保证绝对零风险。介意请勿使用相关开关, 或仅在离线模式下使用。""")
 
 
-def _build_applied_sprite():
-    """生成「已喷在车上」喷漆罐角标素材(34×34 RGBA, 贴图片左上角)。
+def _build_applied_sprite(out: int = 34):
+    """生成「已喷在车上」喷漆罐角标素材(默认 34×34 RGBA, 贴图片左上角)。
 
     图案用 4 倍超采样绘制再缩小, 保证小尺寸下边缘平滑;
-    琥珀色沿用 Okabe-Ito #E69F00(色盲安全), 与详情面板「喷涂状态」呼应。"""
+    琥珀色沿用 Okabe-Ito #E69F00(色盲安全), 与详情面板「喷涂状态」呼应。
+    内部按 34 基准坐标绘制(136px 超采样画布), 最后 LANCZOS 缩放到 out 边长
+    (卡片墙缩放时角标随卡片等比缩放, out 恒 ≤136 画质无损)。"""
     from PIL import ImageDraw
     S = 4                                # 超采样倍数(抗锯齿)
-    leg = 34                             # 三角直角边长(贴图片左上角)
+    leg = 34                             # 三角直角边长基准(贴图片左上角)
     badge = Image.new("RGBA", (leg * S, leg * S), (0, 0, 0, 0))
     d = ImageDraw.Draw(badge)
 
@@ -259,26 +265,26 @@ def _build_applied_sprite():
                   fill=ink)
     tile = tile.rotate(45, resample=Image.Resampling.BICUBIC)
     badge.alpha_composite(tile, (p(3), p(3)))
-    return badge.resize((leg, leg), Image.Resampling.LANCZOS)
+    return badge.resize((out, out), Image.Resampling.LANCZOS)
 
 
-_applied_sprite = None
+_applied_sprites: dict[int, object] = {}
 
 
-def _applied_badge_sprite():
-    """喷漆罐角标预制素材单例: 全卡一致只生成一次, 之后每张缩略图只做一次贴图。"""
-    global _applied_sprite
-    if _applied_sprite is None:
-        _applied_sprite = _build_applied_sprite()
-    return _applied_sprite
+def _applied_badge_sprite(leg: int = 34):
+    """喷漆罐角标素材缓存(按边长): 同边长只生成一次, 全卡共用一份贴图。"""
+    if leg not in _applied_sprites:
+        _applied_sprites[leg] = _build_applied_sprite(leg)
+    return _applied_sprites[leg]
 
 
-def _build_auction_badge(applied: bool):
-    """拍卖涂装角标素材(34×34 RGBA, 贴缩略图框左上角)。
+def _build_auction_badge(applied: bool, out: int = 34):
+    """拍卖涂装角标素材(默认 34×34 RGBA, 贴缩略图框左上角)。
 
     默认灰色=未应用/未检测; 内存扫描确认该涂装正在车上时为琥珀橙
     (同喷漆罐角标的 Okabe-Ito #E69F00, 色盲安全)。图案 = 贴角三角 +
-    拍卖锤(16px 小图正立绘制后逆时针转 45° 顺斜边, 规格与喷漆罐一致)。"""
+    拍卖锤(16px 小图正立绘制后逆时针转 45° 顺斜边, 规格与喷漆罐一致)。
+    内部按 34 基准坐标绘制, 最后 LANCZOS 缩放到 out 边长(随卡片缩放)。"""
     from PIL import ImageDraw
     S = 4                                # 超采样倍数(抗锯齿)
     leg = 34                             # 三角直角边长(贴缩略图框左上角)
@@ -298,17 +304,17 @@ def _build_auction_badge(applied: bool):
     t.line((p(7.5), p(7), p(7.5), p(15)), fill=ink, width=int(p(2.5)))  # 锤柄
     tile = tile.rotate(45, resample=Image.Resampling.BICUBIC)
     badge.alpha_composite(tile, (p(3), p(3)))
-    return badge.resize((leg, leg), Image.Resampling.LANCZOS)
+    return badge.resize((out, out), Image.Resampling.LANCZOS)
 
 
-_auction_sprites: dict = {}
+_auction_sprites: dict[tuple[bool, int], object] = {}
 
 
-def _auction_badge_sprite(applied: bool):
-    """拍卖锤角标预制素材单例: 灰/橙各一张, 全卡共用。"""
-    key = bool(applied)
+def _auction_badge_sprite(applied: bool, leg: int = 34):
+    """拍卖锤角标素材缓存(按 颜色×边长): 同规格只生成一次, 灰/橙各一张。"""
+    key = (bool(applied), leg)
     if key not in _auction_sprites:
-        _auction_sprites[key] = _build_auction_badge(applied)
+        _auction_sprites[key] = _build_auction_badge(applied, leg)
     return _auction_sprites[key]
 
 
@@ -482,12 +488,18 @@ class App(tk.Tk):
         self._watch_armed_at = None               # 自动刷新: 本轮防抖首次启动时刻(monotonic, 顺延上限用)
         self._watch_offline = False               # 自动刷新: 目录整体不可访问中(状态翻转时提示一次)
         self._header_fails: dict[str, int] = {}   # 自动刷新: base -> header 解析连续失败次数(退避重试, 封顶放弃)
+        # 卡片墙缩放(会话级, 不持久化): 100% = 基准常量; 派生几何见 _apply_card_geometry
+        self.card_scale = 1.0
+        self._scale_job = None                 # 缩放防抖 job(滚轮/按钮连续触发合并)
+        self._zoom_pending = 0.0               # 防抖窗口内累计的步进量
+        self._apply_card_geometry()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_ui()
         self._cars_update_info()          # 页脚车型表状态行初值
         if HAS_PIL:
-            _applied_badge_sprite()            # 预热喷漆罐角标素材(贴卡时只做一次 PhotoImage 转换)
+            # 预热喷漆罐角标素材(当前缩放边长; 贴卡时只做一次 PhotoImage 转换)
+            _applied_badge_sprite(self.badge_leg)
         self.rescan_saves()
         self._applied_rescan_tick()          # 启动「已喷涂」定期快速重扫(开关打开且游戏运行时生效)
         self.after(WATCH_INTERVAL_MS, self._watch_tick)   # 启动「自动刷新」轮询(默认开)
@@ -523,6 +535,19 @@ class App(tk.Tk):
                           (_("备份整个存档"), self.backup_all),
                           (_("打开存档目录"), self.open_folder)):
             ttk.Button(bar, text=text, command=cmd).pack(side=tk.LEFT, padx=2)
+        # 卡片墙缩放(会话级, 不持久化): 右上角 [−] 100% [+] 显式控件;
+        # 画布上 Ctrl+滚轮、Ctrl+加减、Ctrl+0 重置同效(绑定见 _bind_zoom_keys)
+        self.scale_pct_var = tk.StringVar(value="100%")
+        zoom = ttk.Frame(bar)
+        zoom.pack(side=tk.RIGHT, padx=2)
+        ttk.Button(zoom, text="−", width=2,
+                   command=lambda: self._zoom_step(-CARD_SCALE_STEP)
+                   ).pack(side=tk.LEFT)
+        ttk.Label(zoom, textvariable=self.scale_pct_var, width=5,
+                  anchor=tk.CENTER).pack(side=tk.LEFT)
+        ttk.Button(zoom, text="+", width=2,
+                   command=lambda: self._zoom_step(CARD_SCALE_STEP)
+                   ).pack(side=tk.LEFT)
         # 置顶开关: 窗口浮在游戏上方, 方便随时调用(配合自动定位)
         self.topmost_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(bar, text=_("置顶"), variable=self.topmost_var,
@@ -725,6 +750,7 @@ class App(tk.Tk):
         self.canvas.bind("<Button-3>", self._on_card_rclick)
         # 全局滚轮: 指针在网格区域内才滚动(不能靠 Enter/Leave)
         self.bind_all("<MouseWheel>", self._on_wheel)
+        self._bind_zoom_keys()
         self.status_var = tk.StringVar(value=_("就绪"))
         ttk.Label(self, textvariable=self.status_var, relief=tk.SUNKEN,
                   anchor=tk.W, padding=(6, 2)).pack(fill=tk.X, side=tk.BOTTOM)
@@ -734,7 +760,7 @@ class App(tk.Tk):
     # ------------------------------------------------------------ 平铺布局(单 Canvas 虚拟绘制)
 
     def _on_wheel(self, e):
-        """指针在左侧网格区域时滚动画布。
+        """指针在左侧网格区域时滚动画布; 按住 Ctrl 则缩放卡片墙(不滚动)。
         winfo_containing 可能 KeyError(如悬在 ttk Combobox 下拉 popdown 上——
         该窗口只有 Tcl 对象没有 Python 控件), 此时直接忽略即可。"""
         try:
@@ -743,7 +769,11 @@ class App(tk.Tk):
             return
         while w is not None:
             if w is self.canvas:
-                self.canvas.yview_scroll(int(-e.delta / 120), "units")
+                if e.state & 0x0004:     # Control mask: Ctrl+滚轮 = 卡片墙缩放
+                    self._zoom_step(CARD_SCALE_STEP if e.delta > 0
+                                    else -CARD_SCALE_STEP)
+                else:
+                    self.canvas.yview_scroll(int(-e.delta / 120), "units")
                 return
             w = getattr(w, "master", None)
 
@@ -755,7 +785,7 @@ class App(tk.Tk):
         self._redraw()
 
     def _on_canvas_configure(self, e):
-        cols = max(1, e.width // COL_W)
+        cols = max(1, e.width // self.col_w)
         if cols != self._cols:
             self._cols = cols
             if self._relayout_job:
@@ -769,6 +799,78 @@ class App(tk.Tk):
         self._relayout_job = None
         self._layout_rows(self._filtered_items)
         self._redraw(force=True)
+
+    # ---- 卡片墙缩放 ---------------------------------------------------------
+
+    def _apply_card_geometry(self):
+        """按 self.card_scale 派生卡片墙全部几何量(纯计算, 不触发布局/重绘)。
+        100% 基准 = 模块常量 CARD_W/THUMB_W/...; 文字字号/偏移/截断长度等比
+        跟随, 字号与计数设下限防极端缩小后不可读/负值。"""
+        s = self.card_scale
+        self.card_w, self.card_h = round(CARD_W * s), round(CARD_H * s)
+        self.thumb_w, self.thumb_h = round(THUMB_W * s), round(THUMB_H * s)
+        self.gap = max(4, round(8 * s))       # 卡片行列间距(原 +8); 绘制偏移 = gap//2
+        self.row_h = self.card_h + self.gap
+        self.col_w = self.card_w + self.gap
+        self.card_pad = max(2, round(5 * s))  # 卡内边距(缩略图框 tx/ty)
+        self.text_x = max(3, round(7 * s))    # 三行文字相对卡左边偏移
+        # 三行文字相对缩略图框底(y+thumb_h+pad)的行顶偏移, 100% 基准 8/30/66
+        self.ty_name, self.ty_car, self.ty_sub = (round(v * s) for v in (8, 30, 66))
+        self.card_font_name = (FONT_DATA, max(7, round(10 * s)), "bold")
+        self.card_font_car = (FONT_DATA, max(7, round(9 * s)))
+        self.card_font_sub = (FONT_DATA, max(7, round(9 * s)))
+        # 名称/第三行字符截断数(100% 基准 24/30)与位置角标边距/内边距
+        self.ellip_name = max(10, round(24 * s))
+        self.ellip_sub = max(12, round(30 * s))
+        self.ph_font = (FONT_UI, max(7, round(9 * s)))  # 占位文字(加载中/无预览图)
+        self.pos_font_px = round(-13 * s)     # 位置角标像素字号(负数=像素)
+        self.pos_m = max(2, round(3 * s))     # 位置角标距缩略图框边距
+        self.pos_pad = max(2, round(4 * s))   # 位置角标文字内边距
+        self.badge_leg = max(20, round(34 * s))  # 喷漆罐/拍卖锤角标 sprite 边长
+
+    def _set_card_scale(self, scale: float):
+        """切换卡片墙缩放并重建: 派生几何 → 失效缩略图缓存(键只有 base 不含
+        尺寸, 旧尺寸图必须作废) → 按新列宽手动重算列数(画布宽度未变不会触发
+        <Configure>) → rebuild_grid(代次自增, 全量按新尺寸重解码, 强制重绘)。"""
+        scale = min(CARD_SCALE_MAX, max(CARD_SCALE_MIN, round(scale, 2)))
+        if abs(scale - self.card_scale) < 1e-9:
+            return
+        self.card_scale = scale
+        self._apply_card_geometry()
+        self._img_cache.clear()
+        self._pos_badge_font = None      # 像素字号变了, 懒重建
+        self._applied_photo = None       # 角标 PhotoImage 按新边长重建
+        self._auction_photo_gray = None  # (PIL 素材层有按边长缓存, 同边长复用)
+        self._auction_photo_amber = None
+        self._cols = max(1, max(1, self.canvas.winfo_width()) // self.col_w)
+        self.scale_pct_var.set(f"{round(scale * 100)}%")
+        self.rebuild_grid()
+
+    def _zoom_step(self, delta: float):
+        """缩放入口(按钮/Ctrl+滚轮/快捷键共用): 120ms 防抖合并连续滚轮,
+        窗口内累计步进后一次应用(清缓存+全量重解码是重操作, 不逐格触发)。"""
+        if not self._scale_job:
+            self._zoom_pending = 0.0     # 上一窗口已应用完毕, 重新累计
+        self._zoom_pending += delta
+        if self._scale_job:
+            self.after_cancel(self._scale_job)
+        self._scale_job = self.after(120, self._apply_zoom)
+
+    def _apply_zoom(self):
+        """防抖到期: 把累计步进应用到 card_scale。"""
+        self._scale_job = None
+        delta, self._zoom_pending = self._zoom_pending, 0.0
+        self._set_card_scale(self.card_scale + delta)
+
+    def _bind_zoom_keys(self):
+        """卡片墙缩放键盘快捷键: Ctrl+加减(主键盘/小键盘, Ctrl+= 同键)/Ctrl+0 重置。
+        bind_all 全局生效(与滚轮绑定同模式), 模态对话框打开时触发也无害——
+        只改主窗画布几何, 不触碰对话框。"""
+        for seq in ("<Control-equal>", "<Control-plus>", "<Control-KP_Add>"):
+            self.bind_all(seq, lambda _e: self._zoom_step(CARD_SCALE_STEP))
+        for seq in ("<Control-minus>", "<Control-KP_Subtract>"):
+            self.bind_all(seq, lambda _e: self._zoom_step(-CARD_SCALE_STEP))
+        self.bind_all("<Control-0>", lambda _e: self._set_card_scale(1.0))
 
     # ---- 行模型 -------------------------------------------------------------
 
@@ -915,7 +1017,7 @@ class App(tk.Tk):
         self._rows = rows
         y, ys = 0, [0]
         for r in rows:
-            y += HEADER_H if r[0] == "hdr" else ROW_H
+            y += HEADER_H if r[0] == "hdr" else self.row_h
             ys.append(y)
         self._row_y = ys
         self._content_h = y
@@ -952,7 +1054,7 @@ class App(tk.Tk):
         if not self._rows:
             c.configure(scrollregion=(0, 0, 0, 0))
             return
-        width = self._cols * COL_W
+        width = self._cols * self.col_w
         for ri in range(win[0], win[1]):
             row = self._rows[ri]
             y = self._row_y[ri]
@@ -976,49 +1078,53 @@ class App(tk.Tk):
         return App._SEL_COLORS if sel else App._NORM_COLORS
 
     def _draw_card(self, base: str, col: int, ri: int):
-        """画一张卡: 底板矩形(兼描边)+内面+三行文字+缩略图区, item 记入 _vis_cards。"""
+        """画一张卡: 底板矩形(兼描边)+内面+三行文字+缩略图区, item 记入 _vis_cards。
+        全部几何量来自 _apply_card_geometry 派生属性(随卡片墙缩放)。"""
         it = self.item_map.get(base)
         if it is None:
             return
         c = self.canvas
         tag = f"card:{base}"
-        x = col * COL_W + 4
-        y = self._row_y[ri] + 4
+        x = col * self.col_w + self.gap // 2
+        y = self._row_y[ri] + self.gap // 2
         border, face, name_fg, car_fg, sub_fg = self._palette(base == self._selected)
 
         def new(kind, *args, **kw):
             return getattr(c, f"create_{kind}")(*args, tags=(tag,), **kw)
 
         ids = {"x": x, "y": y}
-        tx, ty = x + 5, y + 5
+        tx, ty = x + self.card_pad, y + self.card_pad
         ids["tx"], ids["ty"] = tx, ty
-        ids["border"] = new("rectangle", x, y, x + CARD_W, y + CARD_H,
+        ids["border"] = new("rectangle", x, y, x + self.card_w, y + self.card_h,
                             fill=border, outline="")
-        ids["face"] = new("rectangle", x + 2, y + 2, x + CARD_W - 2, y + CARD_H - 2,
-                          fill=face, outline="")
+        ids["face"] = new("rectangle", x + 2, y + 2, x + self.card_w - 2,
+                          y + self.card_h - 2, fill=face, outline="")
         # 缩略图底色(图片按比例缩放后的留白/未加载时的衬底, 同旧 Label 的灰底);
         # 缩略图与角标必须在文字之前绘制: 图片按比例居中不会盖到下方文字行
-        new("rectangle", tx, ty, tx + THUMB_W, ty + THUMB_H,
+        new("rectangle", tx, ty, tx + self.thumb_w, ty + self.thumb_h,
             fill="#f0f0f0", outline="")
         self._paint_thumb(base, ids)
         # 注意 create_text 一律 anchor=NW(顶端对齐): 旧 Label 的 place(y=..) 是
         # 控件顶边定位, 若用 W(C=W 且垂直居中)整行文字会上移约半个行高压到图片
-        ids["name"] = new("text", x + 7, y + THUMB_H + 8, anchor=tk.NW,
-                          text=ellipsize(self._livery_title(it), 24),
-                          font=CARD_FONT_NAME, fill=name_fg)
-        # 车型名允许换行(最多两行), 尽量完整显示(width=THUMB_W-4 即 wraplength)
-        ids["car"] = new("text", x + 7, y + THUMB_H + 30, anchor=tk.NW,
+        ids["name"] = new("text", x + self.text_x, y + self.thumb_h + self.ty_name,
+                          anchor=tk.NW,
+                          text=ellipsize(self._livery_title(it), self.ellip_name),
+                          font=self.card_font_name, fill=name_fg)
+        # 车型名允许换行(最多两行), 尽量完整显示(width=thumb_w-4 即 wraplength)
+        ids["car"] = new("text", x + self.text_x, y + self.thumb_h + self.ty_car,
+                         anchor=tk.NW,
                          justify=tk.LEFT, text=self.car_display(it),
-                         width=THUMB_W - 4,
-                         font=CARD_FONT_CAR, fill=car_fg)
+                         width=self.thumb_w - 4,
+                         font=self.card_font_car, fill=car_fg)
         # 第三行: 车型已识别(或无车型 ID) → 显示作者; 未识别 → 显示 ID 和日期(便于排查)
         known = bool(self.car_table.name("fh6", it.car_id))
         date = it.ts.strftime("%Y-%m-%d") if it.ts else ""
         third = ((it.creator or "?") if known or not it.car_id
                  else _("ID {id}  {date}").format(id=it.car_id, date=date))
-        ids["sub"] = new("text", x + 7, y + THUMB_H + 66, anchor=tk.NW,
-                         text=ellipsize(third, 30),
-                         font=CARD_FONT_SUB, fill=sub_fg)
+        ids["sub"] = new("text", x + self.text_x, y + self.thumb_h + self.ty_sub,
+                         anchor=tk.NW,
+                         text=ellipsize(third, self.ellip_sub),
+                         font=self.card_font_sub, fill=sub_fg)
         self._vis_cards[base] = ids
 
     def _paint_thumb(self, base: str, ids: dict):
@@ -1036,7 +1142,7 @@ class App(tk.Tk):
         ids["img"] = ids["ph"] = ids["badge"] = None
         ids["posr"] = ids["post"] = None
         it = self.item_map.get(base)
-        cx, cy = ids["tx"] + THUMB_W // 2, ids["ty"] + THUMB_H // 2
+        cx, cy = ids["tx"] + self.thumb_w // 2, ids["ty"] + self.thumb_h // 2
         tag = f"card:{base}"
         photo = self._img_cache.get(base)
         if photo:
@@ -1044,10 +1150,10 @@ class App(tk.Tk):
                                         image=photo, tags=(tag,))
         elif it is None or it.thumb_big is None or self._thumb_fails.get(base, 0) >= 6:
             ids["ph"] = c.create_text(cx, cy, text=_("(无预览图)"), fill="#888888",
-                                      font=(FONT_UI, 9), tags=(tag,))
+                                      font=self.ph_font, tags=(tag,))
         else:
             ids["ph"] = c.create_text(cx, cy, text=_("加载中…"), fill="#888888",
-                                      font=(FONT_UI, 9), tags=(tag,))
+                                      font=self.ph_font, tags=(tag,))
         if (HAS_PIL and it is not None and it.itype == "SoulBoundLivery"):
             # 拍卖涂装角标: 默认灰色+拍卖锤; 检测到喷在车上 → 琥珀橙+拍卖锤
             ids["badge"] = c.create_image(
@@ -1057,19 +1163,20 @@ class App(tk.Tk):
                 tags=(tag,))
         elif (HAS_PIL and self._applied and base in self._applied):
             if self._applied_photo is None:
-                self._applied_photo = ImageTk.PhotoImage(_applied_badge_sprite())
+                self._applied_photo = ImageTk.PhotoImage(
+                    _applied_badge_sprite(self.badge_leg))
             ids["badge"] = c.create_image(ids["x"], ids["y"], anchor=tk.NW,
                                           image=self._applied_photo, tags=(tag,))
-        # 位置角标: 右上角浅底黑字(尺寸随文本自适应, 边距同旧烙印 m=3/pad=4)
+        # 位置角标: 右上角浅底黑字(尺寸随文本自适应, 边距随卡片缩放)
         pos = self._pos_map.get(base, "")
         if pos:
             fnt = self._pos_badge_font
             if fnt is None:
-                fnt = tkfont.Font(family=FONT_DATA, size=-13)
+                fnt = tkfont.Font(family=FONT_DATA, size=self.pos_font_px)
                 self._pos_badge_font = fnt
             tw, th = fnt.measure(pos), fnt.metrics("linespace")
-            m, pad = 3, 4
-            x1, y0 = ids["tx"] + THUMB_W - m, ids["ty"] + m
+            m, pad = self.pos_m, self.pos_pad
+            x1, y0 = ids["tx"] + self.thumb_w - m, ids["ty"] + m
             ids["posr"] = c.create_rectangle(x1 - tw - pad * 2, y0, x1, y0 + th,
                                              fill="#f0f0f0", outline="",
                                              tags=(tag,))
@@ -1078,14 +1185,16 @@ class App(tk.Tk):
                                         font=fnt, fill="#000000", tags=(tag,))
 
     def _auction_badge_photo(self, applied: bool):
-        """拍卖锤角标 PhotoImage(灰/橙各一张, 按需懒建, 全卡共用)。"""
+        """拍卖锤角标 PhotoImage(灰/橙各一张, 按需懒建, 全卡共用;
+        边长随卡片缩放, _set_card_scale 时置 None 触发重建)。"""
         if applied:
             if self._auction_photo_amber is None:
                 self._auction_photo_amber = ImageTk.PhotoImage(
-                    _auction_badge_sprite(True))
+                    _auction_badge_sprite(True, self.badge_leg))
             return self._auction_photo_amber
         if self._auction_photo_gray is None:
-            self._auction_photo_gray = ImageTk.PhotoImage(_auction_badge_sprite(False))
+            self._auction_photo_gray = ImageTk.PhotoImage(
+                _auction_badge_sprite(False, self.badge_leg))
         return self._auction_photo_gray
 
     def _recolor_card(self, base: str | None):
@@ -1277,7 +1386,7 @@ class App(tk.Tk):
             it = self.item_map.get(base)
             if not it:
                 continue
-            img = self._load_thumb(it.thumb_big, THUMB_W, THUMB_H)
+            img = self._load_thumb(it.thumb_big, self.thumb_w, self.thumb_h)
             if img:
                 # 解码失败(如游戏正在写入该文件)不缓存, 否则 None 进缓存
                 # 会让卡片永远卡在「加载中…」
@@ -1319,19 +1428,23 @@ class App(tk.Tk):
             return
         gen = self._thumb_gen
         pending, self._thumb_pending = self._thumb_pending, []
+        # 提交时捕获解码尺寸(工作线程不读实例属性, 防缩放瞬间读到混合值;
+        # 即便读旧值, 代次校验也会丢弃过期结果)
+        tw, th = self.thumb_w, self.thumb_h
         for base in pending:
             it = self.item_map.get(base)
             if not it:
                 continue
             self._thumb_inflight += 1
-            pool.submit(self._decode_thumb_job, gen, base, it.thumb_big)
+            pool.submit(self._decode_thumb_job, gen, base, it.thumb_big, tw, th)
         if self._thumb_inflight:
             self.after(30, self._drain_thumb_queue)
 
-    def _decode_thumb_job(self, gen: int, base: str, path: Path | None):
+    def _decode_thumb_job(self, gen: int, base: str, path: Path | None,
+                          tw: int, th: int):
         """工作线程: 解码+缩放(PIL 解码释放 GIL), 结果入队等主线程贴图。
         卡片缩略图不再烙任何角标(位置/喷涂角标均改为画在卡片层)。"""
-        img = self._compose_thumb(path, THUMB_W, THUMB_H) \
+        img = self._compose_thumb(path, tw, th) \
             if path and path.exists() else None
         self._thumb_queue.put((gen, base, img))
 
@@ -2326,10 +2439,16 @@ class App(tk.Tk):
 
     def _compose_thumb(self, path: Path, max_w: int, max_h: int, badge: str = ""):
         """PIL 解码+缩放+角标合成, 返回 PIL 图(失败 None)。
-        纯 PIL 无 tk 依赖, 可在工作线程里跑(缩略图线程池用)。"""
+        纯 PIL 无 tk 依赖, 可在工作线程里跑(缩略图线程池用)。
+        等比 contain 缩放, 放大缩小同语义: 原图大于目标框缩小、小于则
+        LANCZOS 上采样放大(卡片墙缩放至 200% 时图随卡片同步缩放不留白)。"""
         try:
             img = Image.open(path)
-            img.thumbnail((max_w, max_h))
+            factor = min(max_w / img.width, max_h / img.height)
+            if factor != 1.0:
+                img = img.resize((max(1, round(img.width * factor)),
+                                  max(1, round(img.height * factor))),
+                                 Image.Resampling.LANCZOS)
             if badge:
                 img = img.convert("RGBA")
                 self._draw_badge(img, badge)
