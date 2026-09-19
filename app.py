@@ -59,7 +59,7 @@ else:
     CARS_JSON = APP_DIR / "cars.json"
 BACKUP_DIR = APP_DIR / "backups"
 
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.8.1"
 PROJECT_URL = "https://github.com/Hx-zh/fh6-livery-viewer"
 RELEASES_URL = PROJECT_URL + "/releases"
 # Gitee 镜像(国内更新加速; 发布时需同步推送到该仓库并建同名 release):
