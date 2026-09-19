@@ -2187,16 +2187,19 @@ class App(tk.Tk):
         """喷涂状态检测(现行主路径): 读游戏缓存清单第二表「在册名单」判定。
 
         不扫游戏内存、不需要游戏运行; 清单路径取自系统用户目录(随账户变化)。
-        清单不可用(未找到/损坏)时置 _applied=None(待检测)并返回 False,
-        绝不把「读不到」误判成「未喷涂」——由调用方决定是否回退内存扫描。"""
+        清单不可用(未找到/损坏/名单为空)时返回 False: 从未检测成功则维持
+        _applied=None(待检测); 已有结果则保持现状不清空——游戏实时改写清单,
+        读到半截/被锁定的瞬态失败若清掉旧结果, 已喷涂筛选轴会被静默旁路、
+        勾选状态下显示全部涂装(用户反馈 bug)。绝不把「读不到」误判成「未喷涂」,
+        由调用方决定是否回退内存扫描。"""
         if not self.current or self.current.get("game") != "fh6":
             return False
         toks = fh6save.manifest_applied_tokens()
         if toks is None:
-            self._applied = None
-            self._applied_n = 0
-            if not quiet:
-                self.status_var.set(_("喷涂状态: 未找到游戏缓存清单, 无法判定(显示待检测)"))
+            if self._applied is None:           # 首次检测也失败: 维持待检测语义
+                self._applied_n = 0
+                if not quiet:
+                    self.status_var.set(_("喷涂状态: 未找到游戏缓存清单, 无法判定(显示待检测)"))
             return False
         hit: set = set()
         n = 0
