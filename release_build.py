@@ -54,6 +54,7 @@
 """
 import argparse
 import getpass
+import io
 import json
 import mimetypes
 import os
@@ -80,6 +81,23 @@ GITEE_API = f"https://gitee.com/api/v5/repos/{GITEE_REPO}"
 PYRIGHT_FILES = ("app.py", "carupdate.py", "fh6save.py", "gamemem.py",
                  "i18n/__init__.py", "check_i18n.py",
                  "i18n/lang_en.py", "i18n/lang_ja.py", "i18n/lang_ko.py", "i18n/lang_zhtw.py")
+
+
+def _fix_stdio_encoding() -> None:
+    """Windows 非中文代码页控制台(cp1252 等)打印中文即 UnicodeEncodeError——
+    GitHub Actions windows-latest 实测踩坑; 能编码的中文终端(本地 GBK)不动。"""
+    for stream in (sys.stdout, sys.stderr):
+        enc = getattr(stream, "encoding", None) or ""
+        try:
+            "门禁".encode(enc)
+            continue
+        except (UnicodeEncodeError, LookupError):
+            pass
+        if isinstance(stream, io.TextIOWrapper):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                pass
 
 
 def pyinstaller_python() -> str:
@@ -546,6 +564,7 @@ def data_only_publish() -> None:
 
 
 def main() -> int:
+    _fix_stdio_encoding()          # CI(windows-latest cp1252 控制台)打印中文不崩
     ap = argparse.ArgumentParser(description="FH6LiveryViewer 自动编译/发布")
     ap.add_argument("-i", "--interactive", action="store_true",
                     help="交互式向导(不带任何参数运行时默认进入)")
