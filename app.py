@@ -535,7 +535,8 @@ class App(tk.Tk):
                           (_("备份整个存档"), self.backup_all),
                           (_("打开存档目录"), self.open_folder)):
             ttk.Button(bar, text=text, command=cmd).pack(side=tk.LEFT, padx=2)
-        # 卡片墙缩放(会话级, 不持久化): 右上角 [−] 100% [+] 显式控件;
+        # 卡片墙缩放(会话级, 不持久化): 右上角 [−] 百分比下拉 [+] 显式控件,
+        # 下拉可直接选/输百分比(选中、回车或失焦生效, 非法输入回显当前值);
         # 画布上 Ctrl+滚轮、Ctrl+加减、Ctrl+0 重置同效(绑定见 _bind_zoom_keys)
         self.scale_pct_var = tk.StringVar(value="100%")
         zoom = ttk.Frame(bar)
@@ -543,8 +544,15 @@ class App(tk.Tk):
         ttk.Button(zoom, text="−", width=2,
                    command=lambda: self._zoom_step(-CARD_SCALE_STEP)
                    ).pack(side=tk.LEFT)
-        ttk.Label(zoom, textvariable=self.scale_pct_var, width=5,
-                  anchor=tk.CENTER).pack(side=tk.LEFT)
+        self.scale_combo = ttk.Combobox(
+            zoom, textvariable=self.scale_pct_var, width=5,
+            values=[f"{int(p * 100)}%" for p in
+                    (0.2, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0)])
+        self.scale_combo.pack(side=tk.LEFT)
+        self.scale_combo.bind("<<ComboboxSelected>>",
+                              lambda _e: self._apply_scale_text())
+        self.scale_combo.bind("<Return>", lambda _e: self._apply_scale_text())
+        self.scale_combo.bind("<FocusOut>", lambda _e: self._apply_scale_text())
         ttk.Button(zoom, text="+", width=2,
                    command=lambda: self._zoom_step(CARD_SCALE_STEP)
                    ).pack(side=tk.LEFT)
@@ -861,6 +869,17 @@ class App(tk.Tk):
         self._scale_job = None
         delta, self._zoom_pending = self._zoom_pending, 0.0
         self._set_card_scale(self.card_scale + delta)
+
+    def _apply_scale_text(self):
+        """缩放下拉框提交(选中/回车/失焦): 把文本解析为百分比并应用;
+        非法输入回显当前缩放值(_set_card_scale 会把越界值收敛到合法范围)。"""
+        text = self.scale_pct_var.get().strip().removesuffix("%").strip()
+        try:
+            pct = float(text)
+        except ValueError:
+            self.scale_pct_var.set(f"{round(self.card_scale * 100)}%")
+            return
+        self._set_card_scale(pct / 100.0)
 
     def _bind_zoom_keys(self):
         """卡片墙缩放键盘快捷键: Ctrl+加减(主键盘/小键盘, Ctrl+= 同键)/Ctrl+0 重置。
