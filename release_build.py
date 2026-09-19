@@ -120,8 +120,11 @@ def gh_exe() -> str:
 def _run(cmd: list, *, check: bool = True, redact: str = "") -> subprocess.CompletedProcess:
     shown = [str(c).replace(redact, "***") if redact else str(c) for c in cmd]
     print("+", " ".join(shown))
+    # 输出一律按 UTF-8 解码(git/gh/自研工具均 UTF-8)——默认区域编码会把中文解成乱码
+    # 字符串再传给 gh --notes 等参数, CI(cp1252)实测把 release notes 写坏(v1.8.1 踩坑)
     return subprocess.run([str(c) for c in cmd], cwd=ROOT, check=check,
-                          capture_output=True, text=True, errors="replace")
+                          capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
 
 
 def _out(r: subprocess.CompletedProcess) -> str:
@@ -326,7 +329,8 @@ def build() -> None:
     # 内嵌数据校验: 直接以 stdin 喂 'l' 给 archive_viewer(不经 cmd, 避免引号解析问题)
     r = subprocess.run(
         [py, "-m", "PyInstaller.utils.cliutils.archive_viewer", str(exe)],
-        input="l\n", cwd=ROOT, capture_output=True, text=True, errors="replace")
+        input="l\n", cwd=ROOT, capture_output=True, text=True,
+        encoding="utf-8", errors="replace")
     if "cars.json" not in _out(r):
         raise SystemExit("内嵌数据校验失败: 未在 EXE 中找到 cars.json")
     print(f"[构建] {exe.name} {exe.stat().st_size:,}B, cars.json 内嵌校验通过")
