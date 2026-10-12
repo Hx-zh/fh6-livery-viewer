@@ -5,6 +5,9 @@ fh6save.py — 极限竞速:地平线 Steam 版存档涂装/纹饰/调校解析�
 格式依据(实测 + 社区逆向):
 - Steam 存档位于 <Steam>/userdata/<steam用户ID>/<appid>/remote/ 下,
   FH4 为平铺文件, FH5/FH6 多为 remote/<数字文件夹>/ 再平铺。
+  pgs(目录型条目)存档位于 <盘符>:/XboxGames/GameSave/pgs(商店/Xbox 版)或
+  %LOCALAPPDATA%/Microsoft/GameSave/pgs(部分 Steam 用户的新位置)下,
+  布局为 u_*/current/ContainersRoot。
 - 每个"条目"由同名的几个分片文件组成:
     <类型>_<车型ID>_<时间戳yyyyMMddhhmmss>.header      元数据(名称/作者/日期/层数)
     <类型>_<车型ID>_<时间戳>.C_livery / .C_group / .Data   数据体(zlib 压缩)
@@ -255,16 +258,38 @@ def find_steam_path() -> Path | None:
     return None
 
 
-# 微软商店/Xbox 版(pgs)存档根目录候选
-PGS_ROOTS = [rf"{d}:\XboxGames\GameSave\pgs" for d in "CDEFGH"]
+# pgs 存档根目录候选(盘符级): 商店/Xbox 版在 <盘符>:\XboxGames\GameSave\pgs;
+# 另有 %LOCALAPPDATA%\Microsoft\GameSave\pgs(见 _pgs_roots)
+PGS_DRIVE_ROOTS = [rf"{d}:\XboxGames\GameSave\pgs" for d in "CDEFGH"]
+
+
+def _pgs_roots() -> list[tuple[Path, str]]:
+    """pgs 存档根目录候选, 各根附来源标签(写入 find_saves 结果的 source 字段)。
+
+    - PGS_DRIVE_ROOTS: 商店/Xbox 版, source="pgs";
+    - %LOCALAPPDATA%\\Microsoft\\GameSave*\\pgs: 部分 Steam 用户的存档被游戏
+      迁到该用户目录位置(2026-10 用户反馈), 内部布局与商店版完全一致
+      (u_*\\current\\ContainersRoot), source="pgs-local";
+      目录名以 GameSave* 通配, 兼容 GameSave/GameSaves 拼写变体。
+    """
+    roots: list[tuple[Path, str]] = [(Path(r), "pgs") for r in PGS_DRIVE_ROOTS]
+    lad = os.environ.get("LOCALAPPDATA", "").strip()
+    if lad:
+        try:
+            for gs in sorted((Path(lad) / "Microsoft").glob("GameSave*")):
+                pgs = gs / "pgs"
+                if pgs.is_dir():
+                    roots.append((pgs, "pgs-local"))
+        except OSError:
+            pass
+    return roots
 
 
 def find_pgs_saves() -> list[dict]:
     """扫描 pgs 布局(ContainersRoot)的 FH6 存档。"""
     found = []
     seen = set()
-    for root_str in PGS_ROOTS:
-        root = Path(root_str)
+    for root, source in _pgs_roots():
         if not root.is_dir():
             continue
         for u in sorted(root.glob("u_*")):
@@ -286,7 +311,7 @@ def find_pgs_saves() -> list[dict]:
                 seen.add(key)
                 if any(ITEM_RE.match(x.name) for x in cr.iterdir()):
                     found.append({"game": "fh6", "steam_user": u.name,
-                                  "dir": Path(os.path.realpath(cr)), "source": "pgs"})
+                                  "dir": Path(os.path.realpath(cr)), "source": source})
     return found
 
 
@@ -1285,7 +1310,8 @@ if __name__ == "__main__":
         g = GAMES[s["game"]]
         items = scan_folder(s["game"], s["steam_user"], s["dir"])
         src_key = str(s.get("source") or "?")
-        src = {"steam": "Steam", "pgs": "商店版/pgs"}.get(src_key, src_key)
+        src = {"steam": "Steam", "pgs": "商店版/pgs",
+               "pgs-local": "Steam/GameSave"}.get(src_key, src_key)
         print(f"\n[{g['title']} | {src}] 用户 {s['steam_user']}  目录 {s['dir']}  条目 {len(items)}")
         for it in items[:10]:
             car_mark = f"车ID {it.car_id:<5}"

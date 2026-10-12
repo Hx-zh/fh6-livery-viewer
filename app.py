@@ -1498,7 +1498,8 @@ class App(tk.Tk):
     def rescan_saves(self):
         self.saves = [s for s in fh6save.find_saves() if s["game"] == "fh6"]
         labels = []
-        src_names = {"steam": "Steam", "pgs": _("商店版/pgs")}
+        src_names = {"steam": "Steam", "pgs": _("商店版/pgs"),
+                     "pgs-local": _("Steam/GameSave")}
         for s in self.saves:
             src_key = str(s.get("source") or "?")
             src = src_names.get(src_key, src_key)

@@ -26,6 +26,7 @@ STRINGS = {
     '未选择条目': 'No item selected',
     '已清除快筛': 'Quick filter cleared',
     '商店版/pgs': 'Store/pgs',
+    'Steam/GameSave': 'Steam/GameSave',
     '重复检测参数': 'Duplicate Detection Parameters',
     '任意': 'Any',
     '相同': 'Same',

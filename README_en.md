@@ -32,7 +32,7 @@ Browse the liveries in your local *Forza Horizon 6* save outside the game: a til
 - ⚡ **Right-click quick filter**: a card's context menu offers「只显示该车型」(show this car only) and「只显示该作者」(show this creator only) to narrow the wall in one click; while active the filter button text gains a「快筛」segment and the same menu shows 清除快筛 (clear quick filter) at the top to restore (cleared automatically on save switch)
 - 📋 **Native copy**: selectable details text (Ctrl+C / context menu); card context menu copies position / name / car / creator
 - 💾 **One-click backup**: zip the whole save directory (a read-only operation)
-- 🖥️ **Both PC editions**: auto-detects Steam saves (`userdata`) and Microsoft Store / Xbox app saves (`XboxGames\GameSave\pgs`)
+- 🖥️ **Both PC editions**: auto-detects Steam saves (`userdata`) and Microsoft Store / Xbox app saves (`XboxGames\GameSave\pgs`); saves of some Steam users that the game migrated to `%LOCALAPPDATA%\Microsoft\GameSave\pgs` are also recognized (labeled `Steam/GameSave` in the UI)
 
 ## Requirements
 
@@ -59,7 +59,7 @@ pip install pillow
 python app.py
 ```
 
-On launch the tool locates your FH6 save automatically (via the Steam registry key, or by scanning `XboxGames\GameSave\pgs` for the Store/Xbox edition). You can also point it at a `remote` or `ContainersRoot` folder manually via “手动选择目录…”.
+On launch the tool locates your FH6 save automatically (via the Steam registry key, or by scanning `XboxGames\GameSave\pgs` for the Store/Xbox edition, and it also picks up saves that the game migrated to `%LOCALAPPDATA%\Microsoft\GameSave\pgs` for some Steam users). You can also point it at a `remote` or `ContainersRoot` folder manually via “手动选择目录…”.
 
 ## Packaging
 
@@ -100,7 +100,7 @@ Card rows: livery name / car name (wraps to show in full) / creator. If the car 
 The tool is **read-only**. These findings come from real on-disk saves plus community reverse engineering:
 
 - **Steam**: `<Steam>\userdata\<user id>\<appid>\remote\` (FH6 appid `2483190`). Each livery is a set of same-name part files: `Livery_<car id>_<timestamp>.header / .C_livery / .bigThumb.png …`
-- **Microsoft Store / Xbox app (pgs)**: `<drive>:\XboxGames\GameSave\pgs\u_<id>\<snapshot>\ContainersRoot\`. Each livery is a same-named **folder** containing `header` / `C_livery` / `bigThumb.webp`. The `current` junction points at the active snapshot and the snapshot number rotates (100 → 101 …); the tool follows it automatically
+- **Microsoft Store / Xbox app (pgs)**: `<drive>:\XboxGames\GameSave\pgs\u_<id>\<snapshot>\ContainersRoot\`. Each livery is a same-named **folder** containing `header` / `C_livery` / `bigThumb.webp`. The `current` junction points at the active snapshot and the snapshot number rotates (100 → 101 …); the tool follows it automatically. For some Steam users the game migrates the save to `%LOCALAPPDATA%\Microsoft\GameSave\pgs` (the directory name is matched as `GameSave*` to cover spelling variants); the layout is identical to the Store edition and it is labeled `Steam/GameSave` in the UI
 - **Auction liveries (SoulBoundLivery)**: liveries bought from the auction house live in `SoulBoundLivery_<car id>_<14-digit timestamp>` containers under `ContainersRoot`, and those containers hold **no** thumbnail file; their previews come from the game's `CacheThumbnails` cache (the `CacheThumbnails/.manifest` has two tables — a first GUID/materialization table and a second logical-name registry; the logical-name format is `<car id>_<16-hex instanceKey>(bm<N>|u<26-char token>)_bigThumb.webp`). The tool derives a 26-char token from the last 16 bytes of a SoulBoundLivery header via Crockford Base32, then looks it up in the first table to get `CacheThumbnails/<GUID>.webp` as the preview (the cache lives in `%LOCALAPPDATA%\ForzaHorizon6\LocalStorage_Cache\CacheThumbnails`, where Store-edition machines also land). When the cache is missing/corrupt the auction items degrade to "no preview" without affecting anything else
 - `header` is binary metadata (version / name / creator / creation time / layer count / car ID); byte layout documented in `fh6save.py` comments
 - The filename timestamp (UTC, shown converted to local time) is the player's download/save time; the creator's true creation time is embedded in the header (UTC, converted to local) — the two are independent (since v1.8.0 the UI shows them separately as download time / creation time)
