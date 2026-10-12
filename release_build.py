@@ -353,10 +353,19 @@ def make_variants(version: str, langs: tuple = LANGS) -> list[Path]:
 
 def tag_notes(version: str) -> str:
     """发布说明来源: dist/release_notes_vX.md → tag 注释(git tag -a 时写的)
-    → 空串(GitHub 回退 --generate-notes / Gitee 用默认一句话)。"""
+    → 空串(GitHub 回退 --generate-notes / Gitee 用默认一句话)。
+
+    坑(CI 实弹, v1.8.2): actions/checkout 在 tag 触发的运行里会把
+    refs/tags/vX 二次 fetch 成「直接指向提交的轻量 ref」(`+<sha>:refs/tags/vX`,
+    注释对象还在 ODB 但 ref 不再指向它), 此时 %(contents) 退化为提交信息
+    (v1.8.1 起 notes 一直是提交信息, 事后才发现)——先检出 tag 对象恢复
+    注释 ref 再读。"""
     notes = DIST / f"release_notes_v{version}.md"
     if notes.is_file():
         return notes.read_text(encoding="utf-8")
+    r = _run(["git", "cat-file", "-t", f"v{version}"], check=False)
+    if (r.stdout or "").strip() != "tag":        # 轻量 ref(注释丢失) → 恢复
+        _run(["git", "fetch", "-f", "origin", "tag", f"v{version}"], check=False)
     r = _run(["git", "tag", "-l", "--format=%(contents)", f"v{version}"], check=False)
     return (r.stdout or "").strip()
 
