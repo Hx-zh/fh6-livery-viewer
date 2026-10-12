@@ -1503,9 +1503,18 @@ class App(tk.Tk):
         self._manual_dir = ""
         appconfig.set_manual_dir("")
 
+    @staticmethod
+    def _save_recency(s: dict) -> int:
+        """存档「最近写入」排序键: 条目分片 mtime_ns 的最大值(save_signature 聚合,
+        只统计涂装类条目; 目录不可读/无条目记 0)。"""
+        sig = fh6save.save_signature(Path(s["dir"]))
+        if not sig:
+            return 0
+        return max(mt for mt, _sz in sig.values())
+
     def rescan_saves(self):
         self.saves = [s for s in fh6save.find_saves() if s["game"] == "fh6"]
-        select = 0
+        select: int | None = None
         if self._manual_dir:
             mp = Path(self._manual_dir)
             if not mp.is_dir():
@@ -1520,9 +1529,14 @@ class App(tk.Tk):
                     self._forget_manual_dir()
                     select = dup
                 else:
-                    # 恢复手动目录到下拉首项并选中(用户最后的显式选择优先)
+                    # 恢复手动目录到下拉首项并选中(手动优先级高于所有扫描项)
                     self.saves.insert(0, {"game": "fh6", "steam_user": _("手动"),
                                           "dir": mp, "source": "manual"})
+                    select = 0
+        if select is None and self.saves:
+            # 默认选中「最近有写入」的存档; 平手保持扫描序(Steam > 商店版 > GameSaves)
+            select = max(range(len(self.saves)),
+                         key=lambda i: self._save_recency(self.saves[i]))
         labels = []
         src_names = {"steam": "Steam", "pgs": _("商店版/pgs"),
                      "pgs-local": _("Steam/GameSave")}

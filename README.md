@@ -59,7 +59,7 @@ pip install pillow
 python app.py
 ```
 
-启动后自动定位本机 FH6 存档（Steam 读注册表，商店版扫描 `XboxGames\GameSave\pgs`，并兼容部分 Steam 用户被游戏迁移到 `%LOCALAPPDATA%\Microsoft\GameSaves\pgs` 的存档），也可以用「手动选择目录…」指定 `remote` 或 `ContainersRoot` 目录。手动选择的目录会被记住（存入 `%LOCALAPPDATA%\FH6LiveryViewer\config.json`）：下次启动时恢复为存档下拉的首项并自动选中（标签显示 `[手动] <目录>`）；在下拉中改选其它存档后即失效清除，目录已消失或与自动检测到的存档重复时也会自动清除。
+启动后自动定位本机 FH6 存档（Steam 读注册表，商店版扫描 `XboxGames\GameSave\pgs`，并兼容部分 Steam 用户被游戏迁移到 `%LOCALAPPDATA%\Microsoft\GameSaves\pgs` 的存档），也可以用「手动选择目录…」指定 `remote` 或 `ContainersRoot` 目录。多份存档共存时默认选中「最近有写入」的一份（按存档内分片文件最新修改时间的聚合判定，不可读/空存档视为最旧，平手保持 Steam > 商店版/pgs > Steam/GameSaves 的扫描顺序），点「刷新」重扫存档时同样按此规则选中。手动选择的目录会被记住（存入 `%LOCALAPPDATA%\FH6LiveryViewer\config.json`）：下次启动时恢复为存档下拉的首项并自动选中（标签显示 `[手动] <目录>`，优先级高于所有自动扫描项）；在下拉中改选其它存档后即失效清除，目录已消失或与自动检测到的存档重复时也会自动清除。
 
 ## 打包发布
 
