@@ -6,7 +6,7 @@ fh6save.py — 极限竞速:地平线 Steam 版存档涂装/纹饰/调校解析�
 - Steam 存档位于 <Steam>/userdata/<steam用户ID>/<appid>/remote/ 下,
   FH4 为平铺文件, FH5/FH6 多为 remote/<数字文件夹>/ 再平铺。
   pgs(目录型条目)存档位于 <盘符>:/XboxGames/GameSave/pgs(商店/Xbox 版)或
-  %LOCALAPPDATA%/Microsoft/GameSave/pgs(部分 Steam 用户的新位置)下,
+  %LOCALAPPDATA%/Microsoft/GameSaves/pgs(部分 Steam 用户的新位置)下,
   布局为 u_*/current/ContainersRoot。
 - 每个"条目"由同名的几个分片文件组成:
     <类型>_<车型ID>_<时间戳yyyyMMddhhmmss>.header      元数据(名称/作者/日期/层数)
@@ -268,8 +268,8 @@ def _pgs_roots() -> list[tuple[Path, str]]:
 
     - PGS_DRIVE_ROOTS: 商店/Xbox 版, source="pgs";
     - %LOCALAPPDATA%\\Microsoft\\GameSave*\\pgs: 部分 Steam 用户的存档被游戏
-      迁到该用户目录位置(2026-10 用户反馈), 内部布局与商店版完全一致
-      (u_*\\current\\ContainersRoot), source="pgs-local";
+      迁到该用户目录位置(2026-10 用户反馈, 截图确认目录名为 GameSaves),
+      内部布局与商店版完全一致(u_*\\current\\ContainersRoot), source="pgs-local";
       目录名以 GameSave* 通配, 兼容 GameSave/GameSaves 拼写变体。
     """
     roots: list[tuple[Path, str]] = [(Path(r), "pgs") for r in PGS_DRIVE_ROOTS]

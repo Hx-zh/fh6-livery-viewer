@@ -32,7 +32,7 @@
 - ⚡ **右键快筛**：卡片右键菜单「只显示该车型」「只显示该作者」快速聚焦；激活时筛选按钮文案出现「快筛」段，同一菜单顶部「清除快筛」即可复原（切存档自动清空）
 - 📋 **原生复制**：详情文本可选中复制（Ctrl+C / 右键菜单），卡片右键菜单复制位置/名称/车型/作者
 - 💾 **一键备份**：把整个存档目录打成 zip（只读操作）
-- 🖥️ **双版本存档支持**：Steam 版（userdata）与商店/Xbox 版（`XboxGames\GameSave\pgs`）自动识别；部分 Steam 用户被游戏迁移到 `%LOCALAPPDATA%\Microsoft\GameSave\pgs` 的存档同样会被识别（界面标记「Steam/GameSave」）
+- 🖥️ **双版本存档支持**：Steam 版（userdata）与商店/Xbox 版（`XboxGames\GameSave\pgs`）自动识别；部分 Steam 用户被游戏迁移到 `%LOCALAPPDATA%\Microsoft\GameSaves\pgs` 的存档同样会被识别（界面标记「Steam/GameSave」）
 
 ## 环境要求
 
@@ -59,7 +59,7 @@ pip install pillow
 python app.py
 ```
 
-启动后自动定位本机 FH6 存档（Steam 读注册表，商店版扫描 `XboxGames\GameSave\pgs`，并兼容部分 Steam 用户被游戏迁移到 `%LOCALAPPDATA%\Microsoft\GameSave\pgs` 的存档），也可以用「手动选择目录…」指定 `remote` 或 `ContainersRoot` 目录。
+启动后自动定位本机 FH6 存档（Steam 读注册表，商店版扫描 `XboxGames\GameSave\pgs`，并兼容部分 Steam 用户被游戏迁移到 `%LOCALAPPDATA%\Microsoft\GameSaves\pgs` 的存档），也可以用「手动选择目录…」指定 `remote` 或 `ContainersRoot` 目录。
 
 ## 打包发布
 
@@ -96,7 +96,7 @@ python -m PyInstaller FH6LiveryViewer.spec
 工具对存档**只读**。以下格式结论来自本机真实存档验证与社区逆向：
 
 - **Steam 版**：`<Steam>\userdata\<用户ID>\<appid>\remote\`（FH6 appid `2483190`），每个涂装是一组同名分片文件：`Livery_<车型ID>_<- 时间戳>.header / .C_livery / .bigThumb.png …`
-- **商店/Xbox 版（pgs）**：`<盘符>:\XboxGames\GameSave\pgs\u_<ID>\<快照号>\ContainersRoot\`，每个涂装是一个同名文件夹（`header` / `C_livery` / `bigThumb.webp`）。`current` junction 指向活跃快照，快照号会滚动（100→101…），工具已自动跟随。部分 Steam 用户的存档会被游戏迁到 `%LOCALAPPDATA%\Microsoft\GameSave\pgs`（目录名按 `GameSave*` 通配），布局与商店版完全相同，界面标记「Steam/GameSave」
+- **商店/Xbox 版（pgs）**：`<盘符>:\XboxGames\GameSave\pgs\u_<ID>\<快照号>\ContainersRoot\`，每个涂装是一个同名文件夹（`header` / `C_livery` / `bigThumb.webp`）。`current` junction 指向活跃快照，快照号会滚动（100→101…），工具已自动跟随。部分 Steam 用户的存档会被游戏迁到 `%LOCALAPPDATA%\Microsoft\GameSaves\pgs`（目录名实测为 GameSaves，代码以 `GameSave*` 通配留余量），布局与商店版完全相同，界面标记「Steam/GameSave」
 - **拍卖涂装（SoulBoundLivery）**：拍卖行买到的涂装以 `SoulBoundLivery_<车型ID>_<14位时间戳>` 容器落在 `ContainersRoot` 下，容器内**没有**缩略图文件；预览图来自游戏 `CacheThumbnails` 缓存（`CacheThumbnails/.manifest` 含两张表——第一表=GUID/物化表、第二表=逻辑名注册表；逻辑名格式 `<车型ID>_<16hex instanceKey>(bm<N>|u<26位 token>)_bigThumb.webp`）。工具由 SoulBoundLivery header 末 16 字节经 Crockford Base32 编码出 26 位 token，查第一表得到 `CacheThumbnails/<GUID>.webp` 作为预览图（缓存位于 `%LOCALAPPDATA%\ForzaHorizon6\LocalStorage_Cache\CacheThumbnails`，商店版机器亦落在该路径）。缓存缺失/损坏时拍卖条目降级为「无缩略图」，不影响其它功能
 - `header` 为二进制元数据（版本/名称/作者/创建时间/图层数/车型 ID），布局见 `fh6save.py` 注释
 - 文件名时间戳（UTC，界面已转本地时区）= 玩家下载/保存该涂装的时间；作者创作时间内嵌于 header（UTC，已转本地），两者独立（v1.8.0 起界面分别显示为「下载时间」「创建时间」）
