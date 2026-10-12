@@ -460,6 +460,9 @@ class App(tk.Tk):
         # 「自动检查车型表更新」开关(appconfig 持久化; v1.8.0 起每次启动检查一次)
         self._cars_auto = tk.BooleanVar(
             value=bool(_cfg.get("cars_auto_check", True)))
+        # 手动选择的存档目录(appconfig 持久化; 启动时恢复到下拉首项,
+        # 改选其它存档/目录消失/被自动检测覆盖时自动清除)
+        self._manual_dir = str(_cfg.get("manual_dir", ""))
         self._thumb_pending: list[str] = []
         self._thumb_fails: dict[str, int] = {}    # base -> 连续解码失败次数(瞬态重试用, 封顶放弃)
         self._thumb_gen = 0                       # 缩略图解码代次(rebuild 递增, 过期结果丢弃)
@@ -1495,19 +1498,45 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------ 存档加载
 
+    def _forget_manual_dir(self):
+        """忘掉记住的手动存档目录(改选其它存档/目录消失/被自动检测覆盖时)。"""
+        self._manual_dir = ""
+        appconfig.set_manual_dir("")
+
     def rescan_saves(self):
         self.saves = [s for s in fh6save.find_saves() if s["game"] == "fh6"]
+        select = 0
+        if self._manual_dir:
+            mp = Path(self._manual_dir)
+            if not mp.is_dir():
+                self._forget_manual_dir()           # 目录已消失, 不再展示
+            else:
+                mp_real = os.path.realpath(mp).lower()
+                dup = next((i for i, s in enumerate(self.saves)
+                            if os.path.realpath(s["dir"]).lower() == mp_real),
+                           None)
+                if dup is not None:
+                    # 手动目录已被自动检测覆盖: 忘掉手动项, 改选对应的自动条目
+                    self._forget_manual_dir()
+                    select = dup
+                else:
+                    # 恢复手动目录到下拉首项并选中(用户最后的显式选择优先)
+                    self.saves.insert(0, {"game": "fh6", "steam_user": _("手动"),
+                                          "dir": mp, "source": "manual"})
         labels = []
         src_names = {"steam": "Steam", "pgs": _("商店版/pgs"),
                      "pgs-local": _("Steam/GameSave")}
         for s in self.saves:
+            if s.get("source") == "manual":
+                labels.append(_("[手动] {dir}").format(dir=s["dir"]))
+                continue
             src_key = str(s.get("source") or "?")
             src = src_names.get(src_key, src_key)
             labels.append(_("[{src}]  用户 {user}  |  {dir}").format(
                 src=src, user=s["steam_user"], dir=s["dir"]))
         self.save_combo.configure(values=labels)
         if labels:
-            self.save_combo.current(0)
+            self.save_combo.current(select)
             self.load_current()
         else:
             self.current = None
@@ -1547,7 +1576,11 @@ class App(tk.Tk):
         i = self.save_combo.current()
         if i < 0 or i >= len(self.saves):
             return
-        self.current = self.saves[i]
+        sel = self.saves[i]
+        if self._manual_dir and sel.get("source") != "manual":
+            # 改选其它存档: 记住的手动目录失效(最后选择生效)
+            self._forget_manual_dir()
+        self.current = sel
         self.scan_items()
 
     def scan_items(self):
@@ -2086,8 +2119,10 @@ class App(tk.Tk):
                 if sub.is_dir() and not sub.is_symlink() and _has_items(sub):
                     folder = sub
                     break
-        self.current = {"game": "fh6", "steam_user": _("手动"), "dir": folder}
-        self.scan_items()
+        # 持久化记住手动目录(下次启动恢复到下拉首项; 改选其它存档即自动遗忘)
+        self._manual_dir = str(folder)
+        appconfig.set_manual_dir(self._manual_dir)
+        self.rescan_saves()
 
     # ------------------------------------------------------------ 过滤
 

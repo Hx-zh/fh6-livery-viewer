@@ -50,6 +50,7 @@ STRINGS = {
     '下载时间:': 'Downloaded:',
     '文件 mtime(≈玩家下载落盘时间); 任一方缺失则条件不成立': 'File mtime (≈ when the player downloaded it); condition fails if either side lacks it',
     '手动': 'Manual',
+    '[手动] {dir}': '[Manual] {dir}',
     '重复涂装分析中(解码缩略图计算哈希)…': 'Analyzing duplicate liveries (decoding thumbnails to compute hashes)…',
     '已喷在车上 ✓': 'Applied to a car ✓',
     '未喷在车上': 'Not applied to a car',
