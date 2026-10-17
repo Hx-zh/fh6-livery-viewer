@@ -1,0 +1,159 @@
+#pragma once
+
+#include "header_codec.h"
+
+#include <QByteArray>
+#include <QString>
+#include <QVector>
+
+#include <array>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <variant>
+
+namespace fls::scene {
+class Group;
+}
+
+namespace fls {
+
+struct LiveryPaintColor {
+    bool enabled = false;
+    std::array<quint8, 4> bgra = {0, 0, 0, 0};
+
+    bool operator==(const LiveryPaintColor &) const = default;
+};
+
+struct LiveryPaintMaterial {
+    quint64 materialHash = 0;
+    LiveryPaintColor primary;
+    LiveryPaintColor secondary;
+    quint32 manufacturerSelector = 0xffffffffu;
+    quint32 finish = 0;
+
+    bool operator==(const LiveryPaintMaterial &) const = default;
+};
+
+struct LiveryPaintState {
+    QVector<LiveryPaintMaterial> materials;
+
+    const LiveryPaintMaterial *find(quint64 materialHash) const;
+    LiveryPaintMaterial *find(quint64 materialHash);
+    LiveryPaintMaterial &ensure(quint64 materialHash);
+    std::optional<std::array<quint8, 4>> defaultCarColorBgra() const;
+    void setColorBgra(quint64 materialHash, bool secondary,
+                      std::array<quint8, 4> color);
+    void setDefaultCarColorBgra(std::array<quint8, 4> color);
+
+    bool operator==(const LiveryPaintState &) const = default;
+};
+
+struct Project {
+    Project();
+    ~Project();
+    Project(const Project &other);
+    Project &operator=(const Project &other);
+    Project(Project &&other) noexcept;
+    Project &operator=(Project &&other) noexcept;
+
+    QString name = QStringLiteral("Untitled");
+    QString sourceFolder;
+    QByteArray sourceDecPrefix;
+    QByteArray sourceHeader;
+    std::optional<HeaderMetadata> headerMetadata;
+    std::unique_ptr<scene::Group> root;
+    QVector<std::array<quint8, 4>> colorSwatches;
+    QVector<double> horizontalGuidelines;
+    QVector<double> verticalGuidelines;
+    bool isLivery = false;
+    int carId = 0;
+    QByteArray liverySource;
+    LiveryPaintState liveryPaint;
+};
+
+struct LayerData {
+    QByteArray data;
+    int start = 0;
+};
+
+struct Matrix3 {
+    double m[3][3] = {
+        {1.0, 0.0, 0.0},
+        {0.0, 1.0, 0.0},
+        {0.0, 0.0, 1.0},
+    };
+};
+
+struct VinylShape {
+    quint16 shapeId = 0;
+    bool isLogo = false;
+    quint16 logoId = 0;
+    quint32 rasterId = 0;
+    double rotation = 0.0;
+    double posX = 0.0;
+    double posY = 0.0;
+    double scaleX = 1.0;
+    double scaleY = 1.0;
+    double skew = 0.0;
+    std::array<quint8, 4> color = {255, 255, 255, 255};
+    int absPos = 0;
+    QByteArray marker;
+    int flags = 0;
+    bool isMask = false;
+};
+
+struct VinylGroup;
+using VinylGroupPtr = std::shared_ptr<VinylGroup>;
+
+struct VinylItem {
+    std::variant<VinylShape, VinylGroupPtr> value;
+    bool isShape() const { return std::holds_alternative<VinylShape>(value); }
+};
+
+struct VinylGroup {
+    QString nodeType = QStringLiteral("root");
+    QString source;
+    double px = 0.0;
+    double py = 0.0;
+    double sx = 1.0;
+    double sy = 1.0;
+    double rot = 0.0;
+    int absPos = 0;
+    int flags = 0;
+    bool isMask = false;
+    std::optional<int> expectedChildren;
+    QByteArray childTypeBitmap;
+    QByteArray headerMarker;
+    QByteArray inlineTransformMarker;
+    QByteArray pendingTransformMarker;
+    QByteArray effectiveTransformMarker;
+    QByteArray headerControlBytes;
+    bool rootTransformExempt = false;
+    int skippedChildren = 0;
+    QVector<VinylItem> items;
+    int totalChildren() const { return items.size() + skippedChildren; }
+};
+
+struct FlattenedLayer {
+    quint16 shapeId = 0;
+    bool raster = false;
+    quint32 rasterId = 0;
+    int rasterWidth = 256;
+    int rasterHeight = 256;
+    quint16 sourceLogoId = 0;
+    double rotation = 0.0;
+    double posX = 0.0;
+    double posY = 0.0;
+    double scaleX = 1.0;
+    double scaleY = 1.0;
+    double skew = 0.0;
+    std::array<quint8, 4> color = {255, 255, 255, 255};
+    bool isMask = false;
+    int flags = 0;
+    QByteArray marker;
+    int absPos = 0;
+    Matrix3 groupMatrix;
+};
+
+} // namespace fls

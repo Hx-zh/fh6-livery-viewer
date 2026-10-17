@@ -1,0 +1,1422 @@
+#include "project_codec.h"
+
+#include "binary_io.h"
+#include "cgroup_codec.h"
+#include "flat_payload.h"
+#include "header_codec.h"
+#include "livery_codec.h"
+#include "material_hashes.h"
+#include "matrix_math.h"
+#include "scene_codec.h"
+#include "shape_registry.h"
+#include "vinyl_decoder.h"
+#include "vinyl_flattener.h"
+
+#include <QtCore>
+
+#include <cmath>
+#include <functional>
+#include <limits>
+#include <numeric>
+#include <stdexcept>
+#include <variant>
+
+#include <zlib.h>
+
+#ifndef FLS_PRIVACY_POLICY
+#define FLS_PRIVACY_POLICY 1
+#endif
+
+namespace fls {
+namespace {
+
+quint8 byteFromJson(const QJsonArray &array, int index) {
+    const int value = array.at(index).toInt();
+    if (value < 0 || value > 255) {
+        throw std::runtime_error("color component is outside byte range");
+    }
+    return static_cast<quint8>(value);
+}
+
+QString toBase64(const QByteArray &bytes) {
+    return QString::fromLatin1(bytes.toBase64());
+}
+
+std::array<quint8, 4> colorSwatchFromJson(const QJsonValue &value) {
+    const QString text = value.toString();
+    if (!text.startsWith(QLatin1Char('#')) || (text.size() != 9 && text.size() != 7)) {
+        return {255, 255, 255, 255};
+    }
+    bool ok = false;
+    const uint valueRgb = text.mid(1).toUInt(&ok, 16);
+    if (!ok) {
+        return {255, 255, 255, 255};
+    }
+    const quint8 alpha = text.size() == 9 ? static_cast<quint8>((valueRgb >> 24) & 0xff) : 255;
+    const quint8 red = static_cast<quint8>((valueRgb >> 16) & 0xff);
+    const quint8 green = static_cast<quint8>((valueRgb >> 8) & 0xff);
+    const quint8 blue = static_cast<quint8>(valueRgb & 0xff);
+    return {blue, green, red, alpha};
+}
+
+QString colorSwatchToJson(const std::array<quint8, 4> &color) {
+    return QStringLiteral("#%1%2%3%4")
+        .arg(color[3], 2, 16, QLatin1Char('0'))
+        .arg(color[2], 2, 16, QLatin1Char('0'))
+        .arg(color[1], 2, 16, QLatin1Char('0'))
+        .arg(color[0], 2, 16, QLatin1Char('0'));
+}
+
+QJsonObject liveryPaintColorToJson(const LiveryPaintColor &color) {
+    QJsonArray bgra;
+    for (const quint8 channel : color.bgra) {
+        bgra.append(channel);
+    }
+    QJsonObject object;
+    object.insert(QStringLiteral("enabled"), color.enabled);
+    object.insert(QStringLiteral("bgra"), bgra);
+    return object;
+}
+
+LiveryPaintColor liveryPaintColorFromJson(const QJsonValue &value) {
+    if (!value.isObject()) {
+        throw std::runtime_error("livery paint color is not an object");
+    }
+    const QJsonObject object = value.toObject();
+    const QJsonArray bgra = object.value(QStringLiteral("bgra")).toArray();
+    if (bgra.size() != 4) {
+        throw std::runtime_error("livery paint color must contain four BGRA channels");
+    }
+    LiveryPaintColor color;
+    color.enabled = object.value(QStringLiteral("enabled")).toBool(false);
+    for (int channel = 0; channel < 4; ++channel) {
+        color.bgra[static_cast<size_t>(channel)] = byteFromJson(bgra, channel);
+    }
+    return color;
+}
+
+quint32 liveryPaintU32FromJson(const QJsonValue &value, quint32 fallback) {
+    if (value.isUndefined()) {
+        return fallback;
+    }
+    const double number = value.toDouble(-1.0);
+    if (!std::isfinite(number) || number < 0.0
+        || number > static_cast<double>(std::numeric_limits<quint32>::max())
+        || std::floor(number) != number) {
+        throw std::runtime_error("livery paint integer is outside the unsigned 32-bit range");
+    }
+    return static_cast<quint32>(number);
+}
+
+QJsonObject liveryPaintStateToJson(const LiveryPaintState &state) {
+    QJsonArray materials;
+    for (const LiveryPaintMaterial &material : state.materials) {
+        QJsonObject object;
+        object.insert(QStringLiteral("material_hash"),
+                      QStringLiteral("%1").arg(material.materialHash, 16, 16, QLatin1Char('0')));
+        object.insert(QStringLiteral("primary"), liveryPaintColorToJson(material.primary));
+        object.insert(QStringLiteral("secondary"), liveryPaintColorToJson(material.secondary));
+        object.insert(QStringLiteral("manufacturer_selector"),
+                      static_cast<qint64>(material.manufacturerSelector));
+        object.insert(QStringLiteral("finish"), static_cast<qint64>(material.finish));
+        materials.append(object);
+    }
+    QJsonObject object;
+    object.insert(QStringLiteral("materials"), materials);
+    return object;
+}
+
+LiveryPaintState liveryPaintStateFromJson(const QJsonValue &value) {
+    if (!value.isObject()) {
+        throw std::runtime_error("livery paint metadata is not an object");
+    }
+    LiveryPaintState state;
+    const QJsonArray materials = value.toObject().value(QStringLiteral("materials")).toArray();
+    state.materials.reserve(materials.size());
+    for (const QJsonValue &entry : materials) {
+        if (!entry.isObject()) {
+            throw std::runtime_error("livery paint material is not an object");
+        }
+        const QJsonObject object = entry.toObject();
+        bool hashOk = false;
+        const quint64 materialHash = object.value(QStringLiteral("material_hash"))
+                                         .toString().toULongLong(&hashOk, 16);
+        if (!hashOk) {
+            throw std::runtime_error("livery paint material hash is invalid");
+        }
+        LiveryPaintMaterial material;
+        material.materialHash = materialHash;
+        material.primary = liveryPaintColorFromJson(object.value(QStringLiteral("primary")));
+        material.secondary = liveryPaintColorFromJson(object.value(QStringLiteral("secondary")));
+        material.manufacturerSelector = liveryPaintU32FromJson(
+            object.value(QStringLiteral("manufacturer_selector")), 0xffffffffu);
+        material.finish = liveryPaintU32FromJson(object.value(QStringLiteral("finish")), 0);
+        state.materials.push_back(material);
+    }
+    return state;
+}
+
+bool looksGzipped(const QByteArray &bytes) {
+    return bytes.size() >= 2 && static_cast<quint8>(bytes[0]) == 0x1f
+        && static_cast<quint8>(bytes[1]) == 0x8b;
+}
+
+QByteArray gzipCompress(const QByteArray &data) {
+    z_stream stream{};
+    // zlib window bits with gzip framing.
+    if (deflateInit2(&stream, Z_BEST_COMPRESSION, Z_DEFLATED, 15 + 16, 8,
+                     Z_DEFAULT_STRATEGY) != Z_OK) {
+        throw std::runtime_error("failed to initialize gzip compressor");
+    }
+    stream.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(data.constData()));
+    stream.avail_in = static_cast<uInt>(data.size());
+
+    QByteArray out;
+    QByteArray buffer(32768, Qt::Uninitialized);
+    int status = Z_OK;
+    do {
+        stream.next_out = reinterpret_cast<Bytef *>(buffer.data());
+        stream.avail_out = static_cast<uInt>(buffer.size());
+        status = deflate(&stream, Z_FINISH);
+        if (status == Z_STREAM_ERROR) {
+            deflateEnd(&stream);
+            throw std::runtime_error("gzip compression failed");
+        }
+        out.append(buffer.constData(), buffer.size() - static_cast<int>(stream.avail_out));
+    } while (stream.avail_out == 0);
+    deflateEnd(&stream);
+    return out;
+}
+
+QByteArray gzipDecompress(const QByteArray &data) {
+    z_stream stream{};
+    // zlib window bits with automatic gzip/zlib detection.
+    if (inflateInit2(&stream, 15 + 32) != Z_OK) {
+        throw std::runtime_error("failed to initialize gzip decompressor");
+    }
+    stream.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(data.constData()));
+    stream.avail_in = static_cast<uInt>(data.size());
+
+    QByteArray out;
+    QByteArray buffer(32768, Qt::Uninitialized);
+    int status = Z_OK;
+    do {
+        stream.next_out = reinterpret_cast<Bytef *>(buffer.data());
+        stream.avail_out = static_cast<uInt>(buffer.size());
+        status = inflate(&stream, Z_NO_FLUSH);
+        if (status != Z_OK && status != Z_STREAM_END) {
+            inflateEnd(&stream);
+            throw std::runtime_error("gzip decompression failed for project container");
+        }
+        out.append(buffer.constData(), buffer.size() - static_cast<int>(stream.avail_out));
+    } while (status != Z_STREAM_END);
+    inflateEnd(&stream);
+    return out;
+}
+
+QJsonObject headerMetadataToJson(const HeaderMetadata &meta) {
+    QJsonObject object;
+    object.insert(QStringLiteral("format_version"), static_cast<qint64>(meta.formatVersion));
+    object.insert(QStringLiteral("name"), meta.name);
+    object.insert(QStringLiteral("published"), meta.published);
+    object.insert(QStringLiteral("description"), meta.description);
+    object.insert(QStringLiteral("year"), meta.year);
+    object.insert(QStringLiteral("month"), meta.month);
+    object.insert(QStringLiteral("day"), meta.day);
+    object.insert(QStringLiteral("field_block"), toBase64(meta.fieldBlock));
+    object.insert(QStringLiteral("creator_tag"), toBase64(meta.creatorTag));
+    object.insert(QStringLiteral("creator_name"), meta.creatorName);
+    object.insert(QStringLiteral("section_prefix"), toBase64(meta.sectionPrefix));
+    object.insert(QStringLiteral("section_padding"), toBase64(meta.sectionPadding));
+    object.insert(QStringLiteral("section_marker"), toBase64(meta.sectionMarker));
+    if (meta.category) {
+        object.insert(QStringLiteral("category"), static_cast<qint64>(*meta.category));
+    }
+    object.insert(QStringLiteral("has_car_id"), meta.hasCarId);
+    object.insert(QStringLiteral("type_value"), static_cast<qint64>(meta.typeValue));
+    object.insert(QStringLiteral("car_id"), static_cast<qint64>(meta.carId));
+    object.insert(QStringLiteral("guid"), toBase64(meta.guid));
+    object.insert(QStringLiteral("trailing"), toBase64(meta.trailing));
+    object.insert(QStringLiteral("published_tail"), toBase64(meta.publishedTail));
+    return object;
+}
+
+HeaderMetadata headerMetadataFromJson(const QJsonObject &object) {
+    HeaderMetadata meta;
+    meta.formatVersion = static_cast<quint32>(object.value(QStringLiteral("format_version")).toInt(7));
+    meta.name = object.value(QStringLiteral("name")).toString();
+    meta.published = object.value(QStringLiteral("published")).toBool(false);
+    meta.description = object.value(QStringLiteral("description")).toString();
+    meta.year = static_cast<quint16>(object.value(QStringLiteral("year")).toInt(0));
+    meta.month = static_cast<quint8>(object.value(QStringLiteral("month")).toInt(0));
+    meta.day = static_cast<quint8>(object.value(QStringLiteral("day")).toInt(0));
+    meta.fieldBlock = QByteArray::fromBase64(object.value(QStringLiteral("field_block")).toString().toLatin1());
+    meta.creatorTag = QByteArray::fromBase64(object.value(QStringLiteral("creator_tag")).toString().toLatin1());
+    meta.creatorName = object.value(QStringLiteral("creator_name")).toString();
+    meta.sectionPrefix = QByteArray::fromBase64(object.value(QStringLiteral("section_prefix")).toString().toLatin1());
+    meta.sectionPadding = QByteArray::fromBase64(object.value(QStringLiteral("section_padding")).toString().toLatin1());
+    if (object.contains(QStringLiteral("section_marker"))) {
+        meta.sectionMarker = QByteArray::fromBase64(object.value(QStringLiteral("section_marker")).toString().toLatin1());
+    }
+    if (object.contains(QStringLiteral("category"))) {
+        meta.category = static_cast<quint32>(object.value(QStringLiteral("category")).toInteger());
+    }
+    meta.hasCarId = object.value(QStringLiteral("has_car_id")).toBool(true);
+    meta.typeValue = static_cast<quint32>(object.value(QStringLiteral("type_value")).toInt(0));
+    meta.carId = static_cast<quint32>(object.value(QStringLiteral("car_id")).toInt(0));
+    meta.guid = QByteArray::fromBase64(object.value(QStringLiteral("guid")).toString().toLatin1());
+    meta.trailing = QByteArray::fromBase64(object.value(QStringLiteral("trailing")).toString().toLatin1());
+    meta.publishedTail = QByteArray::fromBase64(object.value(QStringLiteral("published_tail")).toString().toLatin1());
+    meta.parsedOk = true;
+    return meta;
+}
+
+QByteArray readOptionalFile(const QString &path) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return {};
+    }
+    return file.readAll();
+}
+
+void enforcePrivacyPolicyForCGroup(const QByteArray &payload) {
+#if FLS_PRIVACY_POLICY
+    const int gyvl = payload.indexOf(QByteArray("gyvl", 4));
+    const int markerOffset = gyvl + 0x1d;
+    if (gyvl >= 0 && markerOffset < payload.size()
+        && static_cast<quint8>(payload.at(markerOffset)) == 0x21) {
+        throw std::runtime_error("privacy policy blocks importing locked C_group");
+    }
+#else
+    Q_UNUSED(payload);
+#endif
+}
+
+void enforcePrivacyPolicyForCLivery(const LiveryPayload &livery) {
+#if FLS_PRIVACY_POLICY
+    const int vlrc = livery.raw.indexOf(QByteArray("vlrc", 4));
+    if (vlrc >= 0 && vlrc + 12 <= livery.raw.size()
+        && detail::readLeU32(livery.raw, vlrc + 8) == 1) {
+        throw std::runtime_error("privacy policy blocks importing locked C_livery");
+    }
+#else
+    Q_UNUSED(livery);
+#endif
+}
+
+void applyImportedHeaderMetadata(Project &project) {
+    if (project.sourceHeader.isEmpty()) {
+        return;
+    }
+    try {
+        project.headerMetadata = parseHeader(project.sourceHeader);
+        if (!project.headerMetadata->name.trimmed().isEmpty()) {
+            project.name = project.headerMetadata->name;
+        }
+        return;
+    } catch (const std::exception &) {
+    }
+
+    QString name;
+    QString description;
+    try {
+        name = parseHeaderName(project.sourceHeader).trimmed();
+    } catch (const std::exception &) {
+    }
+    try {
+        description = parseHeaderDescription(project.sourceHeader).trimmed();
+    } catch (const std::exception &) {
+    }
+    if (!name.isEmpty()) {
+        project.name = name;
+    }
+    if (!description.isEmpty()) {
+        HeaderMetadata metadata = defaultDraftHeader(
+            project.name, QString(), static_cast<quint32>(project.carId));
+        metadata.published = true;
+        metadata.description = description;
+        project.headerMetadata = std::move(metadata);
+    }
+}
+
+Project newImportProject(const QString &folderOrFile, const QByteArray &payload) {
+    QFileInfo info(folderOrFile);
+    Project project;
+    if (info.isDir()) {
+        project.name = info.fileName();
+        project.sourceFolder = info.absoluteFilePath();
+    } else {
+        project.name = info.absoluteDir().dirName();
+        project.sourceFolder = info.absoluteDir().absolutePath();
+    }
+    project.sourceDecPrefix = payload.left(0x1d);
+    project.sourceHeader = readOptionalFile(QDir(project.sourceFolder).filePath(QStringLiteral("header")));
+    applyImportedHeaderMetadata(project);
+    return project;
+}
+
+Project newImportProject(const QString &name, const QByteArray &payload,
+                         const QByteArray &header) {
+    Project project;
+    project.name = name;
+    project.sourceDecPrefix = payload.left(0x1d);
+    project.sourceHeader = header;
+    applyImportedHeaderMetadata(project);
+
+    return project;
+}
+
+Project newLiveryImportProject(const QString &folderOrFile) {
+    const QFileInfo info(folderOrFile);
+    Project project;
+    if (info.isDir()) {
+        project.name = info.fileName();
+        project.sourceFolder = info.absoluteFilePath();
+    } else {
+        project.name = info.absoluteDir().dirName();
+        project.sourceFolder = info.absoluteDir().absolutePath();
+    }
+    QString headerPath = QDir(project.sourceFolder).filePath(QStringLiteral("header"));
+    if (info.isFile() && isLiveryAssetFileName(info.fileName())) {
+        QString stem = info.fileName();
+        stem.chop(QStringLiteral(".C_livery").size());
+        const QString flatHeaderPath = info.absoluteDir().filePath(
+            stem + QStringLiteral(".header"));
+        if (QFileInfo::exists(flatHeaderPath)) {
+            headerPath = flatHeaderPath;
+        }
+        project.name = stem;
+    }
+    project.sourceHeader = readOptionalFile(headerPath);
+
+    return project;
+}
+
+QString layerIdForIndex(int index) {
+    return QStringLiteral("layer-%1").arg(index, 4, 10, QLatin1Char('0'));
+}
+
+QString groupIdForIndex(int index) {
+    return QStringLiteral("group-%1").arg(index, 4, 10, QLatin1Char('0'));
+}
+
+Matrix3 nodeMatrix(const VinylGroup &node) {
+    constexpr double Pi = 3.14159265358979323846;
+    const double radians = node.rot * Pi / 180.0;
+    const double c = std::cos(radians);
+    const double s = std::sin(radians);
+    return affine(c * node.sx, -s * node.sy, node.px,
+                  s * node.sx, c * node.sy, node.py);
+}
+
+Matrix3 shapeMatrixForShape(const VinylShape &shape) {
+    FlattenedLayer layer;
+    layer.rotation = shape.rotation;
+    layer.posX = shape.posX;
+    layer.posY = shape.posY;
+    layer.scaleX = shape.scaleX;
+    layer.scaleY = shape.scaleY;
+    layer.skew = shape.skew;
+    return shapeMatrix(layer);
+}
+
+int importedGroupTerminalDepth(const QHash<QString, const scene::Group *> &groupsById, const QString &groupId) {
+    const scene::Group *group = groupsById.value(groupId, nullptr);
+    if (group == nullptr) {
+        return 0;
+    }
+    if (group->children.empty()) {
+        return 1;
+    }
+    const scene::Layer *last = group->children.back().get();
+    if (last->kind() != scene::LayerKind::Group) {
+        return 1;
+    }
+    return 1 + importedGroupTerminalDepth(groupsById, last->id);
+}
+
+QByteArray effectiveDebugMarker(const VinylGroup &node) {
+    if (!node.pendingTransformMarker.isEmpty()
+        && !node.inlineTransformMarker.isEmpty()
+        && node.effectiveTransformMarker == node.pendingTransformMarker + node.inlineTransformMarker) {
+        return {};
+    }
+    return node.effectiveTransformMarker;
+}
+
+QByteArray renameHeader(const QByteArray &headerBytes, const QString &newName) {
+    if (headerBytes.size() < 8) {
+        return headerBytes;
+    }
+
+    const quint32 oldLength = detail::readLeU32(headerBytes, 4);
+    const qsizetype oldEnd = 8 + static_cast<qsizetype>(oldLength) * 2;
+    if (oldEnd > headerBytes.size()) {
+        return headerBytes;
+    }
+
+    QByteArray out = headerBytes.left(4);
+    detail::appendLeU32(out, static_cast<quint32>(newName.size()));
+    const QByteArray encoded(reinterpret_cast<const char *>(newName.utf16()),
+                             newName.size() * static_cast<int>(sizeof(char16_t)));
+    out.append(encoded);
+    out.append(headerBytes.mid(oldEnd));
+    if (out.size() < headerBytes.size()) {
+        out.append(QByteArray(headerBytes.size() - out.size(), '\0'));
+    }
+    return out;
+}
+
+void copyFileReplacing(const QString &source, const QString &destination) {
+    QFile::remove(destination);
+    QDir().mkpath(QFileInfo(destination).absolutePath());
+    if (!QFile::copy(source, destination)) {
+        throw std::runtime_error(("could not copy export sidecar: " + source).toStdString());
+    }
+}
+
+void copyDirectoryContentsExceptCGroup(const QString &sourceFolder, const QString &outputFolder) {
+    const QFileInfo sourceInfo(sourceFolder);
+    if (!sourceInfo.isDir()) {
+        return;
+    }
+
+    const QDir sourceDir(sourceInfo.absoluteFilePath());
+    const QDir outputDir(outputFolder);
+    const QString sourceRoot = sourceDir.canonicalPath();
+    const QString outputRoot = outputDir.canonicalPath();
+    if (!sourceRoot.isEmpty() && !outputRoot.isEmpty()
+        && (outputRoot == sourceRoot || outputRoot.startsWith(sourceRoot + QLatin1Char('/')))) {
+        throw std::runtime_error("flat export output folder must not be inside the source folder");
+    }
+
+    const QFileInfoList entries = sourceDir.entryInfoList(QDir::NoDotAndDotDot | QDir::AllEntries);
+    for (const QFileInfo &entry : entries) {
+        if (entry.fileName() == QStringLiteral("C_group")) {
+            continue;
+        }
+        if (entry.isDir()) {
+            QDirIterator iterator(entry.absoluteFilePath(),
+                                  QDir::NoDotAndDotDot | QDir::AllEntries,
+                                  QDirIterator::Subdirectories);
+            QDir().mkpath(outputDir.filePath(entry.fileName()));
+            while (iterator.hasNext()) {
+                iterator.next();
+                const QFileInfo child(iterator.filePath());
+                const QString destination = outputDir.filePath(sourceDir.relativeFilePath(child.absoluteFilePath()));
+                if (child.isDir()) {
+                    QDir().mkpath(destination);
+                } else {
+                    copyFileReplacing(child.absoluteFilePath(), destination);
+                }
+            }
+        } else {
+            copyFileReplacing(entry.absoluteFilePath(), outputDir.filePath(entry.fileName()));
+        }
+    }
+}
+
+} // namespace
+
+namespace {
+
+struct LegacyShapeRecord {
+    QString id;
+    QString name = QStringLiteral("Shape");
+    quint16 vectorId = 0;
+    bool logo = false;
+    quint32 logoId = 0;
+    int width = 256;
+    int height = 256;
+    scene::Transform2D transform;
+    std::array<quint8, 4> color = {255, 255, 255, 255};
+    bool visible = true;
+    bool locked = false;
+    bool mask = false;
+    int sourceShape = 0;
+    int absOffset = 0;
+    QByteArray marker;
+    int flags = 0;
+    quint16 sourceLogoId = 0;
+    bool hasSourceTransform = false;
+    scene::Transform2D sourceTransform;
+};
+
+std::unique_ptr<scene::Shape> makeSceneShape(const LegacyShapeRecord &src) {
+    auto shape = std::make_unique<scene::Shape>();
+    shape->id = src.id;
+    shape->name = src.name;
+    shape->transform = src.transform;
+    shape->opacity = static_cast<double>(src.color[3]) / 255.0;
+    shape->color = src.color;
+    shape->visible = src.visible;
+    shape->locked = src.locked;
+    shape->mask = src.mask;
+    if (src.logo) {
+        shape->setRasterShape(src.logoId, src.width, src.height);
+    } else {
+        shape->setVectorShape(src.vectorId);
+    }
+    shape->sourceShape = src.sourceShape;
+    shape->absOffset = src.absOffset;
+    shape->marker = src.marker;
+    shape->flags = src.flags;
+    shape->sourceLogoId = src.sourceLogoId;
+    shape->hasSourceTransform = src.hasSourceTransform;
+    shape->sourceTransform = src.sourceTransform;
+    return shape;
+}
+
+} // namespace
+
+
+Project importCGroupFlat(const QString &folderOrFile) {
+    const QByteArray payload = readCGroupPayload(folderOrFile);
+    enforcePrivacyPolicyForCGroup(payload);
+    LayerData layerData;
+    const VinylGroup root = decodeGroup(payload, &layerData);
+    const QVector<FlattenedLayer> flat = flattenGroup(root);
+
+    Project project = newImportProject(folderOrFile, payload);
+    scene::ensureProjectSceneRoot(project);
+    int index = 1;
+    for (const FlattenedLayer &flatLayer : flat) {
+        const Matrix3 effective = detail::multiply(flatLayer.groupMatrix, shapeMatrix(flatLayer));
+        LegacyShapeRecord layer;
+        layer.id = layerIdForIndex(index);
+        layer.transform = decomposeTransform2D(effective);
+        layer.hasSourceTransform = true;
+        layer.sourceTransform = layer.transform;
+        layer.vectorId = flatLayer.shapeId;
+        layer.logo = flatLayer.raster;
+        layer.logoId = flatLayer.rasterId;
+        layer.width = flatLayer.rasterWidth;
+        layer.height = flatLayer.rasterHeight;
+        layer.name = QStringLiteral("%1 %2")
+            .arg(index, 4, 10, QLatin1Char('0'))
+            .arg(flatLayer.raster
+                     ? QStringLiteral("Decal %1").arg(flatLayer.rasterId)
+                     : detail::shapeName(flatLayer.shapeId));
+        layer.color = flatLayer.color;
+        layer.mask = flatLayer.isMask;
+        layer.visible = true;
+        layer.locked = false;
+        layer.sourceShape = index;
+        layer.absOffset = flatLayer.absPos + layerData.start;
+        layer.marker = flatLayer.marker;
+        layer.flags = flatLayer.flags;
+        layer.sourceLogoId = flatLayer.sourceLogoId;
+        project.root->append(makeSceneShape(layer));
+        ++index;
+    }
+    return project;
+}
+
+static Project importCGroupNestedDecoded(const QByteArray &payload, Project project) {
+    LayerData layerData;
+    const VinylGroup root = decodeGroup(payload, &layerData);
+    scene::ensureProjectSceneRoot(project);
+
+    int shapeIndex = 0;
+    int groupIndex = 0;
+    QHash<QString, const scene::Group *> groupsById;
+
+    std::function<std::unique_ptr<scene::Shape>(const VinylShape &, const Matrix3 &, bool)> importShape =
+        [&](const VinylShape &shape, const Matrix3 &parentMatrix, bool parentMask) -> std::unique_ptr<scene::Shape> {
+            ++shapeIndex;
+            const Matrix3 effective = detail::multiply(parentMatrix, shapeMatrixForShape(shape));
+            LegacyShapeRecord layer;
+            layer.transform = decomposeTransform2D(effective);
+            layer.hasSourceTransform = true;
+            layer.sourceTransform = layer.transform;
+            layer.id = layerIdForIndex(shapeIndex);
+            layer.name = QStringLiteral("%1 %2")
+                .arg(shapeIndex, 4, 10, QLatin1Char('0'))
+                .arg(shape.isLogo
+                         ? QStringLiteral("Decal %1").arg(shape.rasterId)
+                         : detail::shapeName(shape.shapeId));
+            layer.vectorId = shape.shapeId;
+            layer.logo = shape.isLogo;
+            layer.logoId = shape.rasterId;
+            layer.width = 256;
+            layer.height = 256;
+            layer.color = shape.color;
+            layer.mask = parentMask || (shape.isMask && !hasColorData(shape.color));
+            layer.visible = true;
+            layer.locked = false;
+            layer.sourceShape = shapeIndex;
+            layer.absOffset = shape.absPos + layerData.start;
+            layer.marker = shape.marker;
+            layer.flags = shape.flags;
+            layer.sourceLogoId = shape.logoId;
+            return makeSceneShape(layer);
+        };
+
+    std::function<std::unique_ptr<scene::Group>(const VinylGroup &, const Matrix3 &, bool, const QString &, const QString &)> importGroup =
+        [&](const VinylGroup &node, const Matrix3 &parentMatrix, bool parentMask,
+            const QString &sourceParentId, const QString &sourcePreviousSiblingId) -> std::unique_ptr<scene::Group> {
+            ++groupIndex;
+            const Matrix3 groupMatrix = detail::multiply(parentMatrix, nodeMatrix(node));
+            const bool inheritedMask = parentMask || node.isMask;
+
+            auto group = std::make_unique<scene::Group>();
+            group->id = groupIdForIndex(groupIndex);
+            group->name = QStringLiteral("Group %1").arg(groupIndex);
+            group->sourceAbsPos = node.absPos + layerData.start;
+            group->pendingTransformMarker = node.pendingTransformMarker;
+            group->inlineTransformMarker = node.inlineTransformMarker;
+            group->effectiveTransformMarker = effectiveDebugMarker(node);
+            group->headerControlBytes = node.headerControlBytes;
+            group->flags = node.flags;
+            group->sourceParentId = sourceParentId;
+            group->sourcePreviousSiblingId = sourcePreviousSiblingId;
+            group->sourcePreviousGroupDepth = importedGroupTerminalDepth(groupsById, sourcePreviousSiblingId);
+            groupsById.insert(group->id, group.get());
+
+            for (const VinylItem &item : node.items) {
+                const QString previousSiblingId = group->children.empty()
+                    ? QString()
+                    : group->children.back()->id;
+                if (item.isShape()) {
+                    group->append(importShape(std::get<VinylShape>(item.value), groupMatrix, inheritedMask));
+                } else {
+                    group->append(importGroup(*std::get<VinylGroupPtr>(item.value),
+                                              groupMatrix,
+                                              inheritedMask,
+                                              group->id,
+                                              previousSiblingId));
+                }
+            }
+            for (const auto &child : group->children) {
+                group->sourceChildren.push_back(child->id);
+            }
+            return group;
+        };
+
+    const Matrix3 rootMatrix = nodeMatrix(root);
+    const bool rootMask = root.isMask;
+    for (const VinylItem &item : root.items) {
+        const QString previousSiblingId = project.root->children.empty() ? QString() : project.root->children.back()->id;
+        if (item.isShape()) {
+            project.root->append(importShape(std::get<VinylShape>(item.value), rootMatrix, rootMask));
+        } else {
+            project.root->append(importGroup(*std::get<VinylGroupPtr>(item.value),
+                                             rootMatrix,
+                                             rootMask,
+                                             QStringLiteral("__root__"),
+                                             previousSiblingId));
+        }
+    }
+    return project;
+}
+
+Project importCGroupNested(const QString &folderOrFile) {
+    const QByteArray payload = readCGroupPayload(folderOrFile);
+    enforcePrivacyPolicyForCGroup(payload);
+
+    return importCGroupNestedDecoded(payload, newImportProject(folderOrFile, payload));
+}
+
+Project importCGroupNestedData(const QByteArray &wrapped, const QByteArray &header,
+                               const QString &name) {
+    const QByteArray payload = inflateContainer(wrapped);
+    enforcePrivacyPolicyForCGroup(payload);
+
+    return importCGroupNestedDecoded(payload, newImportProject(name, payload, header));
+}
+
+static Project importCLiveryDecoded(const LiveryPayload &livery, Project project) {
+    enforcePrivacyPolicyForCLivery(livery);
+    const QVector<LiverySection> sections =
+        decodeLiverySections(livery);
+
+    project.isLivery = true;
+    project.carId = livery.carId;
+    project.liverySource = livery.raw;
+    project.liveryPaint = livery.paint;
+    applyImportedHeaderMetadata(project);
+    scene::ensureProjectSceneRoot(project);
+
+    int shapeIndex = 0;
+    int groupIndex = 0;
+
+    std::function<std::unique_ptr<scene::Shape>(const VinylShape &, const Matrix3 &, bool)> importShape =
+        [&](const VinylShape &shape, const Matrix3 &parentMatrix, bool parentMask) -> std::unique_ptr<scene::Shape> {
+            ++shapeIndex;
+            const Matrix3 effective = detail::multiply(parentMatrix, shapeMatrixForShape(shape));
+            LegacyShapeRecord layer;
+            layer.transform = decomposeTransform2D(effective);
+            layer.hasSourceTransform = true;
+            layer.sourceTransform = layer.transform;
+            layer.id = layerIdForIndex(shapeIndex);
+            layer.name = QStringLiteral("%1 %2")
+                .arg(shapeIndex, 4, 10, QLatin1Char('0'))
+                .arg(shape.isLogo
+                         ? QStringLiteral("Decal %1").arg(shape.rasterId)
+                         : detail::shapeName(shape.shapeId));
+            layer.vectorId = shape.shapeId;
+            layer.logo = shape.isLogo;
+            layer.logoId = shape.rasterId;
+            layer.width = 256;
+            layer.height = 256;
+            layer.color = shape.color;
+            layer.mask = parentMask || (shape.isMask && !hasColorData(shape.color));
+            layer.visible = true;
+            layer.locked = false;
+            layer.sourceShape = shapeIndex;
+            layer.absOffset = shape.absPos;
+            layer.marker = shape.marker;
+            layer.flags = shape.flags;
+            layer.sourceLogoId = shape.logoId;
+            return makeSceneShape(layer);
+        };
+
+    std::function<std::unique_ptr<scene::Group>(const VinylGroup &, const Matrix3 &, bool)> importGroup =
+        [&](const VinylGroup &node, const Matrix3 &parentMatrix, bool parentMask) -> std::unique_ptr<scene::Group> {
+            ++groupIndex;
+            const Matrix3 groupMatrix = detail::multiply(parentMatrix, nodeMatrix(node));
+            const bool inheritedMask = parentMask || node.isMask;
+
+            auto group = std::make_unique<scene::Group>();
+            group->id = groupIdForIndex(groupIndex);
+            group->name = QStringLiteral("Group %1").arg(groupIndex);
+            group->sourceAbsPos = node.absPos;
+            group->pendingTransformMarker = node.pendingTransformMarker;
+            group->inlineTransformMarker = node.inlineTransformMarker;
+            group->effectiveTransformMarker = effectiveDebugMarker(node);
+            group->headerControlBytes = node.headerControlBytes;
+            group->flags = node.flags;
+
+            for (const VinylItem &item : node.items) {
+                if (item.isShape()) {
+                    group->append(importShape(std::get<VinylShape>(item.value), groupMatrix, inheritedMask));
+                } else {
+                    group->append(importGroup(*std::get<VinylGroupPtr>(item.value), groupMatrix, inheritedMask));
+                }
+            }
+            for (const auto &child : group->children) {
+                group->sourceChildren.push_back(child->id);
+            }
+            return group;
+        };
+
+    for (const LiverySection &section : sections) {
+        ++groupIndex;
+        auto sectionGroup = std::make_unique<scene::Group>();
+        sectionGroup->id = groupIdForIndex(groupIndex);
+        sectionGroup->name = section.name;
+        sectionGroup->isLiverySection = true;
+        sectionGroup->liverySectionSlot = section.slot;
+        sectionGroup->sourceAbsPos = section.absPos;
+
+        if (section.populated) {
+            Matrix3 sectionMatrix = nodeMatrix(section.subtree);
+            bool sectionMask = section.subtree.isMask;
+            const VinylGroup *sectionRoot = &section.subtree;
+            const auto appendItems = [&](const QVector<VinylItem> &items, int begin,
+                                         const Matrix3 &matrix, bool mask) {
+                for (int i = begin; i < items.size(); ++i) {
+                    const VinylItem &item = items[i];
+                    if (item.isShape()) {
+                        sectionGroup->append(importShape(std::get<VinylShape>(item.value), matrix, mask));
+                    } else {
+                        sectionGroup->append(importGroup(*std::get<VinylGroupPtr>(item.value), matrix, mask));
+                    }
+                }
+            };
+            const VinylGroupPtr leadingRoot = !sectionRoot->items.isEmpty()
+                    && !sectionRoot->items.front().isShape()
+                ? std::get<VinylGroupPtr>(sectionRoot->items.front().value)
+                : VinylGroupPtr{};
+            if (leadingRoot && leadingRoot->source == QStringLiteral("livery_section_root")) {
+                const Matrix3 leadingMatrix = detail::multiply(sectionMatrix, nodeMatrix(*leadingRoot));
+                const bool leadingMask = sectionMask || leadingRoot->isMask;
+                const Matrix3 leadingCanvasMatrix = detail::multiply(
+                    liverySectionCanvasTransform(section.slot), leadingMatrix);
+                appendItems(leadingRoot->items, 0, leadingCanvasMatrix, leadingMask);
+                const Matrix3 remainingMatrix = detail::multiply(
+                    liverySectionCanvasTransform(section.slot), sectionMatrix);
+                appendItems(sectionRoot->items, 1, remainingMatrix, sectionMask);
+            } else {
+                while (sectionRoot->items.size() == 1 && !sectionRoot->items.front().isShape()) {
+                    const auto topGroup = std::get<VinylGroupPtr>(sectionRoot->items.front().value);
+                    if (!topGroup) {
+                        break;
+                    }
+                    if (topGroup->source.contains(QStringLiteral("livery_section_span"))) {
+                        break;
+                    }
+                    sectionMatrix = detail::multiply(sectionMatrix, nodeMatrix(*topGroup));
+                    sectionMask = sectionMask || topGroup->isMask;
+                    sectionRoot = topGroup.get();
+                }
+                sectionMatrix = detail::multiply(liverySectionCanvasTransform(section.slot), sectionMatrix);
+                appendItems(sectionRoot->items, 0, sectionMatrix, sectionMask);
+            }
+            for (const auto &child : sectionGroup->children) {
+                sectionGroup->sourceChildren.push_back(child->id);
+            }
+        }
+        project.root->append(std::move(sectionGroup));
+    }
+    return project;
+}
+
+Project importCLivery(const QString &folderOrFile) {
+    const LiveryPayload livery = readLiveryPayload(folderOrFile);
+
+    return importCLiveryDecoded(livery, newLiveryImportProject(folderOrFile));
+}
+
+Project importCLiveryData(const QByteArray &wrapped, const QByteArray &header,
+                          const QString &name) {
+    const LiveryPayload livery = parseInflatedLiveryPayload(inflateContainer(wrapped));
+    Project project;
+    project.name = name;
+    project.sourceHeader = header;
+
+    return importCLiveryDecoded(livery, std::move(project));
+}
+
+Project projectFromJson(const QJsonObject &object) {
+    if (object.contains(QStringLiteral("format"))) {
+        const QString format =
+            object.value(QStringLiteral("format")).toString();
+        if (format != QLatin1String(ProjectJsonFormat)
+            && format != QLatin1String(LegacyProjectJsonFormat)) {
+            throw std::runtime_error("not an editor project");
+        }
+        if (object.value(QStringLiteral("version")).toInt(0) > ProjectJsonVersion) {
+            throw std::runtime_error("unsupported project version");
+        }
+    }
+
+    Project project;
+    project.name = object.value(QStringLiteral("name")).toString(QStringLiteral("Untitled"));
+    project.sourceFolder = object.value(QStringLiteral("source_folder")).toString();
+    project.isLivery = object.value(QStringLiteral("is_livery")).toBool(false);
+    project.carId = object.value(QStringLiteral("car_id")).toInt(0);
+    const auto loadGuidelines = [](const QJsonValue &value) {
+        QVector<double> result;
+        const QJsonArray array = value.toArray();
+        result.reserve(array.size());
+        for (const QJsonValue &entry : array) {
+            const double coordinate = entry.toDouble(std::numeric_limits<double>::quiet_NaN());
+            if (std::isfinite(coordinate)) {
+                result.push_back(coordinate);
+            }
+        }
+        return result;
+    };
+    project.horizontalGuidelines = loadGuidelines(object.value(QStringLiteral("horizontal_guidelines")));
+    project.verticalGuidelines = loadGuidelines(object.value(QStringLiteral("vertical_guidelines")));
+    const QString prefix = object.value(QStringLiteral("source_dec_prefix")).toString();
+    if (!prefix.isEmpty()) {
+        project.sourceDecPrefix = QByteArray::fromBase64(prefix.toLatin1());
+    }
+    const QString header = object.value(QStringLiteral("source_header")).toString();
+    if (!header.isEmpty()) {
+        project.sourceHeader = QByteArray::fromBase64(header.toLatin1());
+    }
+    const QString liverySource = object.value(QStringLiteral("livery_source")).toString();
+    if (!liverySource.isEmpty()) {
+        project.liverySource = QByteArray::fromBase64(liverySource.toLatin1());
+        try {
+            project.liveryPaint = parseInflatedLiveryPayload(project.liverySource).paint;
+        } catch (const std::exception &) {
+        }
+    }
+    if (object.contains(QStringLiteral("livery_paint"))) {
+        project.liveryPaint = liveryPaintStateFromJson(object.value(QStringLiteral("livery_paint")));
+    }
+    if (object.value(QStringLiteral("header_metadata")).isObject()) {
+        project.headerMetadata = headerMetadataFromJson(object.value(QStringLiteral("header_metadata")).toObject());
+    }
+
+    if (!object.value(QStringLiteral("root")).isObject()) {
+        throw std::runtime_error("project document is missing its scene tree");
+    }
+    project.root = scene::sceneTreeFromJson(object.value(QStringLiteral("root")).toObject());
+    std::function<void(const scene::Layer &)> scan = [&](const scene::Layer &node) {
+        if (node.kind() != scene::LayerKind::Group) {
+            return;
+        }
+        const auto &group = static_cast<const scene::Group &>(node);
+        project.isLivery = project.isLivery || group.isLiverySection;
+        for (const auto &child : group.children) {
+            scan(*child);
+        }
+    };
+    scan(*project.root);
+    const QJsonArray colorSwatches = object.value(QStringLiteral("color_swatches")).toArray();
+    project.colorSwatches.reserve(colorSwatches.size());
+    for (const QJsonValue &value : colorSwatches) {
+        project.colorSwatches.push_back(colorSwatchFromJson(value));
+    }
+    return project;
+}
+
+QJsonObject projectToJson(const Project &project) {
+    QJsonObject object;
+    object.insert(QStringLiteral("format"), QLatin1String(ProjectJsonFormat));
+    object.insert(QStringLiteral("version"), ProjectJsonVersion);
+    object.insert(QStringLiteral("name"), project.name);
+    object.insert(QStringLiteral("source_folder"), project.sourceFolder);
+    object.insert(QStringLiteral("is_livery"), project.isLivery);
+    const auto saveGuidelines = [](const QVector<double> &guidelines) {
+        QJsonArray array;
+        for (double coordinate : guidelines) {
+            if (std::isfinite(coordinate)) {
+                array.append(coordinate);
+            }
+        }
+        return array;
+    };
+    object.insert(QStringLiteral("horizontal_guidelines"), saveGuidelines(project.horizontalGuidelines));
+    object.insert(QStringLiteral("vertical_guidelines"), saveGuidelines(project.verticalGuidelines));
+    if (project.carId != 0) {
+        object.insert(QStringLiteral("car_id"), project.carId);
+    }
+    object.insert(QStringLiteral("source_dec_prefix"), toBase64(project.sourceDecPrefix));
+    object.insert(QStringLiteral("source_header"), toBase64(project.sourceHeader));
+    if (!project.liverySource.isEmpty()) {
+        object.insert(QStringLiteral("livery_source"), toBase64(project.liverySource));
+    }
+    if (!project.liveryPaint.materials.isEmpty()) {
+        object.insert(QStringLiteral("livery_paint"), liveryPaintStateToJson(project.liveryPaint));
+    }
+    if (project.headerMetadata) {
+        object.insert(QStringLiteral("header_metadata"), headerMetadataToJson(*project.headerMetadata));
+    }
+
+    if (project.root) {
+        object.insert(QStringLiteral("root"), scene::sceneTreeToJson(*project.root));
+    } else {
+        const scene::Group emptyRoot;
+        object.insert(QStringLiteral("root"), scene::sceneTreeToJson(emptyRoot));
+    }
+
+    QJsonArray colorSwatches;
+    for (const std::array<quint8, 4> &color : project.colorSwatches) {
+        colorSwatches.append(colorSwatchToJson(color));
+    }
+    object.insert(QStringLiteral("color_swatches"), colorSwatches);
+    return object;
+}
+
+QByteArray encodeProjectDocument(const Project &project) {
+    const QJsonDocument document(projectToJson(project));
+    return gzipCompress(document.toJson(QJsonDocument::Indented));
+}
+
+Project decodeProjectDocument(const QByteArray &fileBytes) {
+    if (!looksGzipped(fileBytes)) {
+        throw std::runtime_error("not a packed .3so project (missing gzip container)");
+    }
+    const QByteArray json = gzipDecompress(fileBytes);
+    QJsonParseError parseError{};
+    const QJsonDocument document = QJsonDocument::fromJson(json, &parseError);
+    if (parseError.error != QJsonParseError::NoError) {
+        throw std::runtime_error(("invalid project JSON: " + parseError.errorString()).toStdString());
+    }
+    if (!document.isObject()) {
+        throw std::runtime_error("project document is not an object");
+    }
+    return projectFromJson(document.object());
+}
+
+QByteArray creatorTagFromSavePath(const QString &path) {
+    QString currentPath = QFileInfo(path).absoluteFilePath();
+    while (!currentPath.isEmpty()) {
+        const QFileInfo currentInfo(currentPath);
+        const QString directoryName = currentInfo.fileName();
+        if (directoryName.startsWith(QStringLiteral("u_"), Qt::CaseInsensitive)) {
+            const QString profileIdText = directoryName.mid(2).section(QLatin1Char('_'), 0, 0);
+            bool validProfileId = false;
+            const quint64 profileId = profileIdText.toULongLong(&validProfileId);
+            if (validProfileId) {
+                QByteArray creatorTag;
+                creatorTag.reserve(8);
+                for (int byteIndex = 0; byteIndex < 8; ++byteIndex) {
+                    creatorTag.append(static_cast<char>((profileId >> (byteIndex * 8)) & 0xff));
+                }
+
+                return creatorTag;
+            }
+        }
+
+        const QString parentPath = currentInfo.absoluteDir().absolutePath();
+        if (parentPath == currentPath) {
+            break;
+        }
+        currentPath = parentPath;
+    }
+
+    return {};
+}
+
+namespace {
+
+quint64 exportedShapeCount(const scene::Layer &node) {
+    if (!node.visible) {
+        return 0;
+    }
+    if (node.kind() == scene::LayerKind::Shape) {
+        return 1;
+    }
+    if (node.kind() != scene::LayerKind::Group) {
+        return 0;
+    }
+
+    quint64 count = 0;
+    for (const auto &child : static_cast<const scene::Group &>(node).children) {
+        count += exportedShapeCount(*child);
+    }
+
+    return count;
+}
+
+quint32 exportedGroupShapeCount(const Project &project) {
+    if (project.root == nullptr) {
+        return 0;
+    }
+
+    quint64 count = 0;
+    for (const auto &child : project.root->children) {
+        count += exportedShapeCount(*child);
+    }
+    if (count > std::numeric_limits<quint32>::max()) {
+        throw std::runtime_error("group export has too many shapes for header metadata");
+    }
+
+    return static_cast<quint32>(count);
+}
+
+QByteArray buildGroupHeader(const Project &project, const QString &outputName,
+                            const QString &outputFolder) {
+    std::optional<HeaderMetadata> metadata;
+    QByteArray sourceHeaderFallback;
+    if (!project.sourceHeader.isEmpty()) {
+        try {
+            metadata = parseHeader(project.sourceHeader);
+        } catch (const std::exception &) {
+            sourceHeaderFallback = renameHeader(project.sourceHeader, outputName);
+        }
+    }
+    if (!sourceHeaderFallback.isEmpty()) {
+        return sourceHeaderFallback;
+    }
+    if (!metadata && project.headerMetadata) {
+        metadata = *project.headerMetadata;
+    }
+    if (!metadata) {
+        return sourceHeaderFallback;
+    }
+
+    metadata->name = outputName;
+    metadata->formatVersion = kCurrentHeaderFormatVersion;
+    metadata->sectionMarker = QByteArray("\x01\x02", 2);
+    metadata->sectionPadding = QByteArray(7, '\0');
+    metadata->hasCarId = true;
+    metadata->typeValue = exportedGroupShapeCount(project);
+    const QByteArray destinationCreatorTag = creatorTagFromSavePath(outputFolder);
+    if (!destinationCreatorTag.isEmpty()) {
+        metadata->creatorTag = destinationCreatorTag;
+    }
+
+    return buildHeader(*metadata);
+}
+
+void writeExportFolder(const Project &project, const QString &outputFolder,
+                       const QString &name, const QByteArray &payload) {
+    if (outputFolder.isEmpty()) {
+        throw std::runtime_error("export output folder is empty");
+    }
+
+    if (!QDir().mkpath(outputFolder)) {
+        throw std::runtime_error(("could not create export folder: " + outputFolder).toStdString());
+    }
+
+    copyDirectoryContentsExceptCGroup(project.sourceFolder, outputFolder);
+
+    QDir outputDir(outputFolder);
+    writeCGroupFile(outputDir.filePath(QStringLiteral("C_group")), payload);
+
+    const QString outputName = name.isEmpty() ? QFileInfo(outputFolder).fileName() : name;
+    const QByteArray headerBytes = buildGroupHeader(project, outputName, outputFolder);
+    if (!headerBytes.isEmpty()) {
+        QFile headerFile(outputDir.filePath(QStringLiteral("header")));
+        if (!headerFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            throw std::runtime_error(("could not write header: " + headerFile.fileName()).toStdString());
+        }
+        if (headerFile.write(headerBytes) != headerBytes.size()) {
+            throw std::runtime_error("short write while writing header");
+        }
+    }
+}
+
+} // namespace
+
+void exportNestedProjectFolder(const Project &project, const QString &outputFolder,
+                               const QString &name, const SpriteSizeFn &spriteSize) {
+    writeExportFolder(project, outputFolder, name, buildNestedPayload(project, spriteSize));
+}
+
+namespace {
+
+void writeLeU32InPlace(QByteArray &bytes, int offset, quint32 value) {
+    bytes[offset] = static_cast<char>(value & 0xff);
+    bytes[offset + 1] = static_cast<char>((value >> 8) & 0xff);
+    bytes[offset + 2] = static_cast<char>((value >> 16) & 0xff);
+    bytes[offset + 3] = static_cast<char>((value >> 24) & 0xff);
+}
+
+void appendLeU64(QByteArray &bytes, quint64 value) {
+    detail::appendLeU32(bytes, static_cast<quint32>(value & 0xffffffffu));
+    detail::appendLeU32(bytes, static_cast<quint32>(value >> 32));
+}
+
+void writeRawFile(const QString &path, const QByteArray &bytes) {
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        throw std::runtime_error(("could not write file: " + path).toStdString());
+    }
+    if (file.write(bytes) != bytes.size()) {
+        throw std::runtime_error(("short write while writing " + path).toStdString());
+    }
+}
+
+QByteArray normalizedCreatorTag(const Project &project) {
+    QByteArray creatorTag;
+    if (project.headerMetadata) {
+        creatorTag = project.headerMetadata->creatorTag;
+    } else if (!project.sourceHeader.isEmpty()) {
+        try {
+            creatorTag = parseHeader(project.sourceHeader).creatorTag;
+        } catch (const std::exception &) {
+        }
+    }
+    creatorTag = creatorTag.left(8);
+    creatorTag.append(QByteArray(8 - creatorTag.size(), '\0'));
+    return creatorTag;
+}
+
+QByteArray buildLiveryDescriptorTable(const Project &project) {
+    QVector<quint64> recordHashes;
+    recordHashes.reserve(static_cast<qsizetype>(
+        material_hashes::binding::kLiveryMaterials.size()
+        + material_hashes::binding::kLiveryPanels.size())
+        + project.liveryPaint.materials.size());
+    for (const quint64 hash : material_hashes::binding::kLiveryMaterials) {
+        recordHashes.push_back(hash);
+    }
+    for (const LiveryPaintMaterial &material : project.liveryPaint.materials) {
+        if (!recordHashes.contains(material.materialHash)) {
+            recordHashes.push_back(material.materialHash);
+        }
+    }
+    for (const quint64 hash : material_hashes::binding::kLiveryPanels) {
+        if (!recordHashes.contains(hash)) {
+            recordHashes.push_back(hash);
+        }
+    }
+    if (recordHashes.size() > std::numeric_limits<quint16>::max()) {
+        throw std::runtime_error("livery descriptor table has too many material records");
+    }
+
+    QByteArray table("yrvl", 4);
+    table.append('\0');
+    table.append('\x02');
+    detail::appendLeU16(table, static_cast<quint16>(recordHashes.size()));
+    table.append(QByteArray(6, '\0'));
+
+    const auto appendMaterial = [&project, &table](quint64 hash, quint32 defaultSelector) {
+        const LiveryPaintMaterial *paint = project.liveryPaint.find(hash);
+        const bool axlePaint = material_hashes::contains(
+            material_hashes::binding::kFrontWheelPaint, hash)
+            || material_hashes::contains(
+                material_hashes::binding::kRearWheelPaint, hash);
+        const auto hasExplicitPaint = [](const LiveryPaintMaterial *candidate) {
+            return candidate != nullptr
+                && (candidate->primary.enabled || candidate->secondary.enabled
+                    || candidate->finish != 0);
+        };
+        // Older editor exports only wrote the generic rim records. Materialize
+        // those values into Forza's axle records so reopening and re-exporting
+        // an existing project repairs it without requiring another UI edit.
+        if (axlePaint && !hasExplicitPaint(paint)) {
+            for (quint64 fallbackHash : material_hashes::binding::kWheelPaintGroups) {
+                const LiveryPaintMaterial *fallback = project.liveryPaint.find(fallbackHash);
+                if (hasExplicitPaint(fallback)) {
+                    paint = fallback;
+                    break;
+                }
+            }
+        }
+        appendLeU64(table, hash);
+        table.append('\x02');
+        table.append(paint != nullptr && paint->primary.enabled ? '\x01' : '\0');
+        for (const quint8 channel : paint != nullptr
+                 ? paint->primary.bgra
+                 : std::array<quint8, 4>{0, 0, 0, 0}) {
+            table.append(static_cast<char>(channel));
+        }
+        table.append(paint != nullptr && paint->secondary.enabled ? '\x01' : '\0');
+        for (const quint8 channel : paint != nullptr
+                 ? paint->secondary.bgra
+                 : std::array<quint8, 4>{0, 0, 0, 0}) {
+            table.append(static_cast<char>(channel));
+        }
+        detail::appendLeU32(table, paint != nullptr ? paint->manufacturerSelector : defaultSelector);
+        quint32 exportedFinish = paint != nullptr ? paint->finish : 0;
+        if (hash == material_hashes::binding::kWindowGlass) {
+            exportedFinish = 0;
+        } else if (exportedFinish == 0 && paint != nullptr
+                   && (paint->primary.enabled || paint->secondary.enabled)) {
+            exportedFinish = 1;
+        }
+        detail::appendLeU32(table, exportedFinish);
+    };
+
+    for (const quint64 hash : recordHashes) {
+        const bool isPanel =
+            material_hashes::contains(material_hashes::binding::kLiveryPanels, hash);
+        appendMaterial(hash, isPanel ? 0xffffffffu : 0);
+    }
+
+    detail::appendLeU32(
+        table, static_cast<quint32>(material_hashes::binding::kLiveryPanels.size()));
+    for (const quint64 hash : material_hashes::binding::kLiveryPanels) {
+        appendLeU64(table, hash);
+    }
+    return table;
+}
+
+QByteArray buildNewLiveryPayload(const Project &project, const QByteArray &gyvl,
+                                 const std::array<int, 11> &counts,
+                                 const QByteArray &creatorTag) {
+    QByteArray payload("vlrc", 4);
+    detail::appendLeU32(payload, 2);
+    detail::appendLeU32(payload, 0);
+    detail::appendLeU32(payload, 0);
+    detail::appendLeU32(payload, static_cast<quint32>(project.carId));
+    detail::appendLeU32(payload, 0);
+    detail::appendLeU16(payload, 0);
+
+    payload.append("yrvl", 4);
+    detail::appendLeU32(payload, 19);
+    payload.append(creatorTag);
+    detail::appendLeU32(payload, 1);
+    payload.append('\0');
+    detail::appendLeU32(payload, static_cast<quint32>(gyvl.size()));
+    payload.append(gyvl);
+
+    payload.append("yrvl", 4);
+    for (const int count : counts) {
+        detail::appendLeU32(payload, static_cast<quint32>(count));
+    }
+    detail::appendLeU32(payload, 0);
+
+    payload.append(buildLiveryDescriptorTable(project));
+    payload.append("yrvl", 4);
+    detail::appendLeU32(payload, 0);
+    return payload;
+}
+
+QByteArray buildLiveryHeader(const Project &project, const QVector<int> &sectionCounts,
+                             const QByteArray &creatorTag) {
+    const quint32 decalCount = static_cast<quint32>(
+        std::accumulate(sectionCounts.cbegin(), sectionCounts.cend(), 0));
+    std::optional<HeaderMetadata> sourceMetadata;
+    if (!project.sourceHeader.isEmpty()) {
+        try {
+            sourceMetadata = parseHeader(project.sourceHeader);
+        } catch (const std::exception &) {
+        }
+    }
+
+    if (sourceMetadata) {
+        HeaderMetadata metadata = *sourceMetadata;
+        if (project.headerMetadata) {
+            metadata.creatorName = project.headerMetadata->creatorName;
+            metadata.year = project.headerMetadata->year;
+        }
+        metadata.formatVersion = kCurrentHeaderFormatVersion;
+        metadata.sectionMarker = QByteArray("\x01\x02", 2);
+        metadata.sectionPadding = QByteArray(7, '\0');
+        metadata.hasCarId = true;
+        metadata.name = project.name;
+        metadata.carId = static_cast<quint32>(project.carId);
+        metadata.typeValue = decalCount;
+        metadata.creatorTag = creatorTag;
+        return buildHeader(metadata);
+    }
+
+    if (project.headerMetadata) {
+        HeaderMetadata metadata = *project.headerMetadata;
+        metadata.formatVersion = kCurrentHeaderFormatVersion;
+        metadata.sectionMarker = QByteArray("\x01\x02", 2);
+        metadata.sectionPadding = QByteArray(7, '\0');
+        metadata.hasCarId = true;
+        metadata.name = project.name;
+        metadata.carId = static_cast<quint32>(project.carId);
+        metadata.typeValue = decalCount;
+        metadata.creatorTag = creatorTag;
+        return buildHeader(metadata);
+    }
+    HeaderMetadata metadata = defaultDraftHeader(
+        project.name, QString(), static_cast<quint32>(project.carId));
+    metadata.typeValue = decalCount;
+    metadata.creatorTag = creatorTag;
+    return buildHeader(metadata);
+}
+
+QByteArray encodeCLiveryPayloadWithCreatorTag(const Project &project,
+                                              const QByteArray &creatorTag) {
+    if (!project.isLivery) {
+        throw std::runtime_error("not a livery project");
+    }
+    std::array<int, 11> counts{};
+    const QByteArray gyvl = buildLiveryGyvl(project, &counts);
+
+    return buildNewLiveryPayload(project, gyvl, counts, creatorTag);
+}
+
+} // namespace
+
+QByteArray encodeCLiveryPayload(const Project &project) {
+    return encodeCLiveryPayloadWithCreatorTag(project, normalizedCreatorTag(project));
+}
+
+void exportCLivery(const Project &project, const QString &outputFolder) {
+    if (outputFolder.isEmpty()) {
+        throw std::runtime_error("export output folder is empty");
+    }
+    QByteArray creatorTag = creatorTagFromSavePath(outputFolder);
+    if (creatorTag.isEmpty()) {
+        creatorTag = normalizedCreatorTag(project);
+    }
+    const QByteArray payload = encodeCLiveryPayloadWithCreatorTag(project, creatorTag);
+
+    if (!QDir().mkpath(outputFolder)) {
+        throw std::runtime_error(("could not create export folder: " + outputFolder).toStdString());
+    }
+    QDir outputDir(outputFolder);
+
+    writeCGroupFile(outputDir.filePath(QStringLiteral("C_livery")), payload);
+
+    const LiveryPayload encoded = parseInflatedLiveryPayload(payload);
+    const QByteArray header = buildLiveryHeader(project, encoded.sectionCounts, creatorTag);
+    if (!header.isEmpty()) {
+        writeRawFile(outputDir.filePath(QStringLiteral("header")), header);
+    }
+
+    if (!project.sourceFolder.isEmpty()) {
+        const QString thumb = QDir(project.sourceFolder).filePath(QStringLiteral("bigThumb.webp"));
+        if (QFile::exists(thumb)) {
+            copyFileReplacing(thumb, outputDir.filePath(QStringLiteral("bigThumb.webp")));
+        }
+    }
+}
+
+} // namespace fls

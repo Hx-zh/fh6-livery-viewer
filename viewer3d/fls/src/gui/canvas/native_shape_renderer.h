@@ -1,0 +1,125 @@
+#pragma once
+
+#include "core_types.h"
+#include "raster_decals.h"
+#include "scene_view.h"
+#include "shape_geometry_store.h"
+
+#include <QtCore>
+#include <QtGui>
+#include <QtOpenGL>
+
+#include <memory>
+
+class QOpenGLFunctions;
+
+namespace gui {
+
+class NativeShapeRenderer {
+public:
+    NativeShapeRenderer();
+    ~NativeShapeRenderer();
+
+    void initialize();
+    void release();
+    bool isInitialized() const;
+    void uploadGeometry(const ShapeGeometryStore &geometry);
+    void render(const fls::Project &project,
+                const ShapeGeometryStore &geometry,
+                const QTransform &worldToScreen,
+                const QSize &size,
+                const QSet<QString> &flashingLayerIds,
+                double flashHue,
+                double flashStrength,
+                bool clearBackground = true);
+    void render(const QVector<SceneRenderEntry> &entries,
+                const ShapeGeometryStore &geometry,
+                const QTransform &worldToScreen,
+                const QSize &size,
+                const QSet<QString> &flashingLayerIds,
+                double flashHue,
+                double flashStrength,
+                bool clearBackground = true);
+
+    GLuint renderSceneToTexture(const fls::Project &project,
+                                const ShapeGeometryStore &geometry,
+                                const QTransform &worldToScreen,
+                                const QSize &size);
+    GLuint renderScenesToTexture(const QVector<fls::Project> &projects,
+                                 const QVector<QRect> &clipRects,
+                                 const ShapeGeometryStore &geometry,
+                                 const QTransform &worldToScreen,
+                                 const QSize &size,
+                                 bool preserveExisting = false);
+
+private:
+    struct ShapeRange {
+        int firstVertex = 0;
+        int vertexCount = 0;
+    };
+
+    void setUniformRows(int row0Location, int row1Location, const QTransform &transform);
+    ShapeRange fallbackRange(int shapeId, const ShapeGeometryStore &geometry);
+    bool drawSceneToFbo(QOpenGLFunctions *functions,
+                        const fls::Project &project,
+                        const ShapeGeometryStore &geometry,
+                        const QTransform &worldToScreen,
+                        const QSize &size);
+    bool drawProjectLayers(QOpenGLFunctions *functions,
+                           const fls::Project &project,
+                           const ShapeGeometryStore &geometry,
+                           const QTransform &worldToScreen,
+                           const QSize &size);
+    bool drawRenderEntries(QOpenGLFunctions *functions,
+                           const QVector<SceneRenderEntry> &entries,
+                           const ShapeGeometryStore &geometry,
+                           const QTransform &worldToScreen,
+                           const QSize &size);
+    bool drawRasterLayer(QOpenGLFunctions *functions,
+                         quint32 rasterId,
+                         const std::array<quint8, 4> &color,
+                         bool mask,
+                         const QSize &fallbackSize,
+                         const QTransform &world);
+    bool ensureRasterPackLoaded();
+    GLuint ensureRasterTexture(QOpenGLFunctions *functions, quint32 rasterId);
+    void ensureSceneFramebuffer(const QSize &size);
+    void compositeScene(QOpenGLFunctions *functions, const QSize &size, bool clearBackground);
+
+    QOpenGLShaderProgram program_;
+    QOpenGLShaderProgram rasterProgram_;
+    QOpenGLShaderProgram compositeProgram_;
+    QOpenGLVertexArrayObject vao_;
+    QOpenGLVertexArrayObject rasterVao_;
+    QOpenGLVertexArrayObject compositeVao_;
+    QOpenGLBuffer vertexBuffer_;
+    QOpenGLBuffer rasterBuffer_;
+    QOpenGLBuffer compositeBuffer_;
+    QHash<int, ShapeRange> ranges_;
+    QVector<float> vertices_;
+    std::unique_ptr<QOpenGLFramebufferObject> sceneFbo_;
+    QSize sceneFboSize_;
+    bool initialized_ = false;
+    bool geometryUploaded_ = false;
+
+    int viewportLocation_ = -1;
+    int cameraRow0Location_ = -1;
+    int cameraRow1Location_ = -1;
+    int worldRow0Location_ = -1;
+    int worldRow1Location_ = -1;
+    int tintLocation_ = -1;
+    int rasterViewportLocation_ = -1;
+    int rasterCameraRow0Location_ = -1;
+    int rasterCameraRow1Location_ = -1;
+    int rasterWorldRow0Location_ = -1;
+    int rasterWorldRow1Location_ = -1;
+    int rasterTintLocation_ = -1;
+    int rasterTextureLocation_ = -1;
+    int compositeTextureLocation_ = -1;
+    fls::RasterDecalPack rasterPack_;
+    QString rasterPackError_;
+    QHash<quint32, GLuint> rasterTextures_;
+    QHash<quint32, QSize> rasterTextureSizes_;
+};
+
+} // namespace gui
