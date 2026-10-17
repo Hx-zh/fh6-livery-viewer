@@ -527,7 +527,8 @@ def gitee_upload(version: str, zips: list[Path], token: str) -> None:
                                      headers=headers or {})
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
-                return json.loads(r.read().decode("utf-8"))
+                text = r.read().decode("utf-8")
+                return json.loads(text) if text.strip() else {}
         except urllib.error.HTTPError as e:
             raise SystemExit(f"Gitee API {method} {path} 失败 {e.code}: {e.read().decode('utf-8', 'replace')[:300]}")
 
