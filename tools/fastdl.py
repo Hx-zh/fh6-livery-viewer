@@ -50,12 +50,9 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def _opener(proxy: str | None) -> urllib.request.OpenerDirector:
-    handlers = [_NoRedirect()]
-    if proxy:
-        ph = urllib.request.ProxyHandler({"http": proxy, "https": proxy})
-        handlers.append(ph)
-    else:
-        handlers.append(urllib.request.ProxyHandler({}))
+    handlers: list[urllib.request.BaseHandler] = [_NoRedirect()]
+    handlers.append(urllib.request.ProxyHandler(
+        {} if proxy is None else {"http": proxy, "https": proxy}))
     return urllib.request.build_opener(*handlers)
 
 
