@@ -349,8 +349,10 @@ def _viewer_stage() -> Path | None:
         # 本地构建比暂存新(看过源码/本地重编过) → 用本地构建刷新暂存,
         # 防止发布物用到修复前的旧 viewer。只拷发布所需文件(排除 CMake/ninja 构建垃圾)。
         try:
-            if local_build.is_file() and \
-                    local_build.stat().st_mtime > staged_exe.stat().st_mtime:
+            junk = (stage / "build.ninja").exists() or (stage / "CMakeFiles").exists()
+            newer = local_build.is_file() and \
+                local_build.stat().st_mtime > staged_exe.stat().st_mtime
+            if junk or newer:
                 build_dir = local_build.parent
                 shutil.rmtree(stage, ignore_errors=True)
                 stage.mkdir(parents=True, exist_ok=True)
