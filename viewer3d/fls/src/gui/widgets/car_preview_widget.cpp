@@ -42,6 +42,33 @@ namespace {
 
 constexpr int kLiveryBaseTexWidth = 2048;
 constexpr int kLiveryBaseTexHeight = 1024;
+
+// FH6-LOCAL PATCH (aliased livery edges): the livery atlas is an FBO texture and Qt leaves its
+// filters at GL_NEAREST. An 8192x4096 canvas sampled that way onto a ~1k-pixel car quantises every
+// vinyl edge to the texture grid — hard stair-steps, worse while the camera moves. Bilinear
+// magnification plus mipmapped minification (and anisotropic filtering where the driver has it)
+// gives smooth edges without touching the artwork or the texture resolution.
+constexpr int kTextureMaxAnisotropy = 0x84FE;
+
+void smoothLiveryTexture(QOpenGLFunctions *functions, GLuint texture) {
+    if (functions == nullptr || texture == 0) {
+        return;
+    }
+    functions->glBindTexture(GL_TEXTURE_2D, texture);
+    functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    const char *extensions = reinterpret_cast<const char *>(functions->glGetString(GL_EXTENSIONS));
+    if (extensions != nullptr
+        && (std::strstr(extensions, "GL_ARB_texture_filter_anisotropic") != nullptr
+            || std::strstr(extensions, "GL_EXT_texture_filter_anisotropic") != nullptr)) {
+        functions->glTexParameterf(GL_TEXTURE_2D, kTextureMaxAnisotropy, 8.0f);
+    }
+    functions->glGenerateMipmap(GL_TEXTURE_2D);
+    functions->glBindTexture(GL_TEXTURE_2D, 0);
+}
+
 constexpr int kLiverySectionMaskSlots[fls::kLiverySideCount] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
 };
@@ -2204,6 +2231,7 @@ void CarPreviewWidget::paintGL() {
                 liveryTexture_ = shapeRenderer_.renderSceneToTexture(
                     *project_, geometry_, liveryWorldToScreen(paintTextureSize), paintTextureSize);
             }
+            smoothLiveryTexture(functions, liveryTexture_);
             liveryDirty_ = false;
             liveLiveryFullDirty_ = false;
             dirtySectionIds_.clear();

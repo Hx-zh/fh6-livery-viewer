@@ -22,7 +22,12 @@ This directory contains a vendored snapshot of code from **Forza Livery Studio**
   - `fls/src/gui/widgets/car_preview_widget.cpp` — orbit drag sensitivity
     0.01 -> 0.005 rad/px (user feedback: default felt too twitchy); new
     `highestDetailLodIndex()` (max-triangle LOD) so the viewer defaults to
-    the highest-detail model regardless of LOD ordering.
+    the highest-detail model regardless of LOD ordering; `smoothLiveryTexture()`
+    fixes hard stair-steps on every vinyl edge — the livery atlas is an FBO
+    texture and Qt leaves its filters at `GL_NEAREST`, so the 8192x4096 canvas
+    was sampled nearest-neighbour onto a ~1k-pixel car. Now bilinear
+    magnification, mipmapped minification and 8x anisotropic filtering (where
+    the driver exposes it), regenerated only when the atlas changes.
   - `fls/src/core/raster_decals.cpp` — additional cache lookup path under
     `QStandardPaths::AppDataLocation` (raster decal pack built on first run
     from the user's game files instead of shipping a 67 MB binary).
