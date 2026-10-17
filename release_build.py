@@ -367,7 +367,16 @@ def _viewer_stage() -> Path | None:
             with zipfile.ZipFile(nested) as zf:
                 zf.extractall(tmp)
         if not (inner / "FH6Livery3DViewer.exe").is_file():
-            print("[3DViewer] 警告: 工件内容异常, zip 不含查看器")
+            # 任意嵌套布局兜底: 递归找 exe 所在目录并整体拷贝
+            hits = list(tmp.rglob("FH6Livery3DViewer.exe"))
+            if hits:
+                inner = hits[0].parent
+        if not (inner / "FH6Livery3DViewer.exe").is_file():
+            try:
+                listing = ", ".join(p.name for p in tmp.iterdir())
+            except OSError:
+                listing = "?"
+            print(f"[3DViewer] 警告: 工件内容异常(tmp: {listing}), zip 不含查看器")
             return None
         shutil.copytree(inner, stage, dirs_exist_ok=True)
         print(f"[3DViewer] 已暂存 {stage} (来自 run {runs[0]['databaseId']})")
