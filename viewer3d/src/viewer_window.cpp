@@ -152,5 +152,9 @@ void ViewerWindow::loadCarModel()
     preview_->loadCarAsync(path, [this](bool ok, const QString &error) {
         setStartupNote(ok ? QStringLiteral("Ready")
                           : QStringLiteral("Car model failed: %1").arg(error));
+        if (ok) {
+            // Default to the highest-detail LOD (user preference).
+            preview_->selectLod(preview_->highestDetailLodIndex());
+        }
     });
 }

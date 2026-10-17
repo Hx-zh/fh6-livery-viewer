@@ -1584,6 +1584,24 @@ void CarPreviewWidget::cycleLod() {
     selectLod((selectedLodIndex_ + 1) % model_.lodCount());
 }
 
+int CarPreviewWidget::highestDetailLodIndex() const {
+    // FH6LiveryViewer local addition: pick the LOD with the most triangles,
+    // independent of how the carbin orders its LOD groups.
+    int best = 0;
+    size_t bestTriangles = 0;
+    for (int i = 0; i < model_.lodCount(); ++i) {
+        size_t triangles = 0;
+        for (const CarMesh &mesh : model_.meshesForLod(i)) {
+            triangles += mesh.indices.size() / 3;
+        }
+        if (triangles > bestTriangles) {
+            bestTriangles = triangles;
+            best = i;
+        }
+    }
+    return best;
+}
+
 void CarPreviewWidget::selectLod(int lodIndex) {
     if (lodIndex < 0 || lodIndex >= model_.lodCount()
         || selectedLodIndex_ == lodIndex) {

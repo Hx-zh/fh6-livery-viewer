@@ -99,6 +99,9 @@ private:
     void rebuildModelPanel();
     void selectPartOption(int partType, int optionId);
     void selectLod(int lodIndex);
+    // FH6LiveryViewer local addition: index of the highest-poly LOD
+    // (by total triangle count) — the viewer auto-selects it on load.
+    int highestDetailLodIndex() const;
     void syncPartOptionControls();
     void switchCarUnwrapOverlay();
     void setSidePanelVisible(bool visible);
