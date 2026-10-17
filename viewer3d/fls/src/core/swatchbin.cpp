@@ -310,6 +310,28 @@ QString hresultString(const char *step, HRESULT hr) {
         .arg(static_cast<quint32>(hr), 8, 16, QLatin1Char('0'));
 }
 
+// FH6LiveryViewer local change: load D3DCompile dynamically instead of
+// linking d3dcompiler_47.dll statically. Some Windows 10 installs have an
+// older msvcp_win.dll that lacks the symbol the system d3dcompiler imports,
+// which made the whole viewer fail to start ("无法定位程序输入点").
+// The raster pack ships pre-built, so this path is only a fallback anyway.
+using D3DCompileFn = HRESULT(WINAPI *)(LPCVOID, SIZE_T, LPCSTR,
+                                       const D3D_SHADER_MACRO *, ID3DInclude *,
+                                       LPCSTR, LPCSTR, UINT, UINT,
+                                       ID3DBlob **, ID3DBlob **);
+
+D3DCompileFn dynamicD3DCompile() {
+    static D3DCompileFn fn = []() -> D3DCompileFn {
+        HMODULE module = LoadLibraryW(L"d3dcompiler_47.dll");
+        if (module == nullptr) {
+            return nullptr;
+        }
+        return reinterpret_cast<D3DCompileFn>(
+            GetProcAddress(module, "D3DCompile"));
+    }();
+    return fn;
+}
+
 struct Bc7Device {
     Microsoft::WRL::ComPtr<ID3D11Device> device;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
@@ -439,13 +461,18 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_Target {
     ComPtr<ID3DBlob> vsBlob;
     ComPtr<ID3DBlob> psBlob;
     ComPtr<ID3DBlob> shaderError;
-    hr = D3DCompile(kVs, std::strlen(kVs), nullptr, nullptr, nullptr, "main", "vs_4_0",
+    const D3DCompileFn d3dCompile = dynamicD3DCompile();
+    if (d3dCompile == nullptr) {
+        setError(error, QStringLiteral("d3dcompiler_47.dll unavailable (BC7 decode fallback)"));
+        return {};
+    }
+    hr = d3dCompile(kVs, std::strlen(kVs), nullptr, nullptr, nullptr, "main", "vs_4_0",
                     0, 0, &vsBlob, &shaderError);
     if (FAILED(hr)) {
         setError(error, hresultString("D3DCompile(VS)", hr));
         return {};
     }
-    hr = D3DCompile(kPs, std::strlen(kPs), nullptr, nullptr, nullptr, "main", "ps_4_0",
+    hr = d3dCompile(kPs, std::strlen(kPs), nullptr, nullptr, nullptr, "main", "ps_4_0",
                     0, 0, &psBlob, &shaderError);
     if (FAILED(hr)) {
         setError(error, hresultString("D3DCompile(PS)", hr));

@@ -55,6 +55,7 @@
 import argparse
 import getpass
 import io
+import glob
 import json
 import mimetypes
 import os
@@ -337,6 +338,26 @@ def build() -> None:
     print(f"[构建] {exe.name} {exe.stat().st_size:,}B, cars.json 内嵌校验通过")
 
 
+def _copy_vc_runtime(stage: Path) -> None:
+    """把 VC++ 运行库(MSVCP140*/VCRUNTIME140*)复制进发布包——exe 静态依赖它们,
+    系统未装新版 redist 的机器否则会报「找不到 MSVCP140_2.dll」。"""
+    patterns = [
+        r"C:\Program Files (x86)\Microsoft Visual Studio2\BuildTools"
+        r"\VC\Redist\MSVC\*d\Microsoft.VC143.CRT\*.dll",
+        r"C:\Program Files\Microsoft Visual Studio\*\*\VC\Redist"
+        r"\MSVC\*d\Microsoft.VC143.CRT\*.dll",
+    ]
+    for pat in patterns:
+        hits = [Path(p) for p in glob.glob(pat)]
+        if hits:
+            for f in hits:
+                try:
+                    shutil.copy2(f, stage / f.name)
+                except OSError:
+                    pass
+            return
+
+
 def _viewer_stage() -> Path | None:
     """把 3D 查看器暂存到 dist/3DViewer/。已暂存直接用; 否则 gh 拉取
     build-viewer 工作流最近一次成功工件(发布 zip 内置 3DViewer/ 子目录,
@@ -360,7 +381,10 @@ def _viewer_stage() -> Path | None:
                 stage.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(local_build, stage / local_build.name)
                 for f in build_dir.glob("*.dll"):
+                    if f.name.lower() == "d3dcompiler_47.dll":
+                        continue  # 动态加载; 系统/更新时间不确定的 msvcp_win 会让它起不来
                     shutil.copy2(f, stage / f.name)
+                _copy_vc_runtime(stage)
                 for d in ("platforms", "imageformats", "styles", "iconengines",
                           "generic", "networkinformation", "tls"):
                     if (build_dir / d).is_dir():

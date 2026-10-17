@@ -66,7 +66,9 @@ target_link_libraries(FH6Livery3DViewer PRIVATE
 )
 
 if(WIN32)
-    target_link_libraries(FH6Livery3DViewer PRIVATE d3d11 d3dcompiler)
+    # d3dcompiler is loaded dynamically (see swatchbin.cpp) so the viewer
+    # starts even where the system d3dcompiler/msvcp_win combo is broken.
+    target_link_libraries(FH6Livery3DViewer PRIVATE d3d11)
 endif()
 
 # FLS_PRIVACY_POLICY=0: upstream's gate refuses to import shared liveries
