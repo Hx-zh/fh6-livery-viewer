@@ -516,14 +516,28 @@ bool NativeShapeRenderer::drawSceneToFbo(
         return false;
     }
 
-    sceneFbo_->bind();
-    functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
+    const int supersample = sceneSupersampleFactor(size);
+    QOpenGLFramebufferObject *target = sceneFbo_.get();
+    QSize targetSize = size;
+    QTransform targetTransform = worldToScreen;
+    if (supersample > 1 && ensureSceneSupersampleFramebuffer(size * supersample)) {
+        target = sceneSupersampleFbo_.get();
+        targetSize = size * supersample;
+        targetTransform.scale(supersample, supersample);
+    }
+
+    target->bind();
+    functions->glViewport(0, 0, std::max(targetSize.width(), 1), std::max(targetSize.height(), 1));
     functions->glDisable(GL_DEPTH_TEST);
     functions->glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     functions->glClear(GL_COLOR_BUFFER_BIT);
 
-    const bool drew = drawProjectLayers(functions, project, geometry, worldToScreen, size);
-    sceneFbo_->release();
+    const bool drew = drawProjectLayers(functions, project, geometry, targetTransform, targetSize);
+    if (target == sceneFbo_.get()) {
+        sceneFbo_->release();
+    } else {
+        resolveSceneSupersample(functions, size);
+    }
     return drew;
 }
 
@@ -923,8 +937,20 @@ GLuint NativeShapeRenderer::renderScenesToTexture(
         return 0;
     }
 
-    sceneFbo_->bind();
-    functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
+    // The incremental (scissor-preserving) path stays at 1x: scaling every clip rect only matters
+    // for the editor's live section updates, and the viewer always requests a full rebuild.
+    const int supersample = preserveExisting ? 1 : sceneSupersampleFactor(size);
+    QOpenGLFramebufferObject *target = sceneFbo_.get();
+    QSize targetSize = size;
+    QTransform targetTransform = worldToScreen;
+    if (supersample > 1 && ensureSceneSupersampleFramebuffer(size * supersample)) {
+        target = sceneSupersampleFbo_.get();
+        targetSize = size * supersample;
+        targetTransform.scale(supersample, supersample);
+    }
+
+    target->bind();
+    functions->glViewport(0, 0, std::max(targetSize.width(), 1), std::max(targetSize.height(), 1));
     functions->glDisable(GL_DEPTH_TEST);
     if (!preserveExisting) {
         functions->glDisable(GL_SCISSOR_TEST);
@@ -964,11 +990,15 @@ GLuint NativeShapeRenderer::renderScenesToTexture(
         } else {
             functions->glDisable(GL_SCISSOR_TEST);
         }
-        drawProjectLayers(functions, projects[i], geometry, worldToScreen, size);
+        drawProjectLayers(functions, projects[i], geometry, targetTransform, targetSize);
     }
 
     functions->glDisable(GL_SCISSOR_TEST);
-    sceneFbo_->release();
+    if (target == sceneFbo_.get()) {
+        sceneFbo_->release();
+    } else {
+        resolveSceneSupersample(functions, size);
+    }
     return sceneFbo_->texture();
 }
 
@@ -982,6 +1012,51 @@ void NativeShapeRenderer::ensureSceneFramebuffer(const QSize &size) {
     format.setAttachment(QOpenGLFramebufferObject::NoAttachment);
     sceneFbo_ = std::make_unique<QOpenGLFramebufferObject>(fboSize, format);
     sceneFboSize_ = fboSize;
+}
+
+int NativeShapeRenderer::sceneSupersampleFactor(const QSize &size) {
+    constexpr int kFactor = 2;
+    if (size.isEmpty()) {
+        return 1;
+    }
+    GLint maxTextureSize = 0;
+    if (QOpenGLContext *context = QOpenGLContext::currentContext()) {
+        context->functions()->glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTextureSize);
+    }
+    if (maxTextureSize <= 0
+        || size.width() * kFactor > maxTextureSize
+        || size.height() * kFactor > maxTextureSize) {
+        return 1;
+    }
+    return kFactor;
+}
+
+bool NativeShapeRenderer::ensureSceneSupersampleFramebuffer(const QSize &size) {
+    const QSize fboSize(std::max(size.width(), 1), std::max(size.height(), 1));
+    if (sceneSupersampleFbo_ != nullptr && sceneSupersampleFbo_->size() == fboSize
+        && sceneSupersampleFbo_->isValid()) {
+        return true;
+    }
+    QOpenGLFramebufferObjectFormat format;
+    format.setInternalTextureFormat(GL_RGBA8);
+    format.setAttachment(QOpenGLFramebufferObject::NoAttachment);
+    sceneSupersampleFbo_ = std::make_unique<QOpenGLFramebufferObject>(fboSize, format);
+    return sceneSupersampleFbo_->isValid();
+}
+
+void NativeShapeRenderer::resolveSceneSupersample(QOpenGLFunctions *functions, const QSize &size) {
+    if (sceneSupersampleFbo_ == nullptr || !sceneSupersampleFbo_->isValid()
+        || sceneFbo_ == nullptr || !sceneFbo_->isValid()) {
+        sceneSupersampleFbo_.reset();
+        return;
+    }
+    sceneSupersampleFbo_->release();
+    QOpenGLFramebufferObject::blitFramebuffer(
+        sceneFbo_.get(), QRect(QPoint(0, 0), sceneFbo_->size()),
+        sceneSupersampleFbo_.get(), QRect(QPoint(0, 0), sceneSupersampleFbo_->size()),
+        GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    // The 2x target is only alive while a rebuild runs: at 4x canvas it is a transient 512 MB.
+    sceneSupersampleFbo_.reset();
 }
 
 void NativeShapeRenderer::compositeScene(QOpenGLFunctions *functions, const QSize &size, bool clearBackground) {

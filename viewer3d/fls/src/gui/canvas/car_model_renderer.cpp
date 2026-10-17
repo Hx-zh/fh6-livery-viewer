@@ -450,7 +450,11 @@ void main()
 }
 )";
 
-constexpr int kMaskTextureScale = 2;
+// FH6-LOCAL PATCH (VRAM): the livery masks shipped inside each car archive are 2048x1024 (one
+// 1 MB R8 swatchbin per side). Upstream upsamples them 2x for the GPU array, which costs
+// 4096x2048x11 R8 = 92 MB instead of 23 MB for no extra information: mask coverage is generated
+// at the source resolution and the shader thresholds it (coverage > 0.5) anyway. Keep 1:1.
+constexpr int kMaskTextureScale = 1;
 
 bool isBodyPaintMaterial(const QString &material) {
     const QString name = material.toLower();

@@ -19,6 +19,22 @@ This directory contains a vendored snapshot of code from **Forza Livery Studio**
     from the local game files, distributed under AGPL following the upstream
     repository's precedent.
 - Local modifications (tracked in this repository's history):
+  - `fls/src/gui/canvas/car_model_renderer.cpp` — `kMaskTextureScale` lowered
+    from 2 to 1. The livery masks shipped inside each car archive are 2048x1024
+    (one 1 MB R8 swatchbin per side), so the 2x upsample only interpolated them
+    onto a 4096x2048x11 R8 array: 92 MB of VRAM for no extra information
+    (the shader thresholds coverage at 0.5 anyway). Now the array is 23 MB and
+    holds the game's mask bytes verbatim (`upsampleCoverageMask` returns the
+    source unchanged when the sizes match).
+  - `fls/src/gui/canvas/native_shape_renderer.cpp` — the vinyl atlas is now
+    rendered **supersampled**: the shape scene goes into a transient 2x target
+    (4x canvas → 16384x8192 RGBA8, ~512 MB) and is box-filtered down into the
+    8192x4096 atlas via `blitFramebuffer(..., GL_LINEAR)`. Before this the
+    shapes were hard-rasterised with no coverage AA at all, so canvas
+    resolution alone decided how blocky the artwork looked. The 2x target is
+    freed after every rebuild; when `GL_MAX_TEXTURE_SIZE` cannot host it the
+    renderer falls back to 1x. The incremental (scissor-preserving) path stays
+    at 1x — only the editor's live section updates use it.
   - `fls/src/gui/widgets/car_preview_widget.cpp` — orbit drag sensitivity
     0.01 -> 0.005 rad/px (user feedback: default felt too twitchy); new
     `highestDetailLodIndex()` (max-triangle LOD) so the viewer defaults to
@@ -26,8 +42,10 @@ This directory contains a vendored snapshot of code from **Forza Livery Studio**
     fixes hard stair-steps on every vinyl edge — the livery atlas is an FBO
     texture and Qt leaves its filters at `GL_NEAREST`, so the 8192x4096 canvas
     was sampled nearest-neighbour onto a ~1k-pixel car. Now bilinear
-    magnification, mipmapped minification and 8x anisotropic filtering (where
-    the driver exposes it), regenerated only when the atlas changes.
+    magnification, mipmapped minification and anisotropic filtering (16x where
+    the driver allows it — measured up to `GL_MAX_TEXTURE_MAX_ANISOTROPY`),
+    regenerated only when the atlas changes. The widget's own framebuffer also
+    went from 4x to 8x MSAA (verified: `GL_SAMPLES` = 8 inside `paintGL`).
   - `fls/src/core/raster_decals.cpp` — additional cache lookup path under
     `QStandardPaths::AppDataLocation` (raster decal pack built on first run
     from the user's game files instead of shipping a 67 MB binary).

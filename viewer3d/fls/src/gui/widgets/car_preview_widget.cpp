@@ -63,7 +63,11 @@ void smoothLiveryTexture(QOpenGLFunctions *functions, GLuint texture) {
     if (extensions != nullptr
         && (std::strstr(extensions, "GL_ARB_texture_filter_anisotropic") != nullptr
             || std::strstr(extensions, "GL_EXT_texture_filter_anisotropic") != nullptr)) {
-        functions->glTexParameterf(GL_TEXTURE_2D, kTextureMaxAnisotropy, 8.0f);
+        // Anisotropic filtering matters most on the car's long panels seen at a grazing angle.
+        GLfloat maxAnisotropy = 8.0f;
+        functions->glGetFloatv(kTextureMaxAnisotropy, &maxAnisotropy);
+        functions->glTexParameterf(GL_TEXTURE_2D, kTextureMaxAnisotropy,
+                                   std::min(16.0f, std::max(8.0f, maxAnisotropy)));
     }
     functions->glGenerateMipmap(GL_TEXTURE_2D);
     functions->glBindTexture(GL_TEXTURE_2D, 0);
@@ -1300,7 +1304,9 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     format.setProfile(QSurfaceFormat::CoreProfile);
     format.setDepthBufferSize(24);
     format.setAlphaBufferSize(8);
-    format.setSamples(4);
+    // Best-quality path: 8x MSAA on the widget framebuffer (Qt silently clamps to what the driver
+    // supports; 4x was the previous value).
+    format.setSamples(8);
     setFormat(format);
     setFocusPolicy(Qt::StrongFocus);
 
