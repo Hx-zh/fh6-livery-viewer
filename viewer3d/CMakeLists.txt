@@ -69,8 +69,14 @@ if(WIN32)
     target_link_libraries(FH6Livery3DViewer PRIVATE d3d11 d3dcompiler)
 endif()
 
+# FLS_PRIVACY_POLICY=0: upstream's gate refuses to import shared liveries
+# (vlrc source state 1 — 99.75% of a player's downloaded collection, measured
+# over 400 real save samples). That gate protects an EDITOR from re-exporting
+# other creators' work. This build is a strictly read-only viewer of the
+# user's own save: no editing or export code is compiled in at all, and it
+# shows only what the game itself already shows the player locally.
 target_compile_definitions(FH6Livery3DViewer PRIVATE
-    FLS_PRIVACY_POLICY=1
+    FLS_PRIVACY_POLICY=0
     ENFORCE_SHAPE_LIMITS=1
 )
 
