@@ -33,14 +33,11 @@ jobs:
         with:
           arch: x64
 
-      - name: 安装 zlib (vcpkg)
+      - name: 安装 zlib (vcpkg, 默认 installed 树)
         shell: pwsh
         run: |
-          $zlibDir = "${{ github.workspace }}\zlib-install"
-          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install `
-            --triplet x64-windows `
-            --x-install-root "$zlibDir" zlib
-          "ZLIB_ROOT=$zlibDir\zlib" | Out-File -FilePath $env:GITHUB_ENV -Append
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install zlib:x64-windows
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: CMake 配置 + 构建
         shell: pwsh
@@ -48,8 +45,11 @@ jobs:
           cmake -S viewer3d -B viewer3d\build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
-            -DZLIB_ROOT="$env:ZLIB_ROOT"
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows
+          if ($LASTEXITCODE -ne 0) { exit 1 }
           cmake --build viewer3d\build --config Release
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: windeployqt 收集运行时
         shell: pwsh
