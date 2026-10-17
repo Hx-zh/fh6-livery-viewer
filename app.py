@@ -468,6 +468,8 @@ class App(tk.Tk):
         # 手动选择的存档目录(appconfig 持久化; 启动时恢复到下拉首项,
         # 改选其它存档/目录消失/被自动检测覆盖时自动清除)
         self._manual_dir = str(_cfg.get("manual_dir", ""))
+        # 游戏安装目录(appconfig game_dir; 空串=自动探测; 供 3D 预览 --game)
+        self._game_dir = str(_cfg.get("game_dir", ""))
         self._thumb_pending: list[str] = []
         self._thumb_fails: dict[str, int] = {}    # base -> 连续解码失败次数(瞬态重试用, 封顶放弃)
         self._thumb_gen = 0                       # 缩略图解码代次(rebuild 递增, 过期结果丢弃)
@@ -2893,9 +2895,26 @@ class App(tk.Tk):
         ttk.Button(row_cars, text=_("恢复内置数据"),
                    command=self.reset_cars_builtin).pack(side=tk.LEFT, padx=(8, 0))
 
-        # 3D 预览: 只用随包内置查看器(3DViewer\ 子目录), 无设置项
+        # 游戏安装目录: 3D 预览 --game 参数; 留空 = 自动探测(Steam/商店版多路)
+        ttk.Label(body, text=_("游戏安装目录(留空 = 自动探测):")).grid(
+            row=4, column=0, columnspan=4, sticky=tk.W, pady=(10, 0))
+        game_var = tk.StringVar(value=self._game_dir)
+        row_game = tk.Frame(body)
+        row_game.grid(row=5, column=0, columnspan=4, sticky=tk.EW, pady=2)
+
+        def _browse_game():
+            path = filedialog.askdirectory(
+                parent=dlg, title=_("选择 FH6 游戏安装目录(含 media 的根目录)"))
+            if path:
+                game_var.set(path)
+
+        ttk.Entry(row_game, textvariable=game_var).pack(
+            side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(row_game, text=_("浏览…"), command=_browse_game).pack(
+            side=tk.LEFT, padx=(6, 0))
+
         btns = ttk.Frame(body)
-        btns.grid(row=4, column=0, columnspan=4, sticky=tk.E, pady=(10, 0))
+        btns.grid(row=6, column=0, columnspan=4, sticky=tk.E, pady=(10, 0))
 
         def _save():
             try:
@@ -2908,6 +2927,8 @@ class App(tk.Tk):
                 return
             self.key_hold_ms, self.key_gap_ms = hold, gap
             appconfig.save_key_timing(hold, gap)
+            self._game_dir = game_var.get().strip()
+            appconfig.set_game_dir(self._game_dir)
             self.status_var.set(
                 _("按键节奏: 保持 {hold}ms + 间隔 {gap}ms (已保存)").format(
                     hold=hold, gap=gap))
@@ -3112,11 +3133,33 @@ class App(tk.Tk):
             return
         self._fls_launch(exe, c_liv, it.base)
 
+    def _resolve_game_root(self) -> Path | None:
+        """游戏安装目录: 设置里指定且有效 → 自动探测 → 弹一次目录选择框并记住。
+        返回 None = 用户放弃(查看器不带 --game 启动, 自行兜底)。"""
+        cand = self._game_dir.strip()
+        if cand and flsbridge.is_game_root(cand):
+            return Path(cand)
+        detected = flsbridge.detect_game_root()
+        if detected is not None:
+            return detected
+        picked = filedialog.askdirectory(
+            title=_("未找到 FH6 游戏安装目录, 请手动选择(含 media 的安装根)"))
+        if not picked:
+            return None
+        if not flsbridge.is_game_root(picked):
+            messagebox.showwarning(
+                _("3D 预览"),
+                _("所选目录不包含 media\\Cars, 可能不是游戏安装根。"), parent=self)
+            return None
+        self._game_dir = picked
+        appconfig.set_game_dir(picked)
+        return Path(picked)
+
     def _fls_launch(self, exe: Path, c_liv: Path, base: str):
-        """启动内置 3D 查看器打开涂装文件; 自动附 --game 游戏目录(探测得到时,
-        用户零配置)。失败弹窗(文件被删/占用等)。"""
+        """启动内置 3D 查看器打开涂装文件; 自动附 --game 游戏目录(零配置优先);
+        找不到游戏目录时弹一次选择框并记住。失败弹窗(文件被删/占用等)。"""
         args = [str(exe), str(c_liv)]
-        root = flsbridge.detect_game_root()
+        root = self._resolve_game_root()
         if root is not None:
             args += ["--game", str(root)]
         try:

@@ -19,32 +19,92 @@
 
 namespace {
 
+bool isGameRoot(const QString &path)
+{
+    const QDir dir(path);
+    return QFileInfo(QDir(dir.filePath(QStringLiteral("media"))).filePath(
+                         QStringLiteral("Cars"))).isDir()
+           || QFileInfo(QDir(dir.filePath(QStringLiteral("Content")))
+                            .filePath(QStringLiteral("media/Cars"))).isDir();
+}
+
+QStringList steamRoots()
+{
+    QStringList roots;
+    auto add = [&roots](const QString &p) {
+        if (!p.isEmpty() && QFileInfo(p).isDir() && !roots.contains(p)) {
+            roots.push_back(p);
+        }
+    };
+    QSettings cu(QStringLiteral("HKEY_CURRENT_USER\\Software\\Valve\\Steam"),
+                 QSettings::NativeFormat);
+    add(cu.value(QStringLiteral("SteamPath")).toString());
+    QSettings lm(QStringLiteral(
+                     "HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Valve\\Steam"),
+                 QSettings::NativeFormat);
+    add(lm.value(QStringLiteral("InstallPath")).toString());
+    add(QStringLiteral("C:/Program Files (x86)/Steam"));
+    for (char drive = 'C'; drive <= 'J'; ++drive) {
+        add(QStringLiteral("%1:/SteamLibrary").arg(drive));
+        add(QStringLiteral("%1:/Steam").arg(drive));
+    }
+    return roots;
+}
+
 QString detectGameFolder()
 {
-    // Steam libraries from libraryfolders.vdf, then common roots.
-    QStringList roots;
-    QFile vdf(QStringLiteral(
-        "C:/Program Files (x86)/Steam/steamapps/libraryfolders.vdf"));
-    if (vdf.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    // Steam: registry roots -> every library in libraryfolders.vdf -> common dirs.
+    QStringList libs;
+    for (const QString &root : steamRoots()) {
+        if (!libs.contains(root)) {
+            libs.push_back(root);
+        }
+        QFile vdf(QDir(root).filePath(
+            QStringLiteral("steamapps/libraryfolders.vdf")));
+        if (!vdf.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            continue;
+        }
         const QString text = QString::fromUtf8(vdf.readAll());
         static const QRegularExpression re(
             QStringLiteral("\"path\"\\s+\"([^\"]+)\""));
         auto it = re.globalMatch(text);
         while (it.hasNext()) {
-            roots.push_back(it.next().captured(1).replace(
-                QStringLiteral("\\\\"), QStringLiteral("/")));
+            QString lib = it.next().captured(1);
+            lib.replace(QStringLiteral("\\\\"), QStringLiteral("/"));
+            if (!libs.contains(lib)) {
+                libs.push_back(lib);
+            }
         }
     }
-    roots.push_back(QStringLiteral("C:/Program Files (x86)/Steam"));
-    for (char drive = 'C'; drive <= 'H'; ++drive) {
-        roots.push_back(QStringLiteral("%1:/SteamLibrary").arg(drive));
-    }
-    const QString relative = QStringLiteral(
-        "steamapps/common/ForzaHorizon6");
-    for (const QString &root : roots) {
-        const QString candidate = QDir(root).filePath(relative);
-        if (QFileInfo(candidate).isDir()) {
+    for (const QString &lib : libs) {
+        const QString candidate =
+            QDir(lib).filePath(QStringLiteral("steamapps/common/ForzaHorizon6"));
+        if (isGameRoot(candidate)) {
             return candidate;
+        }
+    }
+    // Xbox / Store builds: scan <drive>:/XboxGames for *Forza*Horizon*6* with media.
+    for (char drive = 'C'; drive <= 'J'; ++drive) {
+        const QDir xbox(QStringLiteral("%1:/XboxGames").arg(drive));
+        if (!xbox.exists()) {
+            continue;
+        }
+        const auto entries =
+            xbox.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
+        for (const QFileInfo &entry : entries) {
+            if (!entry.fileName().contains(QStringLiteral("Forza"),
+                                           Qt::CaseInsensitive)
+                || !entry.fileName().contains(QStringLiteral("6"))) {
+                continue;
+            }
+            if (isGameRoot(entry.absoluteFilePath())) {
+                return entry.absoluteFilePath();
+            }
+            const QString content =
+                QDir(entry.absoluteFilePath()).filePath(QStringLiteral("Content"));
+            if (isGameRoot(content)) {
+                return content;
+            }
         }
     }
     return QString();

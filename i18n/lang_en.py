@@ -239,4 +239,9 @@ STRINGS = {
     '该涂装已在 3D 预览中打开': 'This livery is already open in the 3D preview',
     '启动 3D 查看器失败: {err}': 'Failed to start the 3D viewer: {err}',
     '未找到 3D 查看器(FH6Livery3DViewer.exe)。\n\n· 发布包应自带 3DViewer 子目录——请重新解压完整发布包;\n· 源码运行请先本地构建: pwsh viewer3d/build-local.ps1': 'The 3D viewer (FH6Livery3DViewer.exe) was not found.\n\n· Release zips ship a 3DViewer subfolder — please re-extract the complete zip;\n· running from source: build it first with pwsh viewer3d/build-local.ps1',
+    '游戏安装目录(留空 = 自动探测):': 'Game install folder (empty = auto-detect):',
+    '浏览…': 'Browse…',
+    '选择 FH6 游戏安装目录(含 media 的根目录)': 'Choose the FH6 game folder (the root that contains media)',
+    '未找到 FH6 游戏安装目录, 请手动选择(含 media 的安装根)': 'FH6 game folder not found — please pick it manually (the install root containing media)',
+    '所选目录不包含 media\\Cars, 可能不是游戏安装根。': 'The selected folder has no media\\Cars; it may not be the game install root.',
 }

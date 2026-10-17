@@ -239,4 +239,9 @@ STRINGS = {
     "该涂装已在 3D 预览中打开": "此塗裝已在 3D 預覽中開啟",
     "启动 3D 查看器失败: {err}": "啟動 3D 檢視器失敗: {err}",
     "未找到 3D 查看器(FH6Livery3DViewer.exe)。\n\n· 发布包应自带 3DViewer 子目录——请重新解压完整发布包;\n· 源码运行请先本地构建: pwsh viewer3d/build-local.ps1": "找不到 3D 檢視器(FH6Livery3DViewer.exe)。\n\n· 發布包應自帶 3DViewer 子目錄——請重新解壓完整發布包;\n· 原始碼執行請先本地建置: pwsh viewer3d/build-local.ps1",
+    "游戏安装目录(留空 = 自动探测):": "遊戲安裝目錄(留空 = 自動探測):",
+    "浏览…": "瀏覽…",
+    "选择 FH6 游戏安装目录(含 media 的根目录)": "選擇 FH6 遊戲安裝目錄(含 media 的根目錄)",
+    "未找到 FH6 游戏安装目录, 请手动选择(含 media 的安装根)": "找不到 FH6 遊戲安裝目錄, 請手動選擇(含 media 的安裝根)",
+    "所选目录不包含 media\\Cars, 可能不是游戏安装根。": "所選目錄不包含 media\\Cars, 可能不是遊戲安裝根。",
 }
