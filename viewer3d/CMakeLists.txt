@@ -12,6 +12,10 @@ find_package(ZLIB REQUIRED)
 
 file(GLOB FLS_CORE_SOURCES CONFIGURE_DEPENDS "fls/src/core/*.cpp")
 
+add_library(fls_clipper2 STATIC fls/third_party/clipper2/src/clipper.engine.cpp)
+target_include_directories(fls_clipper2 PUBLIC fls/third_party/clipper2/include)
+set_target_properties(fls_clipper2 PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+
 set(FLS_GUI_SOURCES
     fls/src/gui/app/car_registry.cpp
     fls/src/gui/app/gui_assets.cpp
@@ -53,6 +57,7 @@ target_link_libraries(FH6Livery3DViewer PRIVATE
     Qt6::OpenGLWidgets
     Qt6::Svg
     ZLIB::ZLIB
+    fls_clipper2
 )
 
 if(WIN32)
