@@ -361,6 +361,11 @@ def _viewer_stage() -> Path | None:
         _run([gh, "run", "download", str(runs[0]["databaseId"]),
               "--name", "FH6Livery3DViewer-win64", "-D", str(tmp)], check=True)
         inner = tmp / "FH6Livery3DViewer"
+        nested = tmp / "FH6Livery3DViewer-win64.zip"
+        if not (inner / "FH6Livery3DViewer.exe").is_file() and nested.is_file():
+            # 旧版工件把 zip 文件本身作为资产上传; 解出来, 兼容两种形态
+            with zipfile.ZipFile(nested) as zf:
+                zf.extractall(tmp)
         if not (inner / "FH6Livery3DViewer.exe").is_file():
             print("[3DViewer] 警告: 工件内容异常, zip 不含查看器")
             return None
@@ -427,7 +432,17 @@ def publish_github_release(version: str, zips: list[Path]) -> None:
     cmd += [str(z) for z in zips]
     r = _run(cmd, check=False)
     if r.returncode != 0:
-        raise SystemExit("gh release create 失败:\n" + _out(r))
+        # 已存在同 tag 的 release(如补发资产): 覆盖上传 + 更新说明, 保持可重入
+        up = _run([gh, "release", "upload", f"v{version}",
+                   "--repo", "Hx-zh/fh6-livery-viewer", "--clobber", *[str(z) for z in zips]],
+                  check=False)
+        if up.returncode != 0:
+            raise SystemExit("gh release create/upload 均失败:\n" + _out(r) + _out(up))
+        if notes:
+            _run([gh, "release", "edit", f"v{version}",
+                  "--repo", "Hx-zh/fh6-livery-viewer", "--notes", notes], check=False)
+        print(f"[发布] GitHub release v{version} 资产已覆盖更新; 资产 {len(zips)} 个 zip")
+        return
     print(f"[发布] GitHub release v{version} 已创建; 资产 {len(zips)} 个 zip")
 
 

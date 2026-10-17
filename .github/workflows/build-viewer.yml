@@ -71,10 +71,9 @@ jobs:
           Copy-Item viewer3d\assets $stage\assets -Recurse
           Copy-Item viewer3d\SOURCE.md $stage\SOURCE.md
           Copy-Item viewer3d\licenses $stage\licenses -Recurse
-          Compress-Archive -Path $stage -DestinationPath FH6Livery3DViewer-win64.zip
 
       - uses: actions/upload-artifact@v4
         with:
           name: FH6Livery3DViewer-win64
-          path: FH6Livery3DViewer-win64.zip
+          path: stage/FH6Livery3DViewer
           retention-days: 30
