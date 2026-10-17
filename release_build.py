@@ -500,10 +500,16 @@ def gitee_upload(version: str, zips: list[Path], token: str) -> None:
         release = _api("POST", "releases", create_params,
                        {"Content-Type": "application/x-www-form-urlencoded"})
     except SystemExit:
-        # 已存在同 tag 的 release(重发/修资产): 取回它, 删掉旧附件后重传, 保持可重入
+        # 已存在同 tag 的 release(重发/修资产): 取回它, 删掉旧附件后重传, 保持可重入。
+        # 注意 assets 字段不带附件 id, 必须走 attach_files 子接口
         release = _api("GET", f"releases/tags/v{version}")
         rid_old = release.get("id")
-        for asset in release.get("assets", []):
+        try:
+            old_files = _api("GET", f"releases/{rid_old}/attach_files")
+        except SystemExit as e:
+            old_files = []
+            print(f"[Gitee] 警告: 读取旧附件列表失败({e})")
+        for asset in old_files:
             aid = asset.get("id")
             if not aid:
                 continue
