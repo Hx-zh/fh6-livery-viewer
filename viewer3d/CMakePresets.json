@@ -1,0 +1,28 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 24 },
+  "configurePresets": [
+    {
+      "name": "local-msvc",
+      "displayName": "Local MSVC (aqt Qt + vcpkg zlib)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_PREFIX_PATH": "C:/Qt/6.8.3/msvc2022_64",
+        "CMAKE_TOOLCHAIN_FILE": "C:/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows"
+      }
+    },
+    {
+      "name": "local-msvc-debug",
+      "displayName": "Local MSVC Debug (调试用)",
+      "inherits": "local-msvc",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "local", "configurePreset": "local-msvc" },
+    { "name": "local-debug", "configurePreset": "local-msvc-debug" }
+  ]
+}
