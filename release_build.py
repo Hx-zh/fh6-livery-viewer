@@ -347,12 +347,26 @@ def _viewer_stage() -> Path | None:
     local_build = ROOT / "viewer3d" / "build" / "FH6Livery3DViewer.exe"
     if staged_exe.is_file():
         # 本地构建比暂存新(看过源码/本地重编过) → 用本地构建刷新暂存,
-        # 防止发布物用到修复前的旧 viewer
+        # 防止发布物用到修复前的旧 viewer。只拷发布所需文件(排除 CMake/ninja 构建垃圾)。
         try:
             if local_build.is_file() and \
                     local_build.stat().st_mtime > staged_exe.stat().st_mtime:
-                shutil.copytree(local_build.parent, stage, dirs_exist_ok=True)
-                print("[3DViewer] 本地构建较新, 已刷新 dist/3DViewer")
+                build_dir = local_build.parent
+                shutil.rmtree(stage, ignore_errors=True)
+                stage.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(local_build, stage / local_build.name)
+                for f in build_dir.glob("*.dll"):
+                    shutil.copy2(f, stage / f.name)
+                for d in ("platforms", "imageformats", "styles", "iconengines",
+                          "generic", "networkinformation", "tls"):
+                    if (build_dir / d).is_dir():
+                        shutil.copytree(build_dir / d, stage / d, dirs_exist_ok=True)
+                for extra in ("assets", "licenses"):
+                    if (build_dir / extra).is_dir():
+                        shutil.copytree(build_dir / extra, stage / extra, dirs_exist_ok=True)
+                if (build_dir / "SOURCE.md").is_file():
+                    shutil.copy2(build_dir / "SOURCE.md", stage / "SOURCE.md")
+                print("[3DViewer] 本地构建较新, 已刷新 dist/3DViewer(白名单)")
         except OSError as e:
             print(f"[3DViewer] 警告: 刷新暂存失败({e}), 沿用现有暂存")
         return stage
