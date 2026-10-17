@@ -91,6 +91,10 @@ void ViewerWindow::setStartupNote(const QString &note)
         return;
     }
     const QString current = statusLabel_->text();
+    if (current == QStringLiteral("Loading car model…")) {
+        statusLabel_->setText(note);               // 加载占位被首个结果替换
+        return;
+    }
     statusLabel_->setText(current.isEmpty()
                               ? note
                               : QStringLiteral("%1 | %2").arg(current, note));
@@ -146,8 +150,7 @@ void ViewerWindow::loadCarModel()
     }
     statusLabel_->setText(QStringLiteral("Loading car model…"));
     preview_->loadCarAsync(path, [this](bool ok, const QString &error) {
-        statusLabel_->setText(
-            ok ? QStringLiteral("Ready")
-               : QStringLiteral("Car model failed: %1").arg(error));
+        setStartupNote(ok ? QStringLiteral("Ready")
+                          : QStringLiteral("Car model failed: %1").arg(error));
     });
 }

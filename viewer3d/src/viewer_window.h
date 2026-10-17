@@ -35,6 +35,6 @@ private:
     int qualityIndex_ = 2; // index into kTextureScales
 
 public:
-    // 启动期备注(光栅缓存构建结果等), 追加显示在状态行。
+    // 启动期/加载期备注(光栅缓存构建结果等), 追加显示在状态行(不覆盖已有内容)。
     void setStartupNote(const QString &note);
 };
