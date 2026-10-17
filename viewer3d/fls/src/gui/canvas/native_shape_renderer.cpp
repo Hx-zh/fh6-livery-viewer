@@ -516,14 +516,15 @@ bool NativeShapeRenderer::drawSceneToFbo(
         return false;
     }
 
-    sceneFbo_->bind();
-    functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
+    if (beginScenePass(functions, size, /*allowMultisample=*/true) == nullptr) {
+        return false;
+    }
     functions->glDisable(GL_DEPTH_TEST);
     functions->glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     functions->glClear(GL_COLOR_BUFFER_BIT);
 
     const bool drew = drawProjectLayers(functions, project, geometry, worldToScreen, size);
-    sceneFbo_->release();
+    endScenePass(functions);
     return drew;
 }
 
@@ -923,8 +924,11 @@ GLuint NativeShapeRenderer::renderScenesToTexture(
         return 0;
     }
 
-    sceneFbo_->bind();
-    functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
+    // The incremental (scissor-preserving) pass must draw straight into the atlas: the MSAA target
+    // starts empty every pass, so resolving it would erase the sections that were not redrawn.
+    if (beginScenePass(functions, size, /*allowMultisample=*/!preserveExisting) == nullptr) {
+        return 0;
+    }
     functions->glDisable(GL_DEPTH_TEST);
     if (!preserveExisting) {
         functions->glDisable(GL_SCISSOR_TEST);
@@ -968,7 +972,7 @@ GLuint NativeShapeRenderer::renderScenesToTexture(
     }
 
     functions->glDisable(GL_SCISSOR_TEST);
-    sceneFbo_->release();
+    endScenePass(functions);
     return sceneFbo_->texture();
 }
 
@@ -982,6 +986,88 @@ void NativeShapeRenderer::ensureSceneFramebuffer(const QSize &size) {
     format.setAttachment(QOpenGLFramebufferObject::NoAttachment);
     sceneFbo_ = std::make_unique<QOpenGLFramebufferObject>(fboSize, format);
     sceneFboSize_ = fboSize;
+}
+
+QOpenGLFramebufferObject *NativeShapeRenderer::beginScenePass(QOpenGLFunctions *functions,
+                                                             const QSize &size,
+                                                             bool allowMultisample) {
+    constexpr int kSceneSamples = 4;
+    // FLS_ATLAS_MSAA=0 keeps the direct path, so the same binary can be A/B compared on screen.
+    if (allowMultisample && qEnvironmentVariableIsSet("FLS_ATLAS_MSAA")
+        && qEnvironmentVariableIntValue("FLS_ATLAS_MSAA") == 0) {
+        allowMultisample = false;
+    }
+    if (allowMultisample) {
+        if (sceneMultisampleFbo_ == nullptr || sceneMultisampleFbo_->size() != size
+            || !sceneMultisampleFbo_->isValid()) {
+            QOpenGLFramebufferObjectFormat format;
+            format.setInternalTextureFormat(GL_RGBA8);
+            format.setAttachment(QOpenGLFramebufferObject::NoAttachment);
+            format.setSamples(kSceneSamples);
+            sceneMultisampleFbo_ = std::make_unique<QOpenGLFramebufferObject>(size, format);
+            if (!sceneMultisampleFbo_->isValid()) {
+                sceneMultisampleFbo_.reset();
+            }
+        }
+    }
+    QOpenGLFramebufferObject *target =
+        sceneMultisampleFbo_ != nullptr ? sceneMultisampleFbo_.get() : sceneFbo_.get();
+    if (target == nullptr || !target->isValid()) {
+        return nullptr;
+    }
+    target->bind();
+    functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
+    return target;
+}
+
+void NativeShapeRenderer::endScenePass(QOpenGLFunctions *functions) {
+    const bool multisampled = sceneMultisampleFbo_ != nullptr;
+    if (multisampled) {
+        sceneMultisampleFbo_->release();
+        QOpenGLFramebufferObject::blitFramebuffer(
+            sceneFbo_.get(), QRect(QPoint(0, 0), sceneFbo_->size()),
+            sceneMultisampleFbo_.get(), QRect(QPoint(0, 0), sceneMultisampleFbo_->size()),
+            GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    } else if (sceneFbo_ != nullptr) {
+        sceneFbo_->release();
+    }
+    if (sceneFbo_ != nullptr && sceneFbo_->isValid()) {
+        verifyAtlasContent(functions, sceneFbo_->size());
+    }
+    // Transient: at 4x canvas this is 8192x4096 RGBA8 x4 = ~537 MB, only alive during a rebuild.
+    sceneMultisampleFbo_.reset();
+}
+
+void NativeShapeRenderer::verifyAtlasContent(QOpenGLFunctions *functions, const QSize &size) {
+    if (!qEnvironmentVariableIsSet("FLS_VERIFY_ATLAS")) {
+        return;
+    }
+    // Sample tiles across the atlas and report coverage: an empty or fully opaque atlas means the
+    // resolve went wrong (this is exactly how the earlier supersampling attempt was caught).
+    constexpr int kTile = 64;
+    constexpr int kTilesX = 8;
+    constexpr int kTilesY = 4;
+    sceneFbo_->bind();
+    QByteArray tileBytes(kTile * kTile * 4, '\0');
+    functions->glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    int covered = 0;
+    for (int ty = 0; ty < kTilesY; ++ty) {
+        for (int tx = 0; tx < kTilesX; ++tx) {
+            const int x = (size.width() * (2 * tx + 1)) / (2 * kTilesX) - kTile / 2;
+            const int y = (size.height() * (2 * ty + 1)) / (2 * kTilesY) - kTile / 2;
+            functions->glReadPixels(x, y, kTile, kTile, GL_RGBA, GL_UNSIGNED_BYTE, tileBytes.data());
+            const auto *bytes = reinterpret_cast<const unsigned char *>(tileBytes.constData());
+            for (int i = 0; i < kTile * kTile; ++i) {
+                if (bytes[i * 4 + 3] > 8) {
+                    ++covered;
+                }
+            }
+        }
+    }
+    const int total = kTile * kTile * kTilesX * kTilesY;
+    std::fprintf(stderr, "ATLASVERIFY coverage=%d/%d (%.1f%%) msaa=%d\n", covered, total,
+                 100.0 * static_cast<double>(covered) / static_cast<double>(total),
+                 sceneMultisampleFbo_ != nullptr ? 1 : 0);
 }
 
 void NativeShapeRenderer::compositeScene(QOpenGLFunctions *functions, const QSize &size, bool clearBackground) {

@@ -84,6 +84,15 @@ private:
     bool ensureRasterPackLoaded();
     GLuint ensureRasterTexture(QOpenGLFunctions *functions, quint32 rasterId);
     void ensureSceneFramebuffer(const QSize &size);
+    // FH6-LOCAL PATCH (atlas anti-aliasing): the vinyl atlas used to be rasterised with hard
+    // coverage edges, so canvas resolution alone decided how blocky the artwork looked. The scene
+    // now renders into a 4x-multisampled target of the same size and is resolved into the atlas,
+    // which anti-aliases every shape edge without touching the resolution. The MSAA target is
+    // freed after each rebuild (8192x4096 RGBA8 x4 = ~537 MB transient at 4x).
+    QOpenGLFramebufferObject *beginScenePass(QOpenGLFunctions *functions, const QSize &size,
+                                            bool allowMultisample);
+    void endScenePass(QOpenGLFunctions *functions);
+    void verifyAtlasContent(QOpenGLFunctions *functions, const QSize &size);
     void compositeScene(QOpenGLFunctions *functions, const QSize &size, bool clearBackground);
 
     QOpenGLShaderProgram program_;
@@ -99,6 +108,7 @@ private:
     QVector<float> vertices_;
     std::unique_ptr<QOpenGLFramebufferObject> sceneFbo_;
     QSize sceneFboSize_;
+    std::unique_ptr<QOpenGLFramebufferObject> sceneMultisampleFbo_;
     bool initialized_ = false;
     bool geometryUploaded_ = false;
 

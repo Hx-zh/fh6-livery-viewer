@@ -19,6 +19,18 @@ This directory contains a vendored snapshot of code from **Forza Livery Studio**
     from the local game files, distributed under AGPL following the upstream
     repository's precedent.
 - Local modifications (tracked in this repository's history):
+  - `fls/src/gui/canvas/native_shape_renderer.cpp` — the vinyl atlas is
+    rendered into a 4x-multisampled FBO of the same size and resolved with
+    `blitFramebuffer(GL_NEAREST)` (`beginScenePass`/`endScenePass`). Shape
+    edges used to be hard-rasterised, so canvas resolution alone decided how
+    blocky the artwork looked. The MSAA target is freed after every rebuild
+    (8192x4096 RGBA8 x4 = ~537 MB at the 4x canvas, ~134 MB at 2x); when it
+    cannot be created the renderer falls back to drawing straight into the
+    atlas. The incremental (scissor-preserving) pass also stays direct — an
+    empty MSAA target would erase the sections it does not redraw.
+    `FLS_VERIFY_ATLAS=1` samples 32 tiles of the atlas after each rebuild and
+    prints coverage, which is how a bad resolve is caught without watching the
+    screen; `FLS_ATLAS_MSAA=0` turns the path off for on-screen A/B testing.
   - `fls/src/gui/widgets/car_preview_widget.cpp` — orbit drag sensitivity
     0.01 -> 0.005 rad/px (user feedback: default felt too twitchy); new
     `highestDetailLodIndex()` (max-triangle LOD) so the viewer defaults to
