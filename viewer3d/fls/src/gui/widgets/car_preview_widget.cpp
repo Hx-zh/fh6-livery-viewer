@@ -1591,7 +1591,7 @@ void CarPreviewWidget::applyHighestDetailLod() {
     size_t bestTriangles = 0;
     for (int i = 0; i < model_.lodCount(); ++i) {
         size_t triangles = 0;
-        for (const CarMesh &mesh : model_.meshesForLod(i)) {
+        for (const fls::CarMesh &mesh : model_.meshesForLod(i)) {
             triangles += mesh.indices.size() / 3;
         }
         if (triangles > bestTriangles) {
