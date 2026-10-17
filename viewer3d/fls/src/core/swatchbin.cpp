@@ -310,6 +310,40 @@ QString hresultString(const char *step, HRESULT hr) {
         .arg(static_cast<quint32>(hr), 8, 16, QLatin1Char('0'));
 }
 
+struct Bc7Device {
+    Microsoft::WRL::ComPtr<ID3D11Device> device;
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
+    HRESULT hr = E_FAIL;
+};
+
+// FH6LiveryViewer local change: share one D3D11 device across all BC7
+// decodes. Creating a device per texture made the 270-decal raster pack
+// build take ~27 s on first run; a shared device brings it to ~1-2 s.
+Bc7Device &sharedBc7Device() {
+    static Bc7Device shared = [] {
+        Bc7Device d;
+        const D3D_FEATURE_LEVEL levels[] = {
+            D3D_FEATURE_LEVEL_11_1,
+            D3D_FEATURE_LEVEL_11_0,
+            D3D_FEATURE_LEVEL_10_1,
+            D3D_FEATURE_LEVEL_10_0,
+        };
+        D3D_FEATURE_LEVEL selectedLevel = D3D_FEATURE_LEVEL_11_0;
+        d.hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+                                 D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels,
+                                 ARRAYSIZE(levels), D3D11_SDK_VERSION,
+                                 &d.device, &selectedLevel, &d.context);
+        if (FAILED(d.hr)) {
+            d.hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr,
+                                     D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels,
+                                     ARRAYSIZE(levels), D3D11_SDK_VERSION,
+                                     &d.device, &selectedLevel, &d.context);
+        }
+        return d;
+    }();
+    return shared;
+}
+
 SwatchImage decodeBc7Surface(const QByteArray &data, int width, int height, QString *error) {
     const int blocksWide = (width + 3) / 4;
     const int blocksHigh = (height + 3) / 4;
@@ -321,29 +355,14 @@ SwatchImage decodeBc7Surface(const QByteArray &data, int width, int height, QStr
 
     using Microsoft::WRL::ComPtr;
 
-    ComPtr<ID3D11Device> device;
-    ComPtr<ID3D11DeviceContext> context;
-    const D3D_FEATURE_LEVEL levels[] = {
-        D3D_FEATURE_LEVEL_11_1,
-        D3D_FEATURE_LEVEL_11_0,
-        D3D_FEATURE_LEVEL_10_1,
-        D3D_FEATURE_LEVEL_10_0,
-    };
-    D3D_FEATURE_LEVEL selectedLevel = D3D_FEATURE_LEVEL_11_0;
-    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
-                                   D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                                   levels, ARRAYSIZE(levels), D3D11_SDK_VERSION,
-                                   &device, &selectedLevel, &context);
-    if (FAILED(hr)) {
-        hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr,
-                               D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                               levels, ARRAYSIZE(levels), D3D11_SDK_VERSION,
-                               &device, &selectedLevel, &context);
-    }
-    if (FAILED(hr)) {
-        setError(error, hresultString("D3D11CreateDevice", hr));
+    Bc7Device &bc7 = sharedBc7Device();
+    if (FAILED(bc7.hr)) {
+        setError(error, hresultString("D3D11CreateDevice", bc7.hr));
         return {};
     }
+    ID3D11Device *device = bc7.device.Get();
+    ID3D11DeviceContext *context = bc7.context.Get();
+    HRESULT hr = S_OK;
 
     D3D11_TEXTURE2D_DESC srcDesc{};
     srcDesc.Width = static_cast<UINT>(width);

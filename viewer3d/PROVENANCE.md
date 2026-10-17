@@ -26,6 +26,9 @@ This directory contains a vendored snapshot of code from **Forza Livery Studio**
   - `fls/src/core/raster_decals.cpp` — additional cache lookup path under
     `QStandardPaths::AppDataLocation` (raster decal pack built on first run
     from the user's game files instead of shipping a 67 MB binary).
+  - `fls/src/core/swatchbin.cpp` — share one D3D11 device across all BC7
+    decodes (creating a device per texture made the 270-decal raster pack
+    build take ~27 s on first run; a shared device brings it to ~2 s).
   - Built with `FLS_PRIVACY_POLICY=0`: upstream's gate refuses to import
     shared liveries (vlrc source state 1 — ~99.75% of a player's downloaded
     collection). That gate protects the upstream *editor* from re-exporting
