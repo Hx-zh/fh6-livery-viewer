@@ -33,6 +33,9 @@ jobs:
         with:
           arch: x64
 
+      - name: 编译缓存 sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
       - name: 安装 zlib (vcpkg, 默认 installed 树)
         shell: pwsh
         run: |
@@ -41,15 +44,20 @@ jobs:
 
       - name: CMake 配置 + 构建
         shell: pwsh
+        env:
+          SCCACHE_GHA_ENABLED: "true"
         run: |
           cmake -S viewer3d -B viewer3d\build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
           if ($LASTEXITCODE -ne 0) { exit 1 }
           cmake --build viewer3d\build --config Release
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          sccache --show-stats
 
       - name: windeployqt 收集运行时
         shell: pwsh
