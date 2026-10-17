@@ -58,6 +58,10 @@ public:
     void setLiveryTextureScale(int scale);
     void setLoadCarTextures(bool enabled);
     void setGameFolder(const QString &folder);
+    // FH6LiveryViewer local addition: skip building the editor-only car
+    // unwrap overlays on load (they cost ~4s per car; the read-only viewer
+    // never shows them). Must be set before loadCarAsync().
+    void setBuildUnwrapOverlays(bool enabled);
     void cycleLod();
     void cycleDebugMode();
     // FH6LiveryViewer local addition: select the highest-poly LOD
@@ -138,6 +142,7 @@ private:
     bool graphicsInitializationAttempted_ = false;
     bool graphicsApiSuitable_ = false;
     bool loadCarTextures_ = false;
+    bool buildUnwrapOverlays_ = true;   // FH6LiveryViewer: editor-only overlays, viewer disables
 
     fls::LiveryMaskSet liveryMasks_;
     CarUnwrapOverlay carUnwrapOverlay_;

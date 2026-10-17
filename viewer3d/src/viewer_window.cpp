@@ -112,6 +112,8 @@ void ViewerWindow::applyProject()
     if (!gameRoot_.isEmpty()) {
         preview_->setGameFolder(gameRoot_);
     }
+    // Editor-only unwrap overlays cost ~4s per car; the viewer never shows them.
+    preview_->setBuildUnwrapOverlays(false);
     preview_->setProject(&project_);
     preview_->setLiveryTextureScale(kTextureScales[qualityIndex_]);
     preview_->markLiveryDirty();

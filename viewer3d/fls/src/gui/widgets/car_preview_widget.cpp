@@ -1,5 +1,7 @@
 #include "car_preview_widget.h"
 
+#include <QElapsedTimer>
+
 #include "car_scene.h"
 #include "editor_state.h"
 #include "gui_assets.h"
@@ -1174,9 +1176,20 @@ struct PreparedCar {
 };
 
 std::shared_ptr<PreparedCar> prepareCar(
-    const QString &path, bool loadCarTextures, QString *error) {
+    const QString &path, bool loadCarTextures, bool buildOverlays,
+    QString *error) {
     static QMutex loadMutex;
     QMutexLocker lock(&loadMutex);
+    // FH6LiveryViewer diagnostic: per-phase load timing on stderr
+    // (enable with QT_FORCE_STDERR_LOGGING=1).
+    QElapsedTimer perfTotal;
+    QElapsedTimer perfPhase;
+    perfTotal.start();
+    perfPhase.start();
+    auto perfMark = [&perfTotal, &perfPhase](const char *phase) {
+        qWarning("[perf] %-22s %6lld ms (total %lld ms)", phase,
+                 perfPhase.restart(), perfTotal.elapsed());
+    };
     QString loadPath = path;
     std::unique_ptr<QTemporaryDir> extracted;
     if (path.endsWith(QStringLiteral(".zip"), Qt::CaseInsensitive)) {
@@ -1190,6 +1203,7 @@ std::shared_ptr<PreparedCar> prepareCar(
         if (!fls::extractZipArchive(path, extracted->path(), error)) {
             return {};
         }
+        perfMark("zip-extract");
         loadPath = findCarbin(extracted->path());
         if (loadPath.isEmpty()) {
             if (error != nullptr) {
@@ -1204,39 +1218,48 @@ std::shared_ptr<PreparedCar> prepareCar(
     fls::CarModel model = loadPath.endsWith(QStringLiteral(".carbin"), Qt::CaseInsensitive)
         ? fls::loadCarBin(loadPath, error, wheelSizing)
         : fls::loadModelBin(loadPath, error);
+    perfMark("carbin-parse");
     if (model.meshes.empty()) {
         return {};
     }
     appendSharedTireB(model, path, wheelSizing);
+    perfMark("shared-tire");
     assignSharedSlotMaterials(model);
     resolveExteriorMaterials(model, path, QFileInfo(loadPath).absolutePath(), loadCarTextures);
+    perfMark("materials");
 
     const QDir carDir = QFileInfo(loadPath).absoluteDir();
     auto prepared = std::make_shared<PreparedCar>();
     prepared->model = std::move(model);
     prepared->manufacturerColors = loadManufacturerColors(carDir.absolutePath(), path);
+    perfMark("manufacturer-colors");
     prepared->extractedCarDir = std::move(extracted);
     prepared->loadedCarPath = path;
 
     const QString masksDir = carDir.filePath(QStringLiteral("LiveryMasks"));
     if (QFileInfo::exists(masksDir)) {
         prepared->liveryMasks = fls::loadLiveryMasks(masksDir);
+        perfMark("livery-masks");
         prepared->liveryMasksDir = masksDir;
-        QSet<int> selectablePartTypes;
-        for (int partType : kSelectablePartTypes) {
-            selectablePartTypes.insert(partType);
-        }
-        prepared->carUnwrapOverlaySets.reserve(
-            static_cast<size_t>(prepared->model.lodCount()));
-        for (int lodIndex = 0;
-             lodIndex < prepared->model.lodCount();
-             ++lodIndex) {
-            prepared->carUnwrapOverlaySets.push_back(
-                buildCarUnwrapOverlaySet(
-                    prepared->model, prepared->liveryMasks,
-                    selectablePartTypes, lodIndex));
+        if (buildOverlays) {
+            QSet<int> selectablePartTypes;
+            for (int partType : kSelectablePartTypes) {
+                selectablePartTypes.insert(partType);
+            }
+            prepared->carUnwrapOverlaySets.reserve(
+                static_cast<size_t>(prepared->model.lodCount()));
+            for (int lodIndex = 0;
+                 lodIndex < prepared->model.lodCount();
+                 ++lodIndex) {
+                prepared->carUnwrapOverlaySets.push_back(
+                    buildCarUnwrapOverlaySet(
+                        prepared->model, prepared->liveryMasks,
+                        selectablePartTypes, lodIndex));
+            }
+            perfMark("unwrap-overlays");
         }
     }
+    perfMark("prepare-done");
 
     return prepared;
 }
@@ -1418,16 +1441,17 @@ CarPreviewWidget::~CarPreviewWidget() {
 
 void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callback) {
     const bool loadCarTextures = loadCarTextures_;
+    const bool buildOverlays = buildUnwrapOverlays_;
     const quint64 generation = ++carLoadGeneration_;
 
     modelLoadPending_ = true;
     updateModelStatus();
     QPointer<CarPreviewWidget> guard(this);
     QThreadPool::globalInstance()->start(
-        [guard, path, loadCarTextures, generation, callback = std::move(callback)]() mutable {
+        [guard, path, loadCarTextures, buildOverlays, generation, callback = std::move(callback)]() mutable {
             QString error;
             std::shared_ptr<PreparedCar> prepared =
-                prepareCar(path, loadCarTextures, &error);
+                prepareCar(path, loadCarTextures, buildOverlays, &error);
             if (!guard) {
                 return;
             }
@@ -2247,6 +2271,12 @@ void CarPreviewWidget::setGameFolder(const QString &folder) {
             },
             Qt::QueuedConnection);
     });
+}
+
+void CarPreviewWidget::setBuildUnwrapOverlays(bool enabled) {
+    // FH6LiveryViewer local addition: overlays are editor-only; skipping
+    // their construction cuts ~4s from every car load.
+    buildUnwrapOverlays_ = enabled;
 }
 
 void CarPreviewWidget::setLoadCarTextures(bool enabled) {
