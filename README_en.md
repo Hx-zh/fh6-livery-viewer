@@ -125,7 +125,9 @@ The tool is **read-only**. These findings come from real on-disk saves plus comm
 └── LICENSE     # AGPL-3.0
 ```
 
-## Upstream & Credits
+## Upstream, Credits & Third-party Components
+
+### Upstream & credits
 
 The save-header parsing logic is based on the reverse-engineering work of the upstream project
 **[Arstz/FH6_livery_unlocker](https://github.com/Arstz/FH6_livery_unlocker)**, corrected and extended against
@@ -134,7 +136,7 @@ Following the upstream, this project is licensed under **AGPL-3.0** as well.
 
 The car ID table originally came from [HDR's FH6 Car Ordinals](https://gist.github.com/HDR/0659d1717bc61504bf83750628963f4f) and has since been aligned entry-by-entry with the game's `Data_Car.str` string table (671 cars); it was manually re-verified entry-by-entry in 2026-09 by McEvofusion (11 new cars, 48 fixes).
 
-## Third-party components & licenses (release package)
+### Third-party components & licenses (release package)
 
 Besides this project's own code, the 3D viewer in the release zip's `3DViewer\` subfolder contains the following third-party components (full notices ship inside the zip as `3DViewer\SOURCE.md` and `3DViewer\licenses\`):
 

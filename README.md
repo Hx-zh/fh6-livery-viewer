@@ -121,7 +121,9 @@ python -m PyInstaller FH6LiveryViewer.spec
 └── LICENSE     # AGPL-3.0
 ```
 
-## 上游项目
+## 上游项目与第三方组件
+
+### 上游项目与数据来源
 
 本项目的存档 header 解析逻辑基于上游项目 **[Arstz/FH6_livery_unlocker](https://github.com/Arstz/FH6_livery_unlocker)**
 的逆向成果，并用本机 FH4/FH5/FH6 真实存档做了校正（FH6 header v7 的图层数/车型 ID 偏移为本项目补充）。
@@ -129,7 +131,7 @@ python -m PyInstaller FH6LiveryViewer.spec
 
 车型 ID 对照表最初来自 [HDR 的 FH6 Car Ordinals](https://gist.github.com/HDR/0659d1717bc61504bf83750628963f4f)，现已与游戏内 `Data_Car.str` 字符串表逐条对齐（671 辆）；2026-09 由 McEvofusion 人工逐条校对（新增 11 辆、修正 48 条既有条目）。年份以游戏运行时内存的完整车名文案（`gamemem.read_car_years()`，来自解密后的游戏数据）为权威来源（2026-08-31 校正 52 处）。
 
-## 第三方组件与许可（发布包）
+### 第三方组件与许可（发布包）
 
 发布包内 `3DViewer\` 子目录的 3D 查看器除本项目代码外还包含以下第三方组件（完整声明随包附于 `3DViewer\SOURCE.md` 与 `3DViewer\licenses\`）：
 
