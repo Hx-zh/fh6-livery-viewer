@@ -3,11 +3,12 @@
 
 v1.8.0 之前为保持「单文件零外部文件零注册表」全部设置为会话级; 自车型表在线
 更新引入该数据目录后, 低频小配置一并落在这里(仍零注册表、不写 exe 旁)。
-当前存四项: 自动定位按键节奏(key_hold_ms/key_gap_ms, 与设置对话框校验同范围)、
+当前存五项: 自动定位按键节奏(key_hold_ms/key_gap_ms, 与设置对话框校验同范围)、
 「自动检测存档更新」开关(auto_refresh, v1.8.0 从顶栏移入设置)、
-「自动检查车型表更新」开关(cars_auto_check, v1.8.0 起每次启动检查一次)和
+「自动检查车型表更新」开关(cars_auto_check, v1.8.0 起每次启动检查一次)、
 手动选择的存档目录(manual_dir; 「手动选择目录…」后记住, 启动时恢复到下拉首项,
-改选其它存档或目录消失/被自动检测覆盖时自动清除, 空串=未设置)。
+改选其它存档或目录消失/被自动检测覆盖时自动清除, 空串=未设置)和
+3D 预览程序路径(fls_exe; 指定 ForzaLiveryStudio.exe, 空串=自动探测)。
 文件缺失/损坏/字段非法 → 逐字段回默认值, 不抛异常、不影响启动。
 写入一律走读-改-写(_write), 多个保存入口互不覆盖; 读取方: App 启动;
 写入方: 设置对话框(按键节奏确定 / 开关切换)。"""
@@ -24,7 +25,7 @@ KEY_TIMING_MAX = 2000   # 毫秒上限, 与设置对话框校验一致
 
 _DEFAULTS: dict[str, Any] = {"key_hold_ms": 15, "key_gap_ms": 50,
                               "auto_refresh": True, "cars_auto_check": True,
-                              "manual_dir": ""}
+                              "manual_dir": "", "fls_exe": ""}
 
 
 def load() -> dict[str, Any]:
@@ -50,6 +51,9 @@ def load() -> dict[str, Any]:
         v = obj.get("manual_dir")
         if isinstance(v, str) and len(v) <= 1024:
             out["manual_dir"] = v
+        v = obj.get("fls_exe")
+        if isinstance(v, str) and len(v) <= 1024:
+            out["fls_exe"] = v
     return out
 
 
@@ -94,4 +98,11 @@ def set_manual_dir(path: str) -> bool:
     """保存/清除手动选择的存档目录(读-改-写, 保留其它字段; 空串=清除)。"""
     cfg = load()
     cfg["manual_dir"] = str(path)
+    return _write(cfg)
+
+
+def set_fls_exe(path: str) -> bool:
+    """保存/清除 3D 预览程序路径(读-改-写, 保留其它字段; 空串=清除, 回自动探测)。"""
+    cfg = load()
+    cfg["fls_exe"] = str(path)
     return _write(cfg)

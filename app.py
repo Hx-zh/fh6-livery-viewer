@@ -17,6 +17,7 @@ import json
 import os
 import queue
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -34,6 +35,7 @@ from tkinter import filedialog, font as tkfont, messagebox, ttk
 import appconfig
 import carupdate
 import fh6save
+import flsbridge
 import gamemem
 import i18n
 from fh6save import CarTable, SaveItem, SaveOps
@@ -450,6 +452,10 @@ class App(tk.Tk):
         self._locate_cancel = False               # 取消发送标志(发送线程逐键检查)
         self._locate_keys: list[tuple[str, int]] = []
         self._locate_hwnd = None                  # 游戏窗口句柄
+        # 3D 预览(外部 Forza Livery Studio): 已启动进程与所开涂装(同款不重复启动)
+        self._fls_proc: subprocess.Popen | None = None
+        self._fls_base = ""                       # _fls_proc 打开的涂装 base
+        self._fls_hinted = False                  # 「FLS 内需配置游戏目录」提示只给一次
         # 按键节奏(appconfig 持久化, 缺省回默认): 「设置」里可改
         _cfg = appconfig.load()
         self.key_hold_ms = int(_cfg.get("key_hold_ms", DEFAULT_KEY_HOLD_MS))
@@ -463,6 +469,8 @@ class App(tk.Tk):
         # 手动选择的存档目录(appconfig 持久化; 启动时恢复到下拉首项,
         # 改选其它存档/目录消失/被自动检测覆盖时自动清除)
         self._manual_dir = str(_cfg.get("manual_dir", ""))
+        # 3D 预览程序路径(appconfig fls_exe 持久化; 空串=自动探测)
+        self._fls_cfg = str(_cfg.get("fls_exe", ""))
         self._thumb_pending: list[str] = []
         self._thumb_fails: dict[str, int] = {}    # base -> 连续解码失败次数(瞬态重试用, 封顶放弃)
         self._thumb_gen = 0                       # 缩略图解码代次(rebuild 递增, 过期结果丢弃)
@@ -692,6 +700,7 @@ class App(tk.Tk):
         btns = tk.Frame(right)
         btns.pack(fill=tk.X)
         for text, cmd in ((_("查看大图"), self.show_big_preview),
+                          (_("3D 预览"), self.open_fls_preview),
                           (_("自动定位到游戏"), self.auto_locate),
                           (_("所在文件夹"), self.open_item_folder)):
             ttk.Button(btns, text=text, command=cmd).pack(fill=tk.X, pady=1)
@@ -1321,6 +1330,9 @@ class App(tk.Tk):
         menu.add_command(label=_("查看缩略图"),
                          state=tk.NORMAL if it.thumb_big else tk.DISABLED,
                          command=self.show_big_preview)
+        menu.add_command(label=_("3D 预览"),
+                         state=tk.NORMAL if it.files.get("C_livery") else tk.DISABLED,
+                         command=self.open_fls_preview)
         menu.add_command(label=_("定位到涂装位置"),
                          state=tk.NORMAL if pos else tk.DISABLED,
                          command=self.auto_locate)
@@ -2884,8 +2896,31 @@ class App(tk.Tk):
         ttk.Button(row_cars, text=_("恢复内置数据"),
                    command=self.reset_cars_builtin).pack(side=tk.LEFT, padx=(8, 0))
 
+        # 3D 预览程序: 「3D 预览」按钮调外部 Forza Livery Studio; 留空 = 自动探测
+        ttk.Label(body, text=_("3D 预览程序(Forza Livery Studio):")).grid(
+            row=4, column=0, columnspan=4, sticky=tk.W, pady=(10, 0))
+        fls_var = tk.StringVar(value=self._fls_cfg)
+        row_fls = tk.Frame(body)
+        row_fls.grid(row=5, column=0, columnspan=4, sticky=tk.EW, pady=2)
+
+        def _browse_fls():
+            path = filedialog.askopenfilename(
+                parent=dlg, title=_("选择 ForzaLiveryStudio.exe"),
+                filetypes=[("ForzaLiveryStudio", "ForzaLiveryStudio.exe"),
+                           (_("程序"), "*.exe")])
+            if path:
+                fls_var.set(path)
+
+        ttk.Entry(row_fls, textvariable=fls_var).pack(
+            side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(row_fls, text=_("浏览…"), command=_browse_fls).pack(
+            side=tk.LEFT, padx=(6, 0))
+        ttk.Label(body, text=_(
+            "留空 = 自动探测; 3D 预览首次使用需在 Forza Livery Studio 内"
+            "配置一次游戏目录")).grid(row=6, column=0, columnspan=4, sticky=tk.W)
+
         btns = ttk.Frame(body)
-        btns.grid(row=4, column=0, columnspan=4, sticky=tk.E, pady=(10, 0))
+        btns.grid(row=7, column=0, columnspan=4, sticky=tk.E, pady=(10, 0))
 
         def _save():
             try:
@@ -2898,6 +2933,8 @@ class App(tk.Tk):
                 return
             self.key_hold_ms, self.key_gap_ms = hold, gap
             appconfig.save_key_timing(hold, gap)
+            self._fls_cfg = fls_var.get().strip()
+            appconfig.set_fls_exe(self._fls_cfg)
             self.status_var.set(
                 _("按键节奏: 保持 {hold}ms + 间隔 {gap}ms (已保存)").format(
                     hold=hold, gap=gap))
@@ -3076,6 +3113,96 @@ class App(tk.Tk):
             return
         target = it.folder / it.base if it.is_dir else it.folder
         os.startfile(target)  # noqa: S606
+
+    # ------------------------------------------------------------ 3D 预览(外部 FLS)
+
+    def open_fls_preview(self):
+        """3D 预览: 把选中涂装的 C_livery 交给外部 Forza Livery Studio 打开。
+
+        本工具不自带渲染; FLS(开源 AGPL-3.0)读取游戏目录明文车包做实时 3D 预览。
+        找不到程序时弹引导(官网下载/手动指定); 同一涂装的进程还活着则不重复启动。"""
+        it = self.selected_item()
+        if not it:
+            self.status_var.set(_("请先在左侧选中一个涂装"))
+            return
+        c_liv = it.files.get("C_livery")
+        if c_liv is None:
+            self.status_var.set(_("该涂装没有 C_livery 文件, 无法 3D 预览"))
+            return
+        if (self._fls_proc is not None and self._fls_base == it.base
+                and self._fls_proc.poll() is None):
+            self.status_var.set(_("该涂装已在 Forza Livery Studio 中打开"))
+            return
+        exe = flsbridge.find_fls(self._fls_cfg)
+        if exe is None:
+            self._fls_guide(it.base, c_liv)
+            return
+        self._fls_launch(exe, c_liv, it.base)
+
+    def _fls_launch(self, exe: Path, c_liv: Path, base: str):
+        """启动 FLS 打开涂装文件; 失败弹窗(文件被删/占用等)。"""
+        try:
+            self._fls_proc = subprocess.Popen(
+                [str(exe), str(c_liv)], close_fds=True)  # noqa: S603
+            self._fls_base = base
+        except OSError as e:
+            messagebox.showerror(_("3D 预览"),
+                                 _("启动 Forza Livery Studio 失败: {err}").format(err=e))
+            return
+        if self._fls_hinted:
+            self.status_var.set(_("已交给 Forza Livery Studio 打开"))
+        else:
+            self._fls_hinted = True
+            self.status_var.set(
+                _("已交给 Forza Livery Studio 打开; 首次使用需在其内配置一次游戏目录"))
+
+    def _fls_guide(self, base: str, c_liv: Path):
+        """未找到 FLS: 引导下载或手动指定 exe(指定后立即保存并打开)。"""
+        dlg = tk.Toplevel(self)
+        dlg.title(_("3D 预览"))
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        dlg.grab_set()
+        body = ttk.Frame(dlg, padding=14)
+        body.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(body, text=_(
+            "未找到 Forza Livery Studio(开源涂装编辑器, 可 3D 预览涂装)。\n\n"
+            "· 点「前往下载」打开其发布页(GitHub Releases);\n"
+            "· 下载解压后, 回来点「3D 预览」会自动识别;\n"
+            "· 或点「选择程序…」手动指定 ForzaLiveryStudio.exe;\n"
+            "· 首次在 Forza Livery Studio 中打开涂装时,\n"
+            "  需在其内配置一次游戏目录(用于加载车模)。"),
+            justify=tk.LEFT, wraplength=380).pack(pady=(0, 10))
+        btns = ttk.Frame(body)
+        btns.pack()
+
+        def _go():
+            webbrowser.open(flsbridge.FLS_URL)
+            dlg.destroy()
+
+        def _pick():
+            path = filedialog.askopenfilename(
+                parent=dlg, title=_("选择 ForzaLiveryStudio.exe"),
+                filetypes=[("ForzaLiveryStudio", "ForzaLiveryStudio.exe"),
+                           (_("程序"), "*.exe")])
+            if not path:
+                return
+            self._fls_cfg = path
+            appconfig.set_fls_exe(path)
+            dlg.destroy()
+            self._fls_launch(Path(path), c_liv, base)
+
+        def _cancel():
+            dlg.destroy()
+
+        for text, cmd in ((_("前往下载"), _go), (_("选择程序…"), _pick),
+                          (_("取消"), _cancel)):
+            ttk.Button(btns, text=text, command=cmd).pack(side=tk.LEFT, padx=3)
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+        dlg.update_idletasks()
+        dw, dh = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        dlg.geometry(f"+{self.winfo_rootx() + (self.winfo_width() - dw) // 2}"
+                     f"+{self.winfo_rooty() + (self.winfo_height() - dh) // 2}")
 
 
 if __name__ == "__main__":
