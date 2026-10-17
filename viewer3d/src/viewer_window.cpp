@@ -154,7 +154,7 @@ void ViewerWindow::loadCarModel()
                           : QStringLiteral("Car model failed: %1").arg(error));
         if (ok) {
             // Default to the highest-detail LOD (user preference).
-            preview_->selectLod(preview_->highestDetailLodIndex());
+            preview_->applyHighestDetailLod();
         }
     });
 }

@@ -1584,7 +1584,7 @@ void CarPreviewWidget::cycleLod() {
     selectLod((selectedLodIndex_ + 1) % model_.lodCount());
 }
 
-int CarPreviewWidget::highestDetailLodIndex() const {
+void CarPreviewWidget::applyHighestDetailLod() {
     // FH6LiveryViewer local addition: pick the LOD with the most triangles,
     // independent of how the carbin orders its LOD groups.
     int best = 0;
@@ -1599,7 +1599,7 @@ int CarPreviewWidget::highestDetailLodIndex() const {
             best = i;
         }
     }
-    return best;
+    selectLod(best);
 }
 
 void CarPreviewWidget::selectLod(int lodIndex) {

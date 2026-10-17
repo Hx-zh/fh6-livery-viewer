@@ -60,6 +60,9 @@ public:
     void setGameFolder(const QString &folder);
     void cycleLod();
     void cycleDebugMode();
+    // FH6LiveryViewer local addition: select the highest-poly LOD
+    // (by total triangle count) — the viewer auto-applies it on load.
+    void applyHighestDetailLod();
 
 public Q_SLOTS:
     void markLiveryDirty();
@@ -99,9 +102,6 @@ private:
     void rebuildModelPanel();
     void selectPartOption(int partType, int optionId);
     void selectLod(int lodIndex);
-    // FH6LiveryViewer local addition: index of the highest-poly LOD
-    // (by total triangle count) — the viewer auto-selects it on load.
-    int highestDetailLodIndex() const;
     void syncPartOptionControls();
     void switchCarUnwrapOverlay();
     void setSidePanelVisible(bool visible);
