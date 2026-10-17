@@ -5,6 +5,7 @@
 #include "zip_extract.h"
 
 #include <QDateTime>
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -75,6 +76,15 @@ QString rasterDecalPackPath()
 
 bool ensureRasterDecalPack(const QString &gameRoot, QString *error)
 {
+    // Shipped pack next to the executable wins: releases carry a pre-built
+    // decal_textures.bin, so the first preview needs no build at all.
+    const QString shipped =
+        QDir(QCoreApplication::applicationDirPath())
+            .filePath(QStringLiteral("assets/raster/decal_textures.bin"));
+    if (QFileInfo(shipped).isFile()) {
+        return true;
+    }
+
     const QString zipPath =
         QDir(gameRoot).filePath(QStringLiteral("media/Livery/Decals.zip"));
     const QFileInfo zipInfo(zipPath);

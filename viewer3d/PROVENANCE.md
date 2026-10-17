@@ -29,6 +29,11 @@ This directory contains a vendored snapshot of code from **Forza Livery Studio**
   - `fls/src/core/swatchbin.cpp` — share one D3D11 device across all BC7
     decodes (creating a device per texture made the 270-decal raster pack
     build take ~27 s on first run; a shared device brings it to ~2 s).
+  - `assets/raster/decal_textures.bin` — the raster decal pack is now
+    PRE-BUILT and shipped with releases (built from the maintainer's game
+    files; ~67 MB raw). The viewer loads it directly from `assets/` and only
+    falls back to building from the user's `Decals.zip` when it is missing
+    (e.g. a source checkout without the binary asset).
   - Built with `FLS_PRIVACY_POLICY=0`: upstream's gate refuses to import
     shared liveries (vlrc source state 1 — ~99.75% of a player's downloaded
     collection). That gate protects the upstream *editor* from re-exporting
