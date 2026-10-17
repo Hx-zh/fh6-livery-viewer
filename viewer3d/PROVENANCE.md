@@ -29,6 +29,36 @@ This directory contains a vendored snapshot of code from **Forza Livery Studio**
   - `fls/src/core/swatchbin.cpp` — share one D3D11 device across all BC7
     decodes (creating a device per texture made the 270-decal raster pack
     build take ~27 s on first run; a shared device brings it to ~2 s).
+  - `fls/src/core/vinyl_decoder.cpp` — three patches for layers disappearing
+    from the preview (see AGENTS.md "C_livery 解码丢层"):
+    1. `isShapePayloadAt()` keeps only the checks that separate a shape record
+       from random bytes (id known, finite floats, sane position). Upstream
+       additionally required `|scaleX|`/`|scaleY|` to be non-zero and
+       `|skew| < 200`, which rejects records real FH6 saves contain: zero-scale,
+       fully transparent placeholder layers the game still counts, and hairline
+       strokes where `skew` is large because the shear is applied *after* the
+       scale (`scaleY ≈ 0.001`, `skew ≈ 1500`).
+    2. `walkStep()` treats the group's child-type bitmap as a hint instead of a
+       hard constraint: when the type it asks for is not present at the current
+       offset, the other type is tried. The bitmap drifts in real saves (one
+       child consumed as a transform shifts every later bit), and insisting on
+       it made the walker byte-step over whole subtrees (sample
+       `Livery_3622_20261012231728` lost a 99-shape group that way).
+    3. Group headers are rejected when their child count is implausible
+       (`groupCountPlausible()`: more than 4096 children, or more children than
+       the section declares layers). Ordinary record bytes can satisfy every
+       other header check — sample `Livery_4212_20260606043310` has a
+       32768-child header whose `blocks = 4096` matches `ceil(count/8)`, and the
+       4 KB child-type bitmap it implies swallowed 110 real records.
+    A rejected record or a bogus header costs far more than itself: 32-byte
+    alignment is lost, the walker byte-steps through the following records and
+    the section stops short of its declared layer count. Measured on the
+    maintainer's save: 80 of 1511 liveries lost 1–26 % of their layers before
+    the patches (25 796 layers total), 18 after patches 1–2 (181 layers), 8
+    after patch 3 (32 layers — the save dump drops from 152 to 32; the 1511-file
+    collection is unchanged by patch 3). Of the remainder, several differ only
+    because uploaded-logo placements are counted with a weight (the walk reaches
+    every section target; the tree simply has fewer items).
   - `assets/raster/decal_textures.bin` — the raster decal pack is now
     PRE-BUILT and shipped with releases (built from the maintainer's game
     files; ~67 MB raw). The viewer loads it directly from `assets/` and only

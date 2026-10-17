@@ -85,11 +85,18 @@ bool isShapePayloadAt(const QByteArray &data, int idPos, int transformPos, int e
     const double sy = readLeFloat(data, transformPos + 16);
     const double skew = readLeFloat(data, transformPos + 20);
 
+    // FH6-LOCAL PATCH (livery layers dropped in the preview): the bounds here are sanity gates,
+    // not format rules. Real saves contain records with zero scale (cleared/placeholder layers the
+    // game still counts) and records whose skew is huge because it is applied after the scale
+    // (a hairline stroke: scaleY ~0.001, skew ~1500). Rejecting such a record costs more than the
+    // record itself: the walker loses 32-byte alignment, byte-steps through the following records
+    // and the section can no longer reach its declared layer count. Keep only the checks that
+    // actually separate a record from random bytes.
     return std::isfinite(rotation) && std::abs(rotation) <= 10000.0
         && std::abs(px) < 50000.0 && std::abs(py) < 50000.0
-        && std::abs(sx) > 1e-6 && std::abs(sx) < 200.0
-        && std::abs(sy) > 1e-6 && std::abs(sy) < 5000.0
-        && std::isfinite(skew) && std::abs(skew) < 200.0;
+        && std::abs(sx) < 200.0
+        && std::abs(sy) < 5000.0
+        && std::isfinite(skew) && std::abs(skew) < 1.0e6;
 }
 
 void setNodeTransform(VinylGroup &node, const Transform &transform) {
@@ -1075,6 +1082,9 @@ struct WalkState {
     int pendingFlags = 0;
     bool pendingMask = false;
     int decodedDecals = 0;
+    // Declared layer count of the section being walked (0 = unknown). A group cannot have more
+    // direct children than its section has layers.
+    int sectionLayerTarget = 0;
     const QHash<quint16, int> *logoExtraCounts = nullptr;
 };
 
@@ -1159,6 +1169,22 @@ int pushMarkerlessGroup(const QByteArray &data, int pos, int end, const GroupInf
     return pos + info.size;
 }
 
+// FH6-LOCAL PATCH (livery layers dropped in the preview): a group header whose child count is
+// implausible is a misread of ordinary record bytes, and accepting it is expensive — the child-type
+// bitmap it implies (count/8 bytes) is skipped wholesale. Sample Livery_4212_20260606043310 has a
+// 32768-child header at offset 7818 (blocks = 4096 matches ceil(count/8), so every other check
+// passes) that swallowed 110 real shape records. A livery section holds at most 3000 shapes
+// (`liverySectionShapeLimit`), so a group can never have more direct children than its section has
+// layers.
+constexpr int kMaxPlausibleGroupChildren = 4096;
+
+bool groupCountPlausible(const GroupInfo &info, const WalkState &s) {
+    if (info.count > kMaxPlausibleGroupChildren) {
+        return false;
+    }
+    return s.sectionLayerTarget <= 0 || info.count <= s.sectionLayerTarget;
+}
+
 int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s,
              bool liveryDialect = false, bool invertOddLiveryRotation = true,
              quint8 shapeMarker = kCurrentShapeMarker,
@@ -1166,14 +1192,31 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s,
              bool trailingMaskState = true) {
     QVector<VinylGroupPtr> &stack = s.stack;
     const std::optional<bool> expectsGroup = nextChildIsGroup(*stack.back());
-    const bool mayDecodeGroup = !expectsGroup || *expectsGroup;
+    // FH6-LOCAL PATCH (livery layers dropped in the preview): the child-type bitmap is a hint built
+    // from the group header, and in real saves it drifts — one child consumed as a transform shifts
+    // every later bit, so the header starts expecting a group where the stream holds shapes (or the
+    // reverse). Insisting on the hint makes the walker byte-step over the whole child instead of
+    // parsing it, which is how an 8-child group in sample Livery_3622 lost a 99-shape subtree. So
+    // when the type the bitmap asks for is not actually present at `pos`, let the other type try.
+    const bool bitmapWantsShape = !expectsGroup || !*expectsGroup;
+    const bool shapeLikeHere = bitmapWantsShape
+        && (shapeRecordSizeAt(layerData, pos, end, shapeMarker) > 0
+            || (liveryDialect && liveryLogoRecordSize(layerData, pos, end) > 0));
+    const bool groupFallback = bitmapWantsShape && !shapeLikeHere;
+    const bool mayDecodeGroup = !expectsGroup || *expectsGroup || groupFallback;
     const bool mayDecodeShape = !expectsGroup || !*expectsGroup;
+    // Reaching the shape branches below means neither group parser matched here, so a shape may be
+    // tried even where the bitmap still expects a subgroup.
+    const bool allowShapeFallback = expectsGroup && *expectsGroup;
 
-    auto markerlessInfo = (s.pendingTransform || expectsGroup.value_or(false))
+    auto markerlessInfo = (s.pendingTransform || expectsGroup.value_or(false) || groupFallback)
             && mayDecodeGroup
         ? validMarkerlessGroupAt(layerData, pos, end, false, liveryDialect,
                                  shapeMarker, transformTerminator)
         : std::optional<GroupInfo>{};
+    if (markerlessInfo && !groupCountPlausible(*markerlessInfo, s)) {
+        markerlessInfo.reset();
+    }
     if (markerlessInfo) {
         return pushMarkerlessGroup(layerData, pos, end, *markerlessInfo, s, liveryDialect);
     }
@@ -1182,6 +1225,9 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s,
         ? validCountedGroupAt(layerData, pos, end, liveryDialect,
                               shapeMarker, transformTerminator)
         : std::optional<GroupInfo>{};
+    if (countedInfo && !groupCountPlausible(*countedInfo, s)) {
+        countedInfo.reset();
+    }
     if (countedInfo) {
         const auto &info = *countedInfo;
         const bool inlineForFirstChild = info.inlineTransform && info.transformForFirstChild;
@@ -1221,7 +1267,8 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s,
         return pos + 1;
     }
 
-    const int logoRecordSize = liveryDialect && shapeMarker == kCurrentShapeMarker && mayDecodeShape
+    const int logoRecordSize = liveryDialect && shapeMarker == kCurrentShapeMarker
+            && (mayDecodeShape || allowShapeFallback)
         ? liveryLogoRecordSize(layerData, pos, end) : 0;
     if (logoRecordSize > 0) {
         const VinylShape logo = decodeLiveryLogoAt(layerData, pos);
@@ -1238,7 +1285,7 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s,
         return pos + logoRecordSize;
     }
 
-    const int shapeRecordSize = mayDecodeShape
+    const int shapeRecordSize = (mayDecodeShape || allowShapeFallback)
         ? shapeRecordSizeAt(layerData, pos, end, shapeMarker) : 0;
     if (shapeRecordSize > 0) {
         if (trailingMaskState && isControlShapeAt(layerData, pos, end, shapeMarker)) {
@@ -1323,7 +1370,7 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s,
         return pos + transformInfo->size;
     }
 
-    const int unsupportedSize = !s.pendingTransform && mayDecodeShape
+    const int unsupportedSize = !s.pendingTransform && (mayDecodeShape || allowShapeFallback)
         ? unsupportedShapeRecordSizeAt(layerData, pos, end, shapeMarker) : 0;
     if (unsupportedSize > 0) {
         ++stack.back()->skippedChildren;
@@ -1556,6 +1603,7 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
 
             WalkState state;
             state.stack = QVector<VinylGroupPtr>{holder, sectionNode};
+            state.sectionLayerTarget = target;
             state.logoExtraCounts = &logoExtraCounts;
             const bool invertOddLiveryRotation = slot != kTopLiverySlot;
             int guard = 0;
