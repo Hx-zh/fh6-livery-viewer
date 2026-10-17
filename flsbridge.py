@@ -21,7 +21,7 @@ VIEWER_EXE_NAME = "FH6Livery3DViewer.exe"
 VIEWER_SUBDIR = "3DViewer"          # 发布 zip 内置查看器的子目录
 
 _VDF_LIB_RE = re.compile(r'"path"\s+"([^"]+)"')
-_DRIVES = "CDEFGHIJ"
+_DRIVES = "CDEFGHIJKLMNOPQRSTUVWXYZ"
 
 
 def find_viewer() -> Path | None:

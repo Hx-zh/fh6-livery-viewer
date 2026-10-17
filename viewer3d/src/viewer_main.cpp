@@ -44,7 +44,7 @@ QStringList steamRoots()
                  QSettings::NativeFormat);
     add(lm.value(QStringLiteral("InstallPath")).toString());
     add(QStringLiteral("C:/Program Files (x86)/Steam"));
-    for (char drive = 'C'; drive <= 'J'; ++drive) {
+    for (char drive = 'C'; drive <= 'Z'; ++drive) {
         add(QStringLiteral("%1:/SteamLibrary").arg(drive));
         add(QStringLiteral("%1:/Steam").arg(drive));
     }
@@ -84,7 +84,7 @@ QString detectGameFolder()
         }
     }
     // Xbox / Store builds: scan <drive>:/XboxGames for *Forza*Horizon*6* with media.
-    for (char drive = 'C'; drive <= 'J'; ++drive) {
+    for (char drive = 'C'; drive <= 'Z'; ++drive) {
         const QDir xbox(QStringLiteral("%1:/XboxGames").arg(drive));
         if (!xbox.exists()) {
             continue;
