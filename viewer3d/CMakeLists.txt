@@ -22,7 +22,12 @@ set(FLS_GUI_SOURCES
     fls/src/gui/app/theme_manager.cpp
     fls/src/gui/canvas/car_model_renderer.cpp
     fls/src/gui/canvas/native_shape_renderer.cpp
+    fls/src/gui/fill/pen_fill.cpp
+    fls/src/gui/fill/polygon_mesh.cpp
+    fls/src/gui/fill/region_fill.cpp
     fls/src/gui/state/editor_state.cpp
+    fls/src/gui/state/editor_state_selection.cpp
+    fls/src/gui/state/editor_state_snapshot.cpp
     fls/src/gui/widgets/car_preview_widget.cpp
     fls/src/gui/widgets/shape_geometry_store.cpp
 )
