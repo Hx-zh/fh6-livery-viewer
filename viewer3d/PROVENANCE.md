@@ -15,6 +15,8 @@ This directory contains a vendored snapshot of code from **Forza Livery Studio**
   - `assets/vector/`, `assets/cars/` — vinyl shape geometry catalog and
     car-id → model-directory mapping.
 - Local modifications (tracked in this repository's history):
+  - `fls/src/gui/widgets/car_preview_widget.cpp` — orbit drag sensitivity
+    0.01 -> 0.005 rad/px (user feedback: default felt too twitchy).
   - `fls/src/core/raster_decals.cpp` — additional cache lookup path under
     `QStandardPaths::AppDataLocation` (raster decal pack built on first run
     from the user's game files instead of shipping a 67 MB binary).

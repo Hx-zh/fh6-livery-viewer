@@ -2668,8 +2668,11 @@ void CarPreviewWidget::mouseMoveEvent(QMouseEvent *event) {
     const QPoint delta = event->pos() - lastMousePos_;
     lastMousePos_ = event->pos();
     if (event->buttons() & Qt::LeftButton) {
-        yaw_ -= delta.x() * 0.01f;
-        pitch_ = std::clamp(pitch_ + delta.y() * 0.01f, -1.5f, 1.5f);
+        // FH6LiveryViewer local change: orbit sensitivity 0.01 -> 0.005
+        // (user feedback: default felt too twitchy)
+        constexpr float kOrbitSensitivity = 0.005f;
+        yaw_ -= delta.x() * kOrbitSensitivity;
+        pitch_ = std::clamp(pitch_ + delta.y() * kOrbitSensitivity, -1.5f, 1.5f);
         update();
     } else if (event->buttons() & Qt::MiddleButton) {
         const QMatrix4x4 view = cameraView();
