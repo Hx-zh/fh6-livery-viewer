@@ -490,12 +490,28 @@ def gitee_upload(version: str, zips: list[Path], token: str) -> None:
         except urllib.error.HTTPError as e:
             raise SystemExit(f"Gitee API {method} {path} 失败 {e.code}: {e.read().decode('utf-8', 'replace')[:300]}")
 
-    release = _api("POST", "releases", urllib.parse.urlencode({
+    create_params = urllib.parse.urlencode({
         "tag_name": f"v{version}",
         "target_commitish": "main",
         "name": f"FH6 Livery Viewer v{version}",
         "body": body,
-    }).encode(), {"Content-Type": "application/x-www-form-urlencoded"})
+    }).encode()
+    try:
+        release = _api("POST", "releases", create_params,
+                       {"Content-Type": "application/x-www-form-urlencoded"})
+    except SystemExit:
+        # 已存在同 tag 的 release(重发/修资产): 取回它, 删掉旧附件后重传, 保持可重入
+        release = _api("GET", f"releases/tags/v{version}")
+        rid_old = release.get("id")
+        for asset in release.get("assets", []):
+            aid = asset.get("id")
+            if not aid:
+                continue
+            try:
+                _api("DELETE", f"releases/{rid_old}/attach_files/{aid}")
+                print(f"[Gitee] 已删除旧附件: {asset.get('name')}")
+            except SystemExit as e:
+                print(f"[Gitee] 警告: 删除旧附件失败({e})")
     rid = release.get("id")
     if not rid:
         raise SystemExit("Gitee release 创建成功但未返回 id: " + str(release)[:200])
