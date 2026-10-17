@@ -129,6 +129,20 @@ python -m PyInstaller FH6LiveryViewer.spec
 
 车型 ID 对照表最初来自 [HDR 的 FH6 Car Ordinals](https://gist.github.com/HDR/0659d1717bc61504bf83750628963f4f)，现已与游戏内 `Data_Car.str` 字符串表逐条对齐（671 辆）；2026-09 由 McEvofusion 人工逐条校对（新增 11 辆、修正 48 条既有条目）。年份以游戏运行时内存的完整车名文案（`gamemem.read_car_years()`，来自解密后的游戏数据）为权威来源（2026-08-31 校正 52 处）。
 
+## 第三方组件与许可（发布包）
+
+发布包内 `3DViewer\` 子目录的 3D 查看器除本项目代码外还包含以下第三方组件（完整声明随包附于 `3DViewer\SOURCE.md` 与 `3DViewer\licenses\`）：
+
+| 组件 | 许可 | 源码获取 |
+|---|---|---|
+| [Forza Livery Studio](https://github.com/Arstz/ForzaLiveryStudio)（vendored 快照，AGPL-3.0） | AGPL-3.0 | 上游仓库 + 本仓库 `viewer3d/`（快照提交与本地改动清单见 `viewer3d/PROVENANCE.md`） |
+| Qt 6.8.3（动态链接，未修改） | LGPL-3.0 | [download.qt.io](https://download.qt.io) / [github.com/qt/qt5](https://github.com/qt/qt5)（tag v6.8.3） |
+| zlib | zlib License | [github.com/madler/zlib](https://github.com/madler/zlib) |
+| Clipper2 | Boost Software License 1.0 | [github.com/AngusJohnson/Clipper2](https://github.com/AngusJohnson/Clipper2) |
+| D3Dcompiler_47.dll | Microsoft Windows SDK 可再分发条款 | 随 Windows SDK |
+
+查看器 `assets\` 内的贴花几何目录与车型映射表为本地游戏文件的解码衍生数据，随上游 FLS 的先例以 AGPL 一并分发；光栅 logo 纹理不随包分发（首启从用户自己的游戏文件构建）。
+
 ## 免责声明
 
 本工具与 Microsoft、Xbox、Playground Games、Turn 10 无关，Forza 相关商标归其各自所有者。工具仅读取本地内容（存档文件与游戏缩略图缓存清单；仅在缓存清单不可用且经用户确认后，才在游戏运行时对游戏进程做只读内存扫描用作已喷涂检测兜底，不写入、不 hook）；除车型名表在线更新（从 Gitee/GitHub 下载车型名数据，无遥测，可在设置中关闭自动检查）外不访问网络，不提供任何修改、解锁或联机功能。使用本工具产生的任何后果由使用者自行承担。

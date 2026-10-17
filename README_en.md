@@ -134,6 +134,20 @@ Following the upstream, this project is licensed under **AGPL-3.0** as well.
 
 The car ID table originally came from [HDR's FH6 Car Ordinals](https://gist.github.com/HDR/0659d1717bc61504bf83750628963f4f) and has since been aligned entry-by-entry with the game's `Data_Car.str` string table (671 cars); it was manually re-verified entry-by-entry in 2026-09 by McEvofusion (11 new cars, 48 fixes).
 
+## Third-party components & licenses (release package)
+
+Besides this project's own code, the 3D viewer in the release zip's `3DViewer\` subfolder contains the following third-party components (full notices ship inside the zip as `3DViewer\SOURCE.md` and `3DViewer\licenses\`):
+
+| Component | License | Source |
+|---|---|---|
+| [Forza Livery Studio](https://github.com/Arstz/ForzaLiveryStudio) (vendored snapshot, AGPL-3.0) | AGPL-3.0 | upstream repo + `viewer3d/` in this repo (snapshot commit and local-modification list in `viewer3d/PROVENANCE.md`) |
+| Qt 6.8.3 (dynamically linked, unmodified) | LGPL-3.0 | [download.qt.io](https://download.qt.io) / [github.com/qt/qt5](https://github.com/qt/qt5) (tag v6.8.3) |
+| zlib | zlib License | [github.com/madler/zlib](https://github.com/madler/zlib) |
+| Clipper2 | Boost Software License 1.0 | [github.com/AngusJohnson/Clipper2](https://github.com/AngusJohnson/Clipper2) |
+| D3Dcompiler_47.dll | Microsoft Windows SDK redistributable terms | ships with the Windows SDK |
+
+The viewer's `assets\` (vinyl shape geometry catalog, car-id mapping) are derived data decoded from the local game files, distributed under AGPL following the upstream FLS precedent; raster logo textures are NOT distributed (built on first run from the user's own game files).
+
 ## Disclaimer
 
 This tool is not affiliated with Microsoft, Xbox, Playground Games, or Turn 10. Forza and related trademarks belong to their respective owners. It only reads local content (local save files and the game's thumbnail-cache manifest; only when the manifest is unavailable and you explicitly confirm does it fall back to a read-only scan of the game process memory while the game is running, for applied-livery detection; no writes, no hooks); apart from the online car-table update (downloading car-name data from Gitee/GitHub, no telemetry, with the automatic daily check switchable off in Settings) it accesses no network and provides no modification, unlocking, or online game functionality. Use at your own risk.

@@ -69,7 +69,8 @@ jobs:
             viewer3d\build\styles, viewer3d\build\iconengines $stage `
             -ErrorAction SilentlyContinue -Recurse
           Copy-Item viewer3d\assets $stage\assets -Recurse
-          Copy-Item viewer3d\PROVENANCE.md $stage\SOURCE.md
+          Copy-Item viewer3d\SOURCE.md $stage\SOURCE.md
+          Copy-Item viewer3d\licenses $stage\licenses -Recurse
           Compress-Archive -Path $stage -DestinationPath FH6Livery3DViewer-win64.zip
 
       - uses: actions/upload-artifact@v4
