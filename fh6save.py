@@ -30,6 +30,7 @@ import struct
 import sys
 import time
 import zipfile
+import zlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -970,6 +971,48 @@ def livery_token(header_bytes: bytes) -> str:
     if len(header_bytes) < 16:
         return ""
     return crockford32_rfc(header_bytes[-16:])
+
+
+def livery_layer_total(c_livery: Path) -> int | None:
+    """C_livery 里声明的图层总数(各截面 yrvl 计数之和); 解析失败返回 None。
+
+    只读打开、解压到内存, 不落盘。拍卖涂装常见「空壳」: 游戏只在 CacheThumbnails
+    里缓存了列表缩略图, C_livery 本身一层都没有(yrvl 全 0), 3D 预览只能显示空车,
+    于是缩略图与渲染结果对不上——调用方据此提前提示, 而不是打开一台裸车。"""
+    try:
+        raw = c_livery.read_bytes()
+    except OSError:
+        return None
+    if len(raw) < 12:
+        return None
+    compressed = struct.unpack_from("<I", raw, 0)[0]
+    if compressed != len(raw) - 8:
+        return None
+    try:
+        data = zlib.decompress(raw[8:])
+    except zlib.error:
+        return None
+    gyvl = data.find(b"gyvl")
+    if gyvl < 0:
+        return None
+    # 体节结束后紧跟 yrvl 统计表; 优先按 gyvl 前方的 artworkSize 定位(与 3D 查看器一致),
+    # 偏移不可用时退回向后搜索。
+    stats = -1
+    if gyvl >= 4:
+        artwork_end = gyvl + struct.unpack_from("<I", data, gyvl - 4)[0]
+        if data[artwork_end:artwork_end + 4] == b"yrvl":
+            stats = artwork_end
+    if stats < 0:
+        stats = data.find(b"yrvl", gyvl + 4)
+    if stats < 0:
+        return None
+    paint = data.find(b"yrvl", stats + 4)
+    if paint < 0:
+        return None
+    count = min(11, (paint - stats - 4) // 4)
+    if count <= 0:
+        return None
+    return sum(struct.unpack_from("<I", data, stats + 4 + i * 4)[0] for i in range(count))
 
 
 def find_thumbnail_cache(local_appdata: Path | None = None) -> Path | None:

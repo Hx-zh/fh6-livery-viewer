@@ -234,6 +234,7 @@ STRINGS = {
     '觉得好用? 点个 ⭐ Star 支持一下:': 'Finding it useful? Give a ⭐ Star to support the project:',
     '3D 预览': '3D preview',
     '该涂装没有 C_livery 文件, 无法 3D 预览': 'This livery has no C_livery file; 3D preview unavailable',
+    '该涂装的 C_livery 不含任何图层, 3D 预览只会显示空车。\n\n拍卖涂装常见此情况: 游戏只在列表里缓存了缩略图, 本地并没有设计数据, 所以缩略图与 3D 渲染结果会不一致。': 'This livery\'s C_livery contains no layers, so the 3D preview would only show a bare car.\n\nThis is common for auction liveries: the game only caches the listing thumbnail locally and keeps no design data, so the thumbnail and the 3D preview will not match.',
     '该涂装已在 3D 预览中打开': 'This livery is already open in Forza Livery Studio',
     '已打开 3D 预览': '3D preview opened',
     '该涂装已在 3D 预览中打开': 'This livery is already open in the 3D preview',

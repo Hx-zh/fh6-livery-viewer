@@ -3123,6 +3123,14 @@ class App(tk.Tk):
         if c_liv is None:
             self.status_var.set(_("该涂装没有 C_livery 文件, 无法 3D 预览"))
             return
+        if fh6save.livery_layer_total(c_liv) == 0:
+            messagebox.showwarning(
+                _("3D 预览"),
+                _("该涂装的 C_livery 不含任何图层, 3D 预览只会显示空车。\n\n"
+                  "拍卖涂装常见此情况: 游戏只在列表里缓存了缩略图, 本地并没有设计数据, "
+                  "所以缩略图与 3D 渲染结果会不一致。"),
+                parent=self)
+            return
         if (self._fls_proc is not None and self._fls_base == it.base
                 and self._fls_proc.poll() is None):
             self.status_var.set(_("该涂装已在 3D 预览中打开"))
