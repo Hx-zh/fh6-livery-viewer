@@ -340,12 +340,15 @@ def build() -> None:
 
 def _copy_vc_runtime(stage: Path) -> None:
     """把 VC++ 运行库(MSVCP140*/VCRUNTIME140*)复制进发布包——exe 静态依赖它们,
-    系统未装新版 redist 的机器否则会报「找不到 MSVCP140_2.dll」。"""
+    系统未装新版 redist 的机器否则会报「找不到 MSVCP140_2.dll」。
+    正斜杠路径: glob 在 Windows 同样支持, 且免疫反斜杠转义问题。"""
     patterns = [
-        r"C:\Program Files (x86)\Microsoft Visual Studio2\BuildTools"
-        r"\VC\Redist\MSVC\*d\Microsoft.VC143.CRT\*.dll",
-        r"C:\Program Files\Microsoft Visual Studio\*\*\VC\Redist"
-        r"\MSVC\*d\Microsoft.VC143.CRT\*.dll",
+        "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools"
+        "/VC/Redist/MSVC/*/x64/Microsoft.VC143.CRT/*.dll",
+        "C:/Program Files/Microsoft Visual Studio/*/*"
+        "/VC/Redist/MSVC/*/x64/Microsoft.VC143.CRT/*.dll",
+        "C:/Program Files (x86)/Microsoft Visual Studio/*/*"
+        "/VC/Redist/MSVC/*/x64/Microsoft.VC143.CRT/*.dll",
     ]
     for pat in patterns:
         hits = [Path(p) for p in glob.glob(pat)]
@@ -355,8 +358,9 @@ def _copy_vc_runtime(stage: Path) -> None:
                     shutil.copy2(f, stage / f.name)
                 except OSError:
                     pass
+            print(f"[3DViewer] 已携带 VC 运行库 {len(hits)} 个")
             return
-
+    print("[3DViewer] 警告: 未找到 VC 运行库 redist 目录, 未携带")
 
 def _viewer_stage() -> Path | None:
     """把 3D 查看器暂存到 dist/3DViewer/。已暂存直接用; 否则 gh 拉取
