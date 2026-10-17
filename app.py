@@ -2916,8 +2916,8 @@ class App(tk.Tk):
         ttk.Button(row_fls, text=_("浏览…"), command=_browse_fls).pack(
             side=tk.LEFT, padx=(6, 0))
         ttk.Label(body, text=_(
-            "留空 = 自动探测; 3D 预览首次使用需在 Forza Livery Studio 内"
-            "配置一次游戏目录")).grid(row=6, column=0, columnspan=4, sticky=tk.W)
+            "留空 = 自动探测(内置 3D 查看器优先, 其次外部 Forza Livery Studio)"
+            )).grid(row=6, column=0, columnspan=4, sticky=tk.W)
 
         btns = ttk.Frame(body)
         btns.grid(row=7, column=0, columnspan=4, sticky=tk.E, pady=(10, 0))
@@ -3131,25 +3131,33 @@ class App(tk.Tk):
             return
         if (self._fls_proc is not None and self._fls_base == it.base
                 and self._fls_proc.poll() is None):
-            self.status_var.set(_("该涂装已在 Forza Livery Studio 中打开"))
+            self.status_var.set(_("该涂装已在 3D 预览中打开"))
             return
-        exe = flsbridge.find_fls(self._fls_cfg)
-        if exe is None:
+        target = flsbridge.find_fls(self._fls_cfg)
+        if target is None:
             self._fls_guide(it.base, c_liv)
             return
-        self._fls_launch(exe, c_liv, it.base)
+        self._fls_launch(target.path, c_liv, it.base, target.bundled)
 
-    def _fls_launch(self, exe: Path, c_liv: Path, base: str):
-        """启动 FLS 打开涂装文件; 失败弹窗(文件被删/占用等)。"""
+    def _fls_launch(self, exe: Path, c_liv: Path, base: str,
+                    bundled: bool = False):
+        """启动 3D 程序打开涂装文件; 失败弹窗(文件被删/占用等)。
+        bundled=自研查看器: 自动附 --game 游戏目录(探测得到时), 用户零配置。"""
+        args = [str(exe), str(c_liv)]
+        if bundled:
+            root = flsbridge.detect_game_root()
+            if root is not None:
+                args += ["--game", str(root)]
         try:
-            self._fls_proc = subprocess.Popen(
-                [str(exe), str(c_liv)], close_fds=True)  # noqa: S603
+            self._fls_proc = subprocess.Popen(args, close_fds=True)  # noqa: S603
             self._fls_base = base
         except OSError as e:
             messagebox.showerror(_("3D 预览"),
-                                 _("启动 Forza Livery Studio 失败: {err}").format(err=e))
+                                 _("启动 3D 预览程序失败: {err}").format(err=e))
             return
-        if self._fls_hinted:
+        if bundled:
+            self.status_var.set(_("已打开 3D 预览"))
+        elif self._fls_hinted:
             self.status_var.set(_("已交给 Forza Livery Studio 打开"))
         else:
             self._fls_hinted = True
@@ -3190,7 +3198,9 @@ class App(tk.Tk):
             self._fls_cfg = path
             appconfig.set_fls_exe(path)
             dlg.destroy()
-            self._fls_launch(Path(path), c_liv, base)
+            self._fls_launch(
+                Path(path), c_liv, base,
+                Path(path).name.lower() == flsbridge.VIEWER_EXE_NAME.lower())
 
         def _cancel():
             dlg.destroy()

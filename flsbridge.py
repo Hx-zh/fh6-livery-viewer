@@ -1,33 +1,84 @@
 # -*- coding: utf-8 -*-
-"""flsbridge.py — Forza Livery Studio 外部桥接(3D 涂装预览)。
+"""flsbridge.py — 3D 预览外部程序桥接(自研查看器优先, Forza Livery Studio 兜底)。
 
-「3D 预览」功能不在本工具内渲染车模, 而是把存档容器里的 C_livery 交给
-开源涂装编辑器 Forza Livery Studio(AGPL-3.0, github.com/Arstz/ForzaLiveryStudio)
-打开——其命令行接受涂装文件路径并自动导入(main.cpp openStartupFiles,
-isLiveryAssetFileName 认 ``C_livery`` / ``Livery_*.C_livery``), 车模取自
-游戏目录明文 zip 内的 carbin。
-
-本模块只负责: 探测 ForzaLiveryStudio.exe 位置 + 提供官网地址; 启动与
-进程跟踪在 app.py(需主线程状态)。探测顺序:
-  ① 调用方传入的已配置路径(appconfig fls_exe, 存在才用, 失效自动回落);
-  ② 常见安装位置(%LOCALAPPDATA%\\Programs 等);
-  ③ 开始菜单快捷方式(.lnk 内嵌目标路径, ANSI/UTF-16 两遍扫);
-  ④ Downloads 目录浅层扫描(发布为 zip, 用户随处解压是常态)。
+「3D 预览」按钮把存档容器里的 C_livery 交给外部 3D 程序打开, 优先级:
+  ① appconfig 配置路径(fls_exe, 用户手动指定——查看器或 FLS 均可);
+  ② **内置查看器** FH6Livery3DViewer.exe(发布 zip 的 3DViewer/ 子目录自带;
+     源码运行回退 viewer3d/build/ 本地构建产物)——我们的自研只读查看器,
+     基于 vendored Forza Livery Studio 快照(viewer3d/, AGPL-3.0), 启动时
+     自动传 --game 游戏目录, 用户零配置;
+  ③ 用户自装的开源编辑器 Forza LiveryStudio(常见安装位置 → 开始菜单
+     快捷方式(.lnk 内嵌路径 ANSI/UTF-16 两遍扫) → Downloads 浅层扫描)。
 全部只读; 任何一步出错静默跳到下一步。"""
 from __future__ import annotations
 
 import os
 import re
+import sys
 from pathlib import Path
 
 FLS_EXE_NAME = "ForzaLiveryStudio.exe"
+VIEWER_EXE_NAME = "FH6Livery3DViewer.exe"
+VIEWER_SUBDIR = "3DViewer"          # 发布 zip 内置查看器的子目录
 FLS_URL = "https://github.com/Arstz/ForzaLiveryStudio/releases/latest"
+
 
 # .lnk 目标路径匹配: ANSI 与 UTF-16 各一遍(lnk 本地路径串无通配/引号)
 _LNK_RE = re.compile(r"[A-Za-z]:\\[^\x00\r\n\"*?<>|\u0000]{0,240}"
                      + re.escape(FLS_EXE_NAME), re.IGNORECASE)
 _LNK_SCAN_MAX = 400          # 开始菜单 .lnk 数量上限(防爆扫)
 _LNK_BYTES_MAX = 64 * 1024   # 单个 .lnk 读取上限(目标串远在前部)
+_VDF_PATH = r"C:\Program Files (x86)\Steam\steamapps\libraryfolders.vdf"
+_VDF_LIB_RE = re.compile(r'"path"\s+"([^"]+)"')
+_GAME_REL = os.path.join("steamapps", "common", "ForzaHorizon6")
+
+
+class FlsTarget:
+    """3D 预览目标程序: 路径 + 是否自研查看器(支持 --game 参数免配置)。"""
+
+    __slots__ = ("path", "bundled")
+
+    def __init__(self, path: Path, bundled: bool):
+        self.path = path
+        self.bundled = bundled
+
+
+def detect_game_root() -> Path | None:
+    """探测 FH6 游戏安装根目录(只读): Steam libraryfolders.vdf 各库
+    → 常见根(含各盘 SteamLibrary)。找不到返回 None。"""
+    libs: list[str] = []
+    try:
+        text = Path(_VDF_PATH).read_text(encoding="utf-8", errors="replace")
+        libs += _VDF_LIB_RE.findall(text)
+    except OSError:
+        pass
+    libs.append(r"C:\Program Files (x86)\Steam")
+    for drive in "CDEFGH":
+        libs.append(f"{drive}:\\SteamLibrary")
+    for lib in libs:
+        cand = Path(lib) / _GAME_REL
+        try:
+            if cand.is_dir():
+                return cand
+        except OSError:
+            continue
+    return None
+
+
+def _bundled_viewer() -> Path | None:
+    """内置查看器: 打包运行 = exe 同目录 3DViewer\\; 源码运行 = 仓库 viewer3d\\build。"""
+    candidates: list[Path] = []
+    exe = Path(sys.executable)
+    candidates.append(exe.parent / VIEWER_SUBDIR / VIEWER_EXE_NAME)
+    if not exe.name.lower().startswith("python"):
+        candidates.append(Path(sys.argv[0]).resolve().parent
+                          / VIEWER_SUBDIR / VIEWER_EXE_NAME)
+    candidates.append(Path(__file__).resolve().parent
+                      / "viewer3d" / "build" / VIEWER_EXE_NAME)
+    for c in candidates:
+        if _existing(str(c)) is not None:
+            return c
+    return None
 
 
 def _existing(path: str) -> Path | None:
@@ -118,11 +169,15 @@ def _from_downloads() -> Path | None:
     return None
 
 
-def find_fls(configured: str = "") -> Path | None:
-    """探测 ForzaLiveryStudio.exe: 配置路径 → 常见位置 → 快捷方式 → Downloads。
-    找到返回 Path, 找不到返回 None(调用方引导下载或手动指定)。"""
+def find_fls(configured: str = "") -> FlsTarget | None:
+    """探测 3D 预览程序: 配置路径 → 内置查看器 → FLS(常见位置→快捷方式→Downloads)。
+    返回 FlsTarget(bundled=自研查看器, 支持 --game); 找不到返回 None(调用方引导)。"""
     if configured.strip():
         hit = _existing(configured.strip().strip('"'))
         if hit is not None:
-            return hit
-    return (_from_common_dirs() or _from_shortcuts() or _from_downloads())
+            return FlsTarget(hit, hit.name.lower() == VIEWER_EXE_NAME.lower())
+    bundled = _bundled_viewer()
+    if bundled is not None:
+        return FlsTarget(bundled, True)
+    hit = (_from_common_dirs() or _from_shortcuts() or _from_downloads())
+    return FlsTarget(hit, False) if hit is not None else None

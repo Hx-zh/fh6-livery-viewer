@@ -337,9 +337,46 @@ def build() -> None:
     print(f"[构建] {exe.name} {exe.stat().st_size:,}B, cars.json 内嵌校验通过")
 
 
+def _viewer_stage() -> Path | None:
+    """把 3D 查看器暂存到 dist/3DViewer/。已暂存直接用; 否则 gh 拉取
+    build-viewer 工作流最近一次成功工件(发布 zip 内置 3DViewer/ 子目录,
+    端上 flsbridge 优先用它)。任何失败只告警不阻断——zip 不含查看器时,
+    「3D 预览」自动回退用户自装 Forza Livery Studio 链路。"""
+    stage = DIST / "3DViewer"
+    if (stage / "FH6Livery3DViewer.exe").is_file():
+        return stage
+    gh = gh_exe()
+    try:
+        r = _run([gh, "run", "list", "--workflow", "build-viewer.yml",
+                  "--branch", "main", "--status", "success", "-L", "1",
+                  "--json", "databaseId"], check=False)
+        runs = json.loads(r.stdout or "[]")
+        if not runs:
+            print("[3DViewer] 警告: main 上无 build-viewer 成功运行, zip 不含查看器"
+                  "(回退外部 Forza Livery Studio 链路)")
+            return None
+        tmp = ROOT / "build" / "viewer_dl"
+        if tmp.is_dir():
+            shutil.rmtree(tmp)
+        _run([gh, "run", "download", str(runs[0]["databaseId"]),
+              "--name", "FH6Livery3DViewer-win64", "-D", str(tmp)], check=True)
+        inner = tmp / "FH6Livery3DViewer"
+        if not (inner / "FH6Livery3DViewer.exe").is_file():
+            print("[3DViewer] 警告: 工件内容异常, zip 不含查看器")
+            return None
+        shutil.copytree(inner, stage, dirs_exist_ok=True)
+        print(f"[3DViewer] 已暂存 {stage} (来自 run {runs[0]['databaseId']})")
+        return stage
+    except Exception as e:  # noqa: BLE001 —— 打包不因查看器缺位而失败
+        print(f"[3DViewer] 警告: 获取查看器工件失败({e}), zip 不含查看器")
+        return None
+
+
 def make_variants(version: str, langs: tuple = LANGS) -> list[Path]:
-    """按语言列表产出变体 exe + 同名 zip(Gitee 本地发布只取简中子集)。"""
+    """按语言列表产出变体 exe + 同名 zip(Gitee 本地发布只取简中子集)。
+    zip 额外内置 3DViewer/ 子目录(可用时)。"""
     base = DIST / "FH6LiveryViewer.exe"
+    viewer = _viewer_stage()
     zips: list[Path] = []
     for lang in langs:
         v = DIST / f"FH6LiveryViewer_{lang}.exe"
@@ -347,8 +384,13 @@ def make_variants(version: str, langs: tuple = LANGS) -> list[Path]:
         z = DIST / f"FH6LiveryViewer_v{version}_win64_{lang}.zip"
         with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.write(v, f"FH6LiveryViewer_{lang}.exe")
+            if viewer is not None:
+                for f in sorted(viewer.rglob("*")):
+                    if f.is_file():
+                        zf.write(f, f"3DViewer/{f.relative_to(viewer)}")
         zips.append(z)
-        print(f"[变体] {z.name} {z.stat().st_size:,}B")
+        extra = f" + 3DViewer/" if viewer is not None else ""
+        print(f"[变体] {z.name} {z.stat().st_size:,}B{extra}")
     return zips
 
 
