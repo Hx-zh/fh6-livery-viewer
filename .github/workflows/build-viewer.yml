@@ -79,6 +79,11 @@ jobs:
           Copy-Item viewer3d\assets $stage\assets -Recurse
           Copy-Item viewer3d\SOURCE.md $stage\SOURCE.md
           Copy-Item viewer3d\licenses $stage\licenses -Recurse
+          # D3DCompile is loaded dynamically; some Windows 10 installs cannot load
+          # d3dcompiler_47.dll (old msvcp_win), so never ship it.
+          Remove-Item $stage\D3Dcompiler_47.dll -ErrorAction SilentlyContinue
+          # Ship the VC++ runtime the exe links against (MSVCP140*/VCRUNTIME140*).
+          Copy-Item "$env:VCToolsRedistDir\x64\Microsoft.VC143.CRT\*.dll" $stage -ErrorAction SilentlyContinue
 
       - uses: actions/upload-artifact@v4
         with:
