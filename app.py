@@ -3135,10 +3135,13 @@ class App(tk.Tk):
 
     def _resolve_game_root(self) -> Path | None:
         """游戏安装目录: 设置里指定且有效 → 自动探测 → 弹一次目录选择框并记住。
-        返回 None = 用户放弃(查看器不带 --game 启动, 自行兜底)。"""
+        返回值一律归一化为直接含 media 的目录(商店版 = <root>\\Content)。
+        None = 用户放弃(查看器不带 --game 启动, 自行兜底)。"""
         cand = self._game_dir.strip()
-        if cand and flsbridge.is_game_root(cand):
-            return Path(cand)
+        if cand:
+            resolved = flsbridge.resolve_game_root(cand)
+            if resolved is not None:
+                return resolved
         detected = flsbridge.detect_game_root()
         if detected is not None:
             return detected
@@ -3146,14 +3149,15 @@ class App(tk.Tk):
             title=_("未找到 FH6 游戏安装目录, 请手动选择(含 media 的安装根)"))
         if not picked:
             return None
-        if not flsbridge.is_game_root(picked):
+        resolved = flsbridge.resolve_game_root(picked)
+        if resolved is None:
             messagebox.showwarning(
                 _("3D 预览"),
                 _("所选目录不包含 media\\Cars, 可能不是游戏安装根。"), parent=self)
             return None
-        self._game_dir = picked
-        appconfig.set_game_dir(picked)
-        return Path(picked)
+        self._game_dir = str(resolved)
+        appconfig.set_game_dir(self._game_dir)
+        return resolved
 
     def _fls_launch(self, exe: Path, c_liv: Path, base: str):
         """启动内置 3D 查看器打开涂装文件; 自动附 --game 游戏目录(零配置优先);

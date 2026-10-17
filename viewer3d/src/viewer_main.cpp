@@ -28,6 +28,25 @@ bool isGameRoot(const QString &path)
                             .filePath(QStringLiteral("media/Cars"))).isDir();
 }
 
+// Normalize to the directory that directly contains media/Cars: Store builds
+// keep it under <root>/Content, flat installs under <root>/media.
+QString normalizeGameRoot(const QString &path)
+{
+    if (path.isEmpty()) {
+        return path;
+    }
+    const QDir dir(path);
+    if (QFileInfo(QDir(dir.filePath(QStringLiteral("media")))
+                      .filePath(QStringLiteral("Cars"))).isDir()) {
+        return path;
+    }
+    const QString content = QDir(path).filePath(QStringLiteral("Content"));
+    if (QFileInfo(QDir(content).filePath(QStringLiteral("media/Cars"))).isDir()) {
+        return content;
+    }
+    return path;
+}
+
 QStringList steamRoots()
 {
     QStringList roots;
@@ -80,7 +99,7 @@ QString detectGameFolder()
         const QString candidate =
             QDir(lib).filePath(QStringLiteral("steamapps/common/ForzaHorizon6"));
         if (isGameRoot(candidate)) {
-            return candidate;
+            return normalizeGameRoot(candidate);
         }
     }
     // Xbox / Store builds: scan <drive>:/XboxGames for *Forza*Horizon*6* with media.
@@ -98,12 +117,7 @@ QString detectGameFolder()
                 continue;
             }
             if (isGameRoot(entry.absoluteFilePath())) {
-                return entry.absoluteFilePath();
-            }
-            const QString content =
-                QDir(entry.absoluteFilePath()).filePath(QStringLiteral("Content"));
-            if (isGameRoot(content)) {
-                return content;
+                return normalizeGameRoot(entry.absoluteFilePath());
             }
         }
     }
@@ -183,6 +197,8 @@ int main(int argc, char *argv[])
     if (gameRoot.isEmpty()) {
         gameRoot = resolveGameFolder(&gameCancelled);
     }
+    // Store installs pass the outer folder; point at the media-containing dir.
+    gameRoot = normalizeGameRoot(gameRoot);
 
     // Raster decals: build the on-disk pack from the user's game files on
     // first run (or after a game update); failures only degrade logos.

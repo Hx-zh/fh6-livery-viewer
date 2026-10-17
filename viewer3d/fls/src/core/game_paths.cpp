@@ -15,6 +15,10 @@ QString gameMediaDir(const QString &gameFolder) {
     if (root.exists(QStringLiteral("media"))) {
         return root.filePath(QStringLiteral("media"));
     }
+    // Store (MSIXVC) installs keep the media tree under <root>/Content/media.
+    if (root.exists(QStringLiteral("Content/media"))) {
+        return root.filePath(QStringLiteral("Content/media"));
+    }
 
     return root.absolutePath();
 }

@@ -44,15 +44,24 @@ def find_viewer() -> Path | None:
     return None
 
 
-def is_game_root(path: Path | str) -> bool:
-    """判定目录是 FH6 游戏安装根: 平铺(<root>\\media\\Cars)或 Content 子层
-    (<root>\\Content\\media\\Cars) 任一存在即为真(商店版布局差异)。"""
+def resolve_game_root(path: Path | str) -> Path | None:
+    """把「游戏根目录」归一化为**直接包含 media\\Cars 的目录**。
+    平铺布局(<root>\\media\\Cars)返回 root; 商店版布局
+    (<root>\\Content\\media\\Cars)返回 <root>\\Content; 都不是返回 None。"""
     try:
         p = Path(path)
-        return ((p / "media" / "Cars").is_dir()
-                or (p / "Content" / "media" / "Cars").is_dir())
+        if (p / "media" / "Cars").is_dir():
+            return p
+        if (p / "Content" / "media" / "Cars").is_dir():
+            return p / "Content"
     except OSError:
-        return False
+        pass
+    return None
+
+
+def is_game_root(path: Path | str) -> bool:
+    """目录（或其 Content 子层）是 FH6 游戏安装根。"""
+    return resolve_game_root(path) is not None
 
 
 def _steam_libraries() -> list[Path]:
@@ -105,7 +114,7 @@ def _steam_libraries() -> list[Path]:
 
 
 def _xbox_candidates() -> list[Path]:
-    """商店版: 各盘 XboxGames\\ 下最多两层的目录含 media\\Cars 即候选。"""
+    """商店版: 各盘 XboxGames\\ 下最多两层的目录（归一化为含 media 的层）。"""
     found: list[Path] = []
     for drive in _DRIVES:
         root = Path(f"{drive}:\\XboxGames")
@@ -115,9 +124,9 @@ def _xbox_candidates() -> list[Path]:
             for sub in root.iterdir():
                 if not sub.is_dir():
                     continue
-                for cand in (sub, sub / "Content"):
-                    if is_game_root(cand):
-                        found.append(cand)
+                resolved = resolve_game_root(sub)
+                if resolved is not None:
+                    found.append(resolved)
         except OSError:
             continue
     return found
@@ -128,8 +137,9 @@ def detect_game_root() -> Path | None:
     Steam 侧兼容非默认安装位置与多库, 商店版扫各盘 XboxGames。找不到返回 None。"""
     for lib in _steam_libraries():
         cand = lib / "steamapps" / "common" / "ForzaHorizon6"
-        if is_game_root(cand):
-            return cand
+        resolved = resolve_game_root(cand)
+        if resolved is not None:
+            return resolved
     for cand in _xbox_candidates():
         return cand
     return None
