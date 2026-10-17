@@ -13,10 +13,9 @@
     认证头只在首跳携带(签名 CDN URL 自含凭据, 避免 401);
   · 进度单行刷新(百分比/速度/已下载), 结束校验总字节数。
 
-已知坑(GitHub Actions 工件实测): 该 API 端点实际正文可比 Content-Length
-多出若干字节(分块按声明长度拼装会缺尾部 → zip 损坏); 本工具遇此情形会
-以「大小不符」失败退出(宁失败不出坏文件), 此时用单流 curl 下载:
-    curl -sL -H "Authorization: Bearer $(gh auth token)" -o out.zip <url>
+已知坑(已修): 早期版本在 Windows 上 os.open 缺 O_BINARY, 文本模式把
+0x0A 翻译成 0D 0A → 下载结果静默膨胀/损坏(曾误诊为「服务器正文超长」);
+现写盘一律带 O_BINARY, zip 产物另做全档自校验兜底。
 
 GitHub Actions 工件快速下载示例(gh run download 太慢时的替代):
     python tools/fastdl.py "$(gh api repos/OWNER/REPO/actions/artifacts \
@@ -37,7 +36,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-CLASH_PORTS = (7890, 7891, 2080, 10808, 1080, 8888)
+CLASH_PORTS = (7897, 7890, 7891, 2080, 10808, 1080, 8888)  # 7897=Clash Verge 默认混合端口
 RETRY = 3
 PROBE_TIMEOUT = 4
 
@@ -206,8 +205,11 @@ def main() -> int:
     chunks = [(i, min(i + step, total) - 1) for i in range(0, total, step)]
 
     t0 = time.time()
+    # O_BINARY: Windows 文本模式会把 0x0A 翻译成 0D 0A 静默损坏二进制
+    # (2026-10-17 实弹取证: +10,011 字节/zip 损坏, 逐块比对定位到写盘层)
     lock, fh = threading.Lock(), os.open(
-        out, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o644)
+        out, os.O_CREAT | os.O_WRONLY | os.O_TRUNC
+        | getattr(os, "O_BINARY", 0), 0o644)
     counters = {"lock": threading.Lock(), "done": 0}
     try:
         with ThreadPoolExecutor(max_workers=nthread) as pool:
