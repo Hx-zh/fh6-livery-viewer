@@ -452,10 +452,9 @@ class App(tk.Tk):
         self._locate_cancel = False               # 取消发送标志(发送线程逐键检查)
         self._locate_keys: list[tuple[str, int]] = []
         self._locate_hwnd = None                  # 游戏窗口句柄
-        # 3D 预览(外部 Forza Livery Studio): 已启动进程与所开涂装(同款不重复启动)
+        # 3D 预览(内置查看器): 已启动进程与所开涂装(同款不重复启动)
         self._fls_proc: subprocess.Popen | None = None
         self._fls_base = ""                       # _fls_proc 打开的涂装 base
-        self._fls_hinted = False                  # 「FLS 内需配置游戏目录」提示只给一次
         # 按键节奏(appconfig 持久化, 缺省回默认): 「设置」里可改
         _cfg = appconfig.load()
         self.key_hold_ms = int(_cfg.get("key_hold_ms", DEFAULT_KEY_HOLD_MS))
@@ -469,8 +468,6 @@ class App(tk.Tk):
         # 手动选择的存档目录(appconfig 持久化; 启动时恢复到下拉首项,
         # 改选其它存档/目录消失/被自动检测覆盖时自动清除)
         self._manual_dir = str(_cfg.get("manual_dir", ""))
-        # 3D 预览程序路径(appconfig fls_exe 持久化; 空串=自动探测)
-        self._fls_cfg = str(_cfg.get("fls_exe", ""))
         self._thumb_pending: list[str] = []
         self._thumb_fails: dict[str, int] = {}    # base -> 连续解码失败次数(瞬态重试用, 封顶放弃)
         self._thumb_gen = 0                       # 缩略图解码代次(rebuild 递增, 过期结果丢弃)
@@ -2896,31 +2893,9 @@ class App(tk.Tk):
         ttk.Button(row_cars, text=_("恢复内置数据"),
                    command=self.reset_cars_builtin).pack(side=tk.LEFT, padx=(8, 0))
 
-        # 3D 预览程序: 「3D 预览」按钮调外部 Forza Livery Studio; 留空 = 自动探测
-        ttk.Label(body, text=_("3D 预览程序(Forza Livery Studio):")).grid(
-            row=4, column=0, columnspan=4, sticky=tk.W, pady=(10, 0))
-        fls_var = tk.StringVar(value=self._fls_cfg)
-        row_fls = tk.Frame(body)
-        row_fls.grid(row=5, column=0, columnspan=4, sticky=tk.EW, pady=2)
-
-        def _browse_fls():
-            path = filedialog.askopenfilename(
-                parent=dlg, title=_("选择 ForzaLiveryStudio.exe"),
-                filetypes=[("ForzaLiveryStudio", "ForzaLiveryStudio.exe"),
-                           (_("程序"), "*.exe")])
-            if path:
-                fls_var.set(path)
-
-        ttk.Entry(row_fls, textvariable=fls_var).pack(
-            side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(row_fls, text=_("浏览…"), command=_browse_fls).pack(
-            side=tk.LEFT, padx=(6, 0))
-        ttk.Label(body, text=_(
-            "留空 = 自动探测(内置 3D 查看器优先, 其次外部 Forza Livery Studio)"
-            )).grid(row=6, column=0, columnspan=4, sticky=tk.W)
-
+        # 3D 预览: 只用随包内置查看器(3DViewer\ 子目录), 无设置项
         btns = ttk.Frame(body)
-        btns.grid(row=7, column=0, columnspan=4, sticky=tk.E, pady=(10, 0))
+        btns.grid(row=4, column=0, columnspan=4, sticky=tk.E, pady=(10, 0))
 
         def _save():
             try:
@@ -2933,8 +2908,6 @@ class App(tk.Tk):
                 return
             self.key_hold_ms, self.key_gap_ms = hold, gap
             appconfig.save_key_timing(hold, gap)
-            self._fls_cfg = fls_var.get().strip()
-            appconfig.set_fls_exe(self._fls_cfg)
             self.status_var.set(
                 _("按键节奏: 保持 {hold}ms + 间隔 {gap}ms (已保存)").format(
                     hold=hold, gap=gap))
@@ -3133,86 +3106,34 @@ class App(tk.Tk):
                 and self._fls_proc.poll() is None):
             self.status_var.set(_("该涂装已在 3D 预览中打开"))
             return
-        target = flsbridge.find_fls(self._fls_cfg)
-        if target is None:
-            self._fls_guide(it.base, c_liv)
+        exe = flsbridge.find_viewer()
+        if exe is None:
+            self._fls_missing()
             return
-        self._fls_launch(target.path, c_liv, it.base, target.bundled)
+        self._fls_launch(exe, c_liv, it.base)
 
-    def _fls_launch(self, exe: Path, c_liv: Path, base: str,
-                    bundled: bool = False):
-        """启动 3D 程序打开涂装文件; 失败弹窗(文件被删/占用等)。
-        bundled=自研查看器: 自动附 --game 游戏目录(探测得到时), 用户零配置。"""
+    def _fls_launch(self, exe: Path, c_liv: Path, base: str):
+        """启动内置 3D 查看器打开涂装文件; 自动附 --game 游戏目录(探测得到时,
+        用户零配置)。失败弹窗(文件被删/占用等)。"""
         args = [str(exe), str(c_liv)]
-        if bundled:
-            root = flsbridge.detect_game_root()
-            if root is not None:
-                args += ["--game", str(root)]
+        root = flsbridge.detect_game_root()
+        if root is not None:
+            args += ["--game", str(root)]
         try:
             self._fls_proc = subprocess.Popen(args, close_fds=True)  # noqa: S603
             self._fls_base = base
         except OSError as e:
             messagebox.showerror(_("3D 预览"),
-                                 _("启动 3D 预览程序失败: {err}").format(err=e))
+                                 _("启动 3D 查看器失败: {err}").format(err=e))
             return
-        if bundled:
-            self.status_var.set(_("已打开 3D 预览"))
-        elif self._fls_hinted:
-            self.status_var.set(_("已交给 Forza Livery Studio 打开"))
-        else:
-            self._fls_hinted = True
-            self.status_var.set(
-                _("已交给 Forza Livery Studio 打开; 首次使用需在其内配置一次游戏目录"))
+        self.status_var.set(_("已打开 3D 预览"))
 
-    def _fls_guide(self, base: str, c_liv: Path):
-        """未找到 FLS: 引导下载或手动指定 exe(指定后立即保存并打开)。"""
-        dlg = tk.Toplevel(self)
-        dlg.title(_("3D 预览"))
-        dlg.resizable(False, False)
-        dlg.transient(self)
-        dlg.grab_set()
-        body = ttk.Frame(dlg, padding=14)
-        body.pack(fill=tk.BOTH, expand=True)
-        ttk.Label(body, text=_(
-            "未找到 Forza Livery Studio(开源涂装编辑器, 可 3D 预览涂装)。\n\n"
-            "· 点「前往下载」打开其发布页(GitHub Releases);\n"
-            "· 下载解压后, 回来点「3D 预览」会自动识别;\n"
-            "· 或点「选择程序…」手动指定 ForzaLiveryStudio.exe;\n"
-            "· 首次在 Forza Livery Studio 中打开涂装时,\n"
-            "  需在其内配置一次游戏目录(用于加载车模)。"),
-            justify=tk.LEFT, wraplength=380).pack(pady=(0, 10))
-        btns = ttk.Frame(body)
-        btns.pack()
-
-        def _go():
-            webbrowser.open(flsbridge.FLS_URL)
-            dlg.destroy()
-
-        def _pick():
-            path = filedialog.askopenfilename(
-                parent=dlg, title=_("选择 ForzaLiveryStudio.exe"),
-                filetypes=[("ForzaLiveryStudio", "ForzaLiveryStudio.exe"),
-                           (_("程序"), "*.exe")])
-            if not path:
-                return
-            self._fls_cfg = path
-            appconfig.set_fls_exe(path)
-            dlg.destroy()
-            self._fls_launch(
-                Path(path), c_liv, base,
-                Path(path).name.lower() == flsbridge.VIEWER_EXE_NAME.lower())
-
-        def _cancel():
-            dlg.destroy()
-
-        for text, cmd in ((_("前往下载"), _go), (_("选择程序…"), _pick),
-                          (_("取消"), _cancel)):
-            ttk.Button(btns, text=text, command=cmd).pack(side=tk.LEFT, padx=3)
-        dlg.bind("<Escape>", lambda _e: dlg.destroy())
-        dlg.update_idletasks()
-        dw, dh = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
-        dlg.geometry(f"+{self.winfo_rootx() + (self.winfo_width() - dw) // 2}"
-                     f"+{self.winfo_rooty() + (self.winfo_height() - dh) // 2}")
+    def _fls_missing(self):
+        """内置查看器缺失(发布包不完整 / 源码运行未本地构建): 说明与出路。"""
+        messagebox.showinfo(_("3D 预览"), _(
+            "未找到 3D 查看器(FH6Livery3DViewer.exe)。\n\n"
+            "· 发布包应自带 3DViewer 子目录——请重新解压完整发布包;\n"
+            "· 源码运行请先本地构建: pwsh viewer3d/build-local.ps1"))
 
 
 if __name__ == "__main__":
