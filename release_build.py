@@ -366,8 +366,13 @@ def _viewer_stage() -> Path | None:
                 for extra in ("assets", "licenses"):
                     if (build_dir / extra).is_dir():
                         shutil.copytree(build_dir / extra, stage / extra, dirs_exist_ok=True)
-                if (build_dir / "SOURCE.md").is_file():
-                    shutil.copy2(build_dir / "SOURCE.md", stage / "SOURCE.md")
+                # SOURCE.md / licenses 在源码目录而非构建目录
+                src_dir = ROOT / "viewer3d"
+                if (src_dir / "licenses").is_dir():
+                    shutil.copytree(src_dir / "licenses", stage / "licenses",
+                                    dirs_exist_ok=True)
+                if (src_dir / "SOURCE.md").is_file():
+                    shutil.copy2(src_dir / "SOURCE.md", stage / "SOURCE.md")
                 print("[3DViewer] 本地构建较新, 已刷新 dist/3DViewer(白名单)")
         except OSError as e:
             print(f"[3DViewer] 警告: 刷新暂存失败({e}), 沿用现有暂存")
