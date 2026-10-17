@@ -80,6 +80,9 @@ bool ensureRasterDecalPack(const QString &gameRoot, QString *error)
     const QFileInfo zipInfo(zipPath);
     if (!zipInfo.isFile()) {
         // No game files at hand: keep whatever cache exists, never fail hard.
+        if (error != nullptr) {
+            *error = QStringLiteral("Decals.zip not found under the game folder");
+        }
         return QFile::exists(rasterDecalPackPath());
     }
 

@@ -33,4 +33,8 @@ private:
     QLabel *statusLabel_ = nullptr;
     QPushButton *qualityButton_ = nullptr;
     int qualityIndex_ = 2; // index into kTextureScales
+
+public:
+    // 启动期备注(光栅缓存构建结果等), 追加显示在状态行。
+    void setStartupNote(const QString &note);
 };

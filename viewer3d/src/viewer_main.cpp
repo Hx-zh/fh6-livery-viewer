@@ -126,12 +126,19 @@ int main(int argc, char *argv[])
 
     // Raster decals: build the on-disk pack from the user's game files on
     // first run (or after a game update); failures only degrade logos.
+    QString rasterNote;
     if (!gameRoot.isEmpty()) {
         QString rasterError;
         fls::ensureRasterDecalPack(gameRoot, &rasterError);
+        rasterNote = rasterError.isEmpty()
+                         ? QStringLiteral("raster decals: ready")
+                         : QStringLiteral("raster decals: %1").arg(rasterError);
+    } else {
+        rasterNote = QStringLiteral("raster decals: no game folder");
     }
 
     ViewerWindow window(std::move(project), gameRoot);
+    window.setStartupNote(rasterNote);
     window.show();
     return QApplication::exec();
 }

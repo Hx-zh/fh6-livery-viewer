@@ -85,6 +85,17 @@ ViewerWindow::ViewerWindow(fls::Project project, const QString &gameRoot,
     applyProject();
 }
 
+void ViewerWindow::setStartupNote(const QString &note)
+{
+    if (note.isEmpty()) {
+        return;
+    }
+    const QString current = statusLabel_->text();
+    statusLabel_->setText(current.isEmpty()
+                              ? note
+                              : QStringLiteral("%1 | %2").arg(current, note));
+}
+
 void ViewerWindow::applyProject()
 {
     const gui::CarRegistry &registry = gui::sharedCarRegistry();
