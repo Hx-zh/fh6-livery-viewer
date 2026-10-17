@@ -343,7 +343,18 @@ def _viewer_stage() -> Path | None:
     端上 flsbridge 优先用它)。任何失败只告警不阻断——zip 不含查看器时,
     「3D 预览」自动回退用户自装 Forza Livery Studio 链路。"""
     stage = DIST / "3DViewer"
-    if (stage / "FH6Livery3DViewer.exe").is_file():
+    staged_exe = stage / "FH6Livery3DViewer.exe"
+    local_build = ROOT / "viewer3d" / "build" / "FH6Livery3DViewer.exe"
+    if staged_exe.is_file():
+        # 本地构建比暂存新(看过源码/本地重编过) → 用本地构建刷新暂存,
+        # 防止发布物用到修复前的旧 viewer
+        try:
+            if local_build.is_file() and \
+                    local_build.stat().st_mtime > staged_exe.stat().st_mtime:
+                shutil.copytree(local_build.parent, stage, dirs_exist_ok=True)
+                print("[3DViewer] 本地构建较新, 已刷新 dist/3DViewer")
+        except OSError as e:
+            print(f"[3DViewer] 警告: 刷新暂存失败({e}), 沿用现有暂存")
         return stage
     gh = gh_exe()
     try:
