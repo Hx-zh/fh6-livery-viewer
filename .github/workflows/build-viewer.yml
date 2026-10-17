@@ -1,0 +1,80 @@
+# 3D 查看器云端构建: viewer3d/(vendored Forza Livery Studio 快照 + 自研查看器壳)
+# → FH6Livery3DViewer-win64.zip 工件(exe + Qt DLL + assets)。
+# 触发: feat/viewer3d 分支的 viewer3d/** 变更 + 手动 dispatch; 发布流水线
+# (release.yml) 复用同配方把产物打进五语言 zip 的 3DViewer/ 子目录。
+name: build-viewer
+
+on:
+  push:
+    branches: ['feat/viewer3d', main]
+    paths: ['viewer3d/**', '.github/workflows/build-viewer.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Qt (aqt 预编译, msvc2022_64)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2022_64'
+          modules: 'qtsvg'
+          cache: true
+
+      - name: 配置 MSVC 环境
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: 安装 zlib (vcpkg)
+        shell: pwsh
+        run: |
+          $zlibDir = "${{ github.workspace }}\zlib-install"
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install `
+            --triplet x64-windows `
+            --x-install-root "$zlibDir" zlib
+          "ZLIB_ROOT=$zlibDir\zlib" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: CMake 配置 + 构建
+        shell: pwsh
+        run: |
+          cmake -S viewer3d -B viewer3d\build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
+            -DZLIB_ROOT="$env:ZLIB_ROOT"
+          cmake --build viewer3d\build --config Release
+
+      - name: windeployqt 收集运行时
+        shell: pwsh
+        run: |
+          $bin = "viewer3d\build\FH6Livery3DViewer.exe"
+          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --no-translations --no-opengl-sw $bin
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: 打包 zip (exe + DLL + assets)
+        shell: pwsh
+        run: |
+          $stage = "stage\FH6Livery3DViewer"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item viewer3d\build\FH6Livery3DViewer.exe $stage
+          Copy-Item viewer3d\build\*.dll $stage -ErrorAction SilentlyContinue
+          Copy-Item viewer3d\build\platforms, viewer3d\build\imageformats, `
+            viewer3d\build\styles, viewer3d\build\iconengines $stage `
+            -ErrorAction SilentlyContinue -Recurse
+          Copy-Item viewer3d\assets $stage\assets -Recurse
+          Copy-Item viewer3d\PROVENANCE.md $stage\SOURCE.md
+          Compress-Archive -Path $stage -DestinationPath FH6Livery3DViewer-win64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FH6Livery3DViewer-win64
+          path: FH6Livery3DViewer-win64.zip
+          retention-days: 30
