@@ -231,6 +231,17 @@ def main() -> int:
     size = os.path.getsize(out)
     if size != total:
         raise SystemExit(f"大小不符: {size:,} != {total:,}")
+    if out.lower().endswith(".zip"):
+        # 坏块(长度对内容错)只有整档校验能兜住; zip 自校验失败即删档, 不交付坏文件
+        import zipfile
+        try:
+            bad = zipfile.ZipFile(out).testzip()
+        except Exception as e:              # noqa: BLE001
+            os.remove(out)
+            raise SystemExit(f"zip 校验异常(坏文件已删): {e}") from e
+        if bad is not None:
+            os.remove(out)
+            raise SystemExit(f"zip 内容损坏(已删): {bad}")
     dt = time.time() - t0
     print(f"[done] {out} {size:,}B in {dt:.1f}s ({size/1048576/max(dt,0.01):.1f}MB/s)")
     return 0
