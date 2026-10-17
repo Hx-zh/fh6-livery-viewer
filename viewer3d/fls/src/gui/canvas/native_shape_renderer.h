@@ -84,12 +84,6 @@ private:
     bool ensureRasterPackLoaded();
     GLuint ensureRasterTexture(QOpenGLFunctions *functions, quint32 rasterId);
     void ensureSceneFramebuffer(const QSize &size);
-    // FH6-LOCAL PATCH (atlas anti-aliasing): the vinyl atlas used to be rasterised with hard
-    // coverage edges, so canvas resolution alone decided how blocky the artwork looked. The scene
-    // is now rendered at 2x into a transient target and box-filtered down into the atlas.
-    int sceneSupersampleFactor(const QSize &size);
-    bool ensureSceneSupersampleFramebuffer(const QSize &size);
-    void resolveSceneSupersample(QOpenGLFunctions *functions, const QSize &size);
     void compositeScene(QOpenGLFunctions *functions, const QSize &size, bool clearBackground);
 
     QOpenGLShaderProgram program_;
@@ -105,7 +99,6 @@ private:
     QVector<float> vertices_;
     std::unique_ptr<QOpenGLFramebufferObject> sceneFbo_;
     QSize sceneFboSize_;
-    std::unique_ptr<QOpenGLFramebufferObject> sceneSupersampleFbo_;
     bool initialized_ = false;
     bool geometryUploaded_ = false;
 
