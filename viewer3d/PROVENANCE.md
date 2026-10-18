@@ -31,17 +31,16 @@ This directory contains a vendored snapshot of code from **Forza Livery Studio**
     `FLS_VERIFY_ATLAS=1` samples 32 tiles of the atlas after each rebuild and
     prints coverage, which is how a bad resolve is caught without watching the
     screen; `FLS_ATLAS_MSAA=0` turns the path off for on-screen A/B testing, and
-    `FLS_MSAA_MAX_WIDTH=<px>` overrides the canvas-width cut-off below
-    (`FLS_MSAA_MAX_WIDTH=99999` forces MSAA on at every scale).
-    **MSAA is skipped when the canvas is wider than 4096 px** (i.e. the 4x
-    texture-quality setting): at 8192x4096 one atlas texel is already ~1/8 of
-    an on-screen car pixel and the atlas is sampled bilinearly with mipmaps, so
-    the multisample pass has nothing left to smooth — measured over a
-    1200x820 window with the project's sample liveries, canvas pixels differ by
-    at most 12/255 on 0.0006 % of pixels with MSAA on vs off — while it costs
-    ~442 MB of VRAM and ~510 MB of commit per viewer instance, which is what
-    caps how many preview windows can be open at once. The 1x/2x settings keep
-    MSAA, where the atlas resolution is close to the display resolution.
+    `FLS_MSAA_MAX_WIDTH=<px>` skips MSAA above that canvas width
+    (`FLS_MSAA_MAX_WIDTH=4096` skips the 4x canvas; the default 0 means no
+    limit).
+    **MSAA stays on at every texture-quality scale.** Dropping it on the 4x
+    canvas was measured as visually free (canvas interior differs by at most
+    12/255 on 0.0006 % of pixels at 1200x820, 21/255 on 0.0002 % at 2200x1300)
+    and would release ~442 MB of VRAM plus ~510 MB of commit per viewer
+    instance, but quality was preferred over the memory saving (2026-10-18);
+    the `FLS_MSAA_MAX_WIDTH=4096` knob keeps that trade available without a
+    rebuild.
   - `fls/src/gui/widgets/car_preview_widget.cpp` — orbit drag sensitivity
     0.01 -> 0.005 rad/px (user feedback: default felt too twitchy); new
     `highestDetailLodIndex()` (max-triangle LOD) so the viewer defaults to

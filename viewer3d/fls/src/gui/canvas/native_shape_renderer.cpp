@@ -997,22 +997,21 @@ QOpenGLFramebufferObject *NativeShapeRenderer::beginScenePass(QOpenGLFunctions *
         && qEnvironmentVariableIntValue("FLS_ATLAS_MSAA") == 0) {
         allowMultisample = false;
     }
-    // FH6LiveryViewer local change: skip MSAA on the 4x canvas (8192x4096).
-    // At that resolution one atlas texel is already a small fraction of an on-screen car pixel
-    // and the atlas is sampled bilinearly with mipmaps, so the multisample pass has little left
-    // to smooth. Measured on a 1200x820 window with the project's sample liveries: the canvas
-    // interior differs by at most 12/255 on 0.0006% of pixels with MSAA on vs off (the 5.9%
-    // "difference" a naive full-window diff reports is entirely the window border shifting by
-    // one pixel between captures). It costs ~442 MB of VRAM per viewer instance, which is what
-    // limits how many preview windows can be open at once, so spend it only on the scales that
-    // need it (1x/2x, where the atlas is close to the display resolution).
-    // FLS_MSAA_MAX_WIDTH overrides the cut-off, so MSAA on the 4x canvas can still be A/B
-    // compared (e.g. `FLS_MSAA_MAX_WIDTH=99999` forces it on everywhere).
-    int multisampleMaxCanvasWidth = 4096;
+    // FH6LiveryViewer local change: MSAA is on at every texture-quality scale by default.
+    // It costs ~442 MB of VRAM and ~510 MB of commit per viewer instance at 4x (the canvas is
+    // 8192x4096), and measurements showed the image barely changes without it — the canvas
+    // interior differs by at most 12/255 on 0.0006% of pixels at 1200x820, and at most 21/255
+    // on 0.0002% at 2200x1300 — but the quality was preferred over the memory saving
+    // (user decision, 2026-10-18), so the pass stays enabled everywhere.
+    // FLS_MSAA_MAX_WIDTH=<px> skips MSAA above that canvas width, which is how the saving was
+    // measured and how it can be traded back in (FLS_MSAA_MAX_WIDTH=4096 skips the 4x canvas)
+    // without rebuilding. 0 (the default) means no limit.
+    int multisampleMaxCanvasWidth = 0;
     if (qEnvironmentVariableIsSet("FLS_MSAA_MAX_WIDTH")) {
         multisampleMaxCanvasWidth = qEnvironmentVariableIntValue("FLS_MSAA_MAX_WIDTH");
     }
-    if (allowMultisample && size.width() > multisampleMaxCanvasWidth) {
+    if (allowMultisample && multisampleMaxCanvasWidth > 0
+        && size.width() > multisampleMaxCanvasWidth) {
         allowMultisample = false;
     }
     if (allowMultisample) {
