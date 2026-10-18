@@ -95,6 +95,8 @@ private:
     // same image (same per-pixel sample count, same blend order) for a fraction of the memory.
     bool multisampleAllowed(const QSize &size) const;
     QSize sceneTileSize(const QSize &canvas) const;
+    // Creates/reuses the multisample target for one pass; false when it cannot be allocated.
+    bool ensureMultisampleTarget(const QSize &passSize);
     QOpenGLFramebufferObject *beginScenePass(QOpenGLFunctions *functions, const QSize &passSize,
                                             bool multisample);
     // targetRect = region of the atlas the resolved tile lands in (empty = the whole atlas).
@@ -117,7 +119,12 @@ private:
     QSize sceneFboSize_;
     // Tile-sized multisample target: reused across tiles and rebuilt only when the tile size
     // changes. Peak VRAM is tileW x tileH x 4 bytes x samples instead of the whole canvas.
+    // It outlives each pass, so passes must not bind it implicitly -- see scenePassMultisampled_.
     std::unique_ptr<QOpenGLFramebufferObject> sceneMultisampleFbo_;
+    // Whether the pass that is currently open draws into the multisample target (endScenePass
+    // resolves only then), and the same fact for the most recently finished pass (diagnostics).
+    bool scenePassMultisampled_ = false;
+    bool lastScenePassMultisampled_ = false;
     bool initialized_ = false;
     bool geometryUploaded_ = false;
 

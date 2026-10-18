@@ -20,20 +20,39 @@ This directory contains a vendored snapshot of code from **Forza Livery Studio**
     repository's precedent.
 - Local modifications (tracked in this repository's history):
   - `fls/src/gui/canvas/native_shape_renderer.cpp` — the vinyl atlas is
-    rendered into a 4x-multisampled FBO of the same size and resolved with
+    rendered into a 4x-multisampled target and resolved with
     `blitFramebuffer(GL_NEAREST)` (`beginScenePass`/`endScenePass`). Shape
     edges used to be hard-rasterised, so canvas resolution alone decided how
-    blocky the artwork looked. The MSAA target is freed after every rebuild
-    (8192x4096 RGBA8 x4 = ~537 MB at the 4x canvas, ~134 MB at 2x); when it
-    cannot be created the renderer falls back to drawing straight into the
-    atlas. The incremental (scissor-preserving) pass also stays direct — an
-    empty MSAA target would erase the sections it does not redraw.
+    blocky the artwork looked.
+    **The target is allocated per tile, not for the whole canvas**: the scene
+    is drawn once per 2048x2048 tile with the world->screen transform shifted
+    by the tile origin, and each tile is resolved into its own region of the
+    atlas (bottom-up GL rects, so the destination is flipped vertically). A
+    full-canvas target at 8192x4096 is 537 MB of VRAM, which capped how many
+    preview windows could be open; a tile is 64 MB and the tiled result is
+    pixel-equivalent (measured: 99.9 % of atlas pixels byte-identical, the rest
+    differ by at most 64/255 on 0.0002 % of pixels at tile seams — MSAA resolve
+    rounding). The target outlives each pass and is reused across tiles, so
+    `beginScenePass` takes it **only when the pass asked for multisampling**;
+    otherwise the pass draws straight into the atlas. That distinction matters:
+    the incremental (scissor-preserving) path must never bind a stale
+    multisample target, because resolving it would erase the sections it does
+    not redraw. A failed tile allocation falls back to one full-canvas direct
+    pass rather than stepping tiles with a shrunken viewport.
     `FLS_VERIFY_ATLAS=1` samples 32 tiles of the atlas after each rebuild and
-    prints coverage, which is how a bad resolve is caught without watching the
-    screen; `FLS_ATLAS_MSAA=0` turns the path off for on-screen A/B testing, and
-    `FLS_MSAA_MAX_WIDTH=<px>` skips MSAA above that canvas width
-    (`FLS_MSAA_MAX_WIDTH=4096` skips the 4x canvas; the default 0 means no
-    limit).
+    prints coverage (and whether the last pass used MSAA), which is how a bad
+    resolve is caught without watching the screen; `FLS_DUMP_ATLAS=<png>` writes
+    the resolved atlas, the only reliable way to compare two configurations
+    (window screenshots depend on focus and carry the window border).
+    `FLS_ATLAS_TILE=<px>` sets the tile edge (0 disables tiling),
+    `FH6_VIEWER_TILED_MSAA=0` is the end-user switch for the same thing (the
+    host app no longer exposes it in Settings), `FLS_ATLAS_MSAA=0` turns the
+    multisample path off entirely for A/B testing, and `FLS_MSAA_MAX_WIDTH=<px>`
+    skips MSAA above that canvas width (default 0 = no limit).
+    Cost of tiling: the draw list is replayed once per tile, i.e. per-shape
+    `glDrawArrays` calls scale with tile count. Measured on a 14 876-layer
+    livery: first rebuild 9 ms (single target) vs 31 ms (2048 tiles) vs 114 ms
+    (1024 tiles).
     **MSAA stays on at every texture-quality scale.** Dropping it on the 4x
     canvas was measured as visually free (canvas interior differs by at most
     12/255 on 0.0006 % of pixels at 1200x820, 21/255 on 0.0002 % at 2200x1300)

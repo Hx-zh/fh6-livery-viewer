@@ -130,15 +130,18 @@ def sync_viewer(commit: str) -> None:
     if not dst.parent.is_dir():
         log(f"· {commit} dist/3DViewer 不存在, 跳过同步(发版时由 release_build 暂存)")
         return
-    if dst.is_file() and dst.stat().st_mtime >= src.stat().st_mtime:
-        return
     try:
+        src_mtime = src.stat().st_mtime
+        if dst.is_file() and dst.stat().st_mtime >= src_mtime:
+            return
         shutil.copyfile(src, dst)
     except OSError as e:
+        # 同步是尽力而为: 目标正被运行中的预览窗口占用、或被并发删除, 都只记日志。
+        # 不能让"测试包带旧查看器"变成"构建失败"。
         log(f"· {commit} 3DViewer 同步失败({e}); 测试包将带旧查看器, 关闭预览窗口后重跑")
         return
     log(f"· {commit} 已同步 3DViewer <- viewer3d/build "
-        f"({datetime.fromtimestamp(src.stat().st_mtime):%m-%d %H:%M})")
+        f"({datetime.fromtimestamp(src_mtime):%m-%d %H:%M})")
 
 
 def run_hook() -> None:

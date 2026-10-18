@@ -290,6 +290,11 @@ void NativeShapeRenderer::release() {
     compositeProgram_.removeAllShaders();
     sceneFbo_.reset();
     sceneFboSize_ = {};
+    // The tile multisample target survives passes, so it has to be freed here while the GL
+    // context is still current.
+    sceneMultisampleFbo_.reset();
+    scenePassMultisampled_ = false;
+    lastScenePassMultisampled_ = false;
     ranges_.clear();
     vertices_.clear();
     viewportLocation_ = -1;
@@ -522,8 +527,14 @@ bool NativeShapeRenderer::drawSceneToFbo(
     // only the peak allocation changes. Without multisampling there is no transient target to
     // shrink, and beginScenePass() draws straight into the atlas, so tiling would only scale the
     // viewport down — the direct path always renders the whole canvas in one pass.
-    const bool multisample = multisampleAllowed(size);
-    const QSize tile = multisample ? sceneTileSize(size) : size;
+    bool multisample = multisampleAllowed(size);
+    QSize tile = multisample ? sceneTileSize(size) : size;
+    if (multisample && !ensureMultisampleTarget(tile)) {
+        // Out of VRAM for even one tile: render the whole canvas in a single direct pass rather
+        // than stepping tile by tile with a shrunken viewport.
+        multisample = false;
+        tile = size;
+    }
     bool drew = false;
     for (int y = 0; y < size.height(); y += tile.height()) {
         for (int x = 0; x < size.width(); x += tile.width()) {
@@ -1001,8 +1012,12 @@ GLuint NativeShapeRenderer::renderScenesToTexture(
     // Full rebuild: same tiled path as drawSceneToFbo, with the per-section clip rects. Tiling
     // only applies to the multisampled path — without it beginScenePass() renders straight into
     // the atlas, where a tile-sized viewport would squash every tile into the same corner.
-    const bool multisample = multisampleAllowed(size);
-    const QSize tile = multisample ? sceneTileSize(size) : size;
+    bool multisample = multisampleAllowed(size);
+    QSize tile = multisample ? sceneTileSize(size) : size;
+    if (multisample && !ensureMultisampleTarget(tile)) {
+        multisample = false;
+        tile = size;
+    }
     for (int y = 0; y < size.height(); y += tile.height()) {
         for (int x = 0; x < size.width(); x += tile.width()) {
             const QRect rect(x, y, std::min(tile.width(), size.width() - x),
@@ -1075,35 +1090,51 @@ QSize NativeShapeRenderer::sceneTileSize(const QSize &canvas) const {
     return QSize(std::min(canvas.width(), tileEdge), std::min(canvas.height(), tileEdge));
 }
 
+bool NativeShapeRenderer::ensureMultisampleTarget(const QSize &passSize) {
+    constexpr int kSceneSamples = 4;
+    if (sceneMultisampleFbo_ != nullptr && sceneMultisampleFbo_->size() == passSize
+        && sceneMultisampleFbo_->isValid()) {
+        return true;
+    }
+    QOpenGLFramebufferObjectFormat format;
+    format.setInternalTextureFormat(GL_RGBA8);
+    format.setAttachment(QOpenGLFramebufferObject::NoAttachment);
+    format.setSamples(kSceneSamples);
+    sceneMultisampleFbo_ = std::make_unique<QOpenGLFramebufferObject>(passSize, format);
+    if (!sceneMultisampleFbo_->isValid()) {
+        sceneMultisampleFbo_.reset();
+        return false;
+    }
+    return true;
+}
+
 QOpenGLFramebufferObject *NativeShapeRenderer::beginScenePass(QOpenGLFunctions *functions,
                                                              const QSize &passSize,
                                                              bool multisample) {
-    constexpr int kSceneSamples = 4;
-    if (multisample) {
-        if (sceneMultisampleFbo_ == nullptr || sceneMultisampleFbo_->size() != passSize
-            || !sceneMultisampleFbo_->isValid()) {
-            QOpenGLFramebufferObjectFormat format;
-            format.setInternalTextureFormat(GL_RGBA8);
-            format.setAttachment(QOpenGLFramebufferObject::NoAttachment);
-            format.setSamples(kSceneSamples);
-            sceneMultisampleFbo_ = std::make_unique<QOpenGLFramebufferObject>(passSize, format);
-            if (!sceneMultisampleFbo_->isValid()) {
-                sceneMultisampleFbo_.reset();
-            }
-        }
+    if (multisample && !ensureMultisampleTarget(passSize)) {
+        // Caller asked for multisampling but the target could not be allocated. Report the failure
+        // instead of silently binding the atlas: the tiled loops shift their transform per tile,
+        // so falling back to a tile-sized direct pass would squeeze every tile into one corner.
+        return nullptr;
     }
+    // Only take the multisample target when this pass actually asked for it: it outlives the pass
+    // (tiles reuse it), and binding it from a pass that wanted to draw straight into the atlas
+    // would make endScenePass() resolve the whole target over the atlas, wiping the sections that
+    // pass did not redraw — exactly what the incremental (scissor-preserving) path must not do.
+    const bool useMultisample = multisample && sceneMultisampleFbo_ != nullptr;
     QOpenGLFramebufferObject *target =
-        sceneMultisampleFbo_ != nullptr ? sceneMultisampleFbo_.get() : sceneFbo_.get();
+        useMultisample ? sceneMultisampleFbo_.get() : sceneFbo_.get();
     if (target == nullptr || !target->isValid()) {
         return nullptr;
     }
+    scenePassMultisampled_ = useMultisample;
     target->bind();
     functions->glViewport(0, 0, std::max(passSize.width(), 1), std::max(passSize.height(), 1));
     return target;
 }
 
 void NativeShapeRenderer::endScenePass(QOpenGLFunctions *functions, const QRect &targetRect) {
-    if (sceneMultisampleFbo_ != nullptr) {
+    if (scenePassMultisampled_ && sceneMultisampleFbo_ != nullptr) {
         // GL framebuffers are bottom-up while the tile loop works in top-down canvas coordinates,
         // so the destination rect has to be flipped vertically before resolving. Getting this
         // wrong shifts every tile by a multiple of the tile height and the atlas comes out
@@ -1128,6 +1159,8 @@ void NativeShapeRenderer::endScenePass(QOpenGLFunctions *functions, const QRect 
     } else if (sceneFbo_ != nullptr) {
         sceneFbo_->release();
     }
+    lastScenePassMultisampled_ = scenePassMultisampled_;
+    scenePassMultisampled_ = false;
     // The tile target is kept for the next tile / rebuild; it is bounded by sceneTileSize().
 }
 
@@ -1175,7 +1208,7 @@ void NativeShapeRenderer::verifyAtlasContent(QOpenGLFunctions *functions, const 
     const int total = kTile * kTile * kTilesX * kTilesY;
     std::fprintf(stderr, "ATLASVERIFY coverage=%d/%d (%.1f%%) msaa=%d\n", covered, total,
                  100.0 * static_cast<double>(covered) / static_cast<double>(total),
-                 sceneMultisampleFbo_ != nullptr ? 1 : 0);
+                 lastScenePassMultisampled_ ? 1 : 0);
 }
 
 void NativeShapeRenderer::compositeScene(QOpenGLFunctions *functions, const QSize &size, bool clearBackground) {
