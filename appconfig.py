@@ -33,7 +33,6 @@ _DEFAULTS: dict[str, Any] = {"key_hold_ms": 15, "key_gap_ms": 50,
                               "auto_refresh": True, "cars_auto_check": True,
                               "manual_dir": "", "game_dir": "",
                               "card_scale": 1.0,
-                              "viewer_tiled_msaa": True,
                               "viewer_max_windows": 1}
 
 
@@ -67,9 +66,6 @@ def load() -> dict[str, Any]:
         if (isinstance(v, (int, float)) and not isinstance(v, bool)
                 and CARD_SCALE_MIN <= float(v) <= CARD_SCALE_MAX):
             out["card_scale"] = float(v)
-        v = obj.get("viewer_tiled_msaa")
-        if isinstance(v, bool):
-            out["viewer_tiled_msaa"] = v
         v = obj.get("viewer_max_windows")
         if (isinstance(v, int) and not isinstance(v, bool)
                 and 0 <= v <= VIEWER_WINDOWS_MAX):
@@ -133,14 +129,6 @@ def set_card_scale(value: float) -> bool:
     写失败退化为仅本次运行有效, 不报错。"""
     cfg = load()
     cfg["card_scale"] = min(CARD_SCALE_MAX, max(CARD_SCALE_MIN, round(float(value), 2)))
-    return _write(cfg)
-
-
-def set_viewer_tiled_msaa(value: bool) -> bool:
-    """保存「3D 预览分块 MSAA」开关(读-改-写, 保留其它字段)。
-    True = 分块渲染(省显存), False = 整张单块(旧行为, 略快)。"""
-    cfg = load()
-    cfg["viewer_tiled_msaa"] = bool(value)
     return _write(cfg)
 
 

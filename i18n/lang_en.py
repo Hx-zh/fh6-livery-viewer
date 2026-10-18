@@ -246,7 +246,6 @@ STRINGS = {
     '未找到 FH6 游戏安装目录, 请手动选择(含 media 的安装根)': 'FH6 game folder not found — please pick it manually (the install root containing media)',
     '所选目录不包含 media\\Cars, 可能不是游戏安装根。': 'The selected folder has no media\\Cars; it may not be the game install root.',
     '3D 预览窗口数上限(0 = 不限制):': 'Max simultaneous 3D preview windows (0 = unlimited):',
-    '3D 预览分块渲染(省显存, 关闭可略快)': 'Render the 3D preview in tiles (saves VRAM; off is slightly faster)',
     '上限 1 = 新预览在同一个窗口里换涂装/换车模; 0 = 每次预览都开新窗口': 'Limit 1 reuses one window and swaps the livery/car in place; 0 opens a new window every time',
     '请输入整数': 'Please enter a whole number',
     '窗口数上限取值范围 0~{max}': 'The window limit must be between 0 and {max}',

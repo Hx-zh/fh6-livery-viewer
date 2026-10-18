@@ -2929,8 +2929,7 @@ class App(tk.Tk):
         ttk.Button(row_game, text=_("浏览…"), command=_browse_game).pack(
             side=tk.LEFT, padx=(6, 0))
 
-        # 3D 预览(内置查看器)行为: 窗口数量上限 + 图集是否分块渲染。
-        # 两项都即时生效(下次点「3D 预览」即采用), 无需重启。
+        # 3D 预览(内置查看器)行为: 窗口数量上限。即时生效(下次点「3D 预览」即采用)。
         row_viewer = tk.Frame(body)
         row_viewer.grid(row=6, column=0, columnspan=4, sticky=tk.W, pady=(10, 0))
         ttk.Label(row_viewer, text=_("3D 预览窗口数上限(0 = 不限制):")).pack(
@@ -2940,18 +2939,12 @@ class App(tk.Tk):
         ttk.Spinbox(row_viewer, from_=0, to=appconfig.VIEWER_WINDOWS_MAX, width=6,
                     textvariable=windows_var).pack(side=tk.LEFT, padx=(6, 0))
 
-        tiled_var = tk.BooleanVar(
-            value=bool(cfg_now.get("viewer_tiled_msaa", True)))
-        ttk.Checkbutton(
-            body, text=_("3D 预览分块渲染(省显存, 关闭可略快)"),
-            variable=tiled_var).grid(row=7, column=0, columnspan=4, sticky=tk.W,
-                                     pady=(6, 0))
         ttk.Label(body, foreground="#666", text=_(
             "上限 1 = 新预览在同一个窗口里换涂装/换车模; 0 = 每次预览都开新窗口")).grid(
-            row=8, column=0, columnspan=4, sticky=tk.W, pady=(2, 0))
+            row=7, column=0, columnspan=4, sticky=tk.W, pady=(2, 0))
 
         btns = ttk.Frame(body)
-        btns.grid(row=9, column=0, columnspan=4, sticky=tk.E, pady=(10, 0))
+        btns.grid(row=8, column=0, columnspan=4, sticky=tk.E, pady=(10, 0))
 
         def _save():
             try:
@@ -2978,7 +2971,6 @@ class App(tk.Tk):
             self._game_dir = game_var.get().strip()
             appconfig.set_game_dir(self._game_dir)
             appconfig.set_viewer_max_windows(windows)
-            appconfig.set_viewer_tiled_msaa(tiled_var.get())
             self.status_var.set(
                 _("按键节奏: 保持 {hold}ms + 间隔 {gap}ms (已保存)").format(
                     hold=hold, gap=gap))
@@ -3235,11 +3227,12 @@ class App(tk.Tk):
                       (查看器侧 FH6_VIEWER_REUSE=1 + 本地套接字接管);
           0        —— 不限制, 每次预览新开一个独立进程;
           N(2..16) —— 最多并存 N 个, 超出时关掉最早启动的那个。
-        viewer_tiled_msaa 传给查看器决定图集是否分块渲染(省显存 / 少画几遍)。"""
+
+        图集分块渲染是查看器内部默认行为(省显存), 不在设置里暴露; 需要时可用
+        环境变量 FH6_VIEWER_TILED_MSAA=0 / FLS_ATLAS_TILE=<px> 手动覆盖。"""
         cfg = appconfig.load()
         max_windows = int(cfg.get("viewer_max_windows", 1))
         env = os.environ.copy()
-        env["FH6_VIEWER_TILED_MSAA"] = "1" if cfg.get("viewer_tiled_msaa", True) else "0"
         if max_windows == 1:
             env["FH6_VIEWER_REUSE"] = "1"
         else:
