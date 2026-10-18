@@ -456,6 +456,8 @@ class App(tk.Tk):
         # viewer_max_windows=1 时新预览复用同一窗口(单实例接管), >1 时最多并存 N 个,
         # 0 = 不限制。见 _fls_launch()。
         self._fls_procs: list[tuple[subprocess.Popen, str]] = []
+        self._fls_raise_job: str | None = None    # 「把查看器提到前台」的待触发任务
+        self._fls_raised = False                  # 本次预览是否已成功提过一次
         # 按键节奏(appconfig 持久化, 缺省回默认): 「设置」里可改
         _cfg = appconfig.load()
         self.key_hold_ms = int(_cfg.get("key_hold_ms", DEFAULT_KEY_HOLD_MS))
@@ -524,6 +526,7 @@ class App(tk.Tk):
     def _on_close(self):
         """关窗: 取消自动刷新/缩放防抖 job(缩放待应用步进先落盘, 避免
         关窗前最后一下滚轮/按钮丢失), 停掉缩略图线程池再销毁。"""
+        self._fls_raise_cancel()
         if self._watch_job is not None:
             self.after_cancel(self._watch_job)
             self._watch_job = None
@@ -3287,20 +3290,53 @@ class App(tk.Tk):
                                  _("启动 3D 查看器失败: {err}").format(err=e))
             return
         # 子进程抢前台仍可能被系统挡住(授权有时只对下一条 SetForegroundWindow 生效, 且复用
-        # 模式下真正弹窗口的是另一个进程), 所以隔几拍再用 AttachThreadInput 版本兜底。
-        for delay in (1200, 3000, 5000):
-            try:
-                self.after(delay, self._fls_raise_viewer)
-            except RuntimeError:
-                break
+        # 模式下真正弹窗口的是另一个进程), 所以再补一次 AttachThreadInput 版本。只排一个任务、
+        # 失败才继续重试, 且一旦你回到主窗口就放弃 —— 否则之后每次点主窗口都会被弹回查看器。
+        self._fls_raise_cancel()
+        self._fls_raised = False               # 是否已经成功把查看器提到前台过一次
+        try:
+            self._fls_raise_job = self.after(800, self._fls_raise_step)
+        except RuntimeError:
+            pass
         self.status_var.set(_("已打开 3D 预览"))
 
-    def _fls_raise_viewer(self):
-        """把 3D 查看器窗口提到前台(关窗后 after 仍可能触发, 全程吞异常)。"""
+    def _fls_raise_cancel(self):
+        """取消待触发的「提到前台」任务(重复点预览 / 关窗时避免堆积)。"""
+        job = getattr(self, "_fls_raise_job", None)
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except Exception:  # noqa: BLE001  窗口销毁后取消失败属正常
+                pass
+            self._fls_raise_job = None
+
+    def _fls_raise_step(self, left: int = 6):
+        """把 3D 查看器提到前台: 成功即停; 已经提过一次、你又点回主窗口则放弃。
+
+        只在预览刚打开的一小段时间内重试(800ms 起、每次 350ms, 最多约 3 秒), 不长期抢焦点。"""
+        self._fls_raise_job = None
         try:
             hwnd = find_game_window(flsbridge.VIEWER_EXE_NAME.lower())
-            if hwnd:
+            if hwnd is not None:
+                fg = _u32.GetForegroundWindow()
+                if fg == hwnd:
+                    self._fls_raised = True         # 已经在前台, 收工
+                    return
+                if self._fls_raised:
+                    # 已经成功提过一次; 现在前台又是自己(用户点回了主窗口) → 别再抢。
+                    pid = wintypes.DWORD()
+                    _u32.GetWindowThreadProcessId(fg, ctypes.byref(pid))
+                    if pid.value == os.getpid():
+                        return
                 force_foreground(hwnd)
+                if _u32.GetForegroundWindow() == hwnd:
+                    self._fls_raised = True
+                    return                          # 这一次成功了, 不再重试
+            if left > 0:
+                self._fls_raise_job = self.after(
+                    350, lambda: self._fls_raise_step(left - 1))
+        except RuntimeError:
+            pass                                # 窗口已销毁
         except Exception:  # noqa: BLE001  纯 UI 体验兜底, 失败不影响功能
             pass
 
