@@ -99,13 +99,46 @@ bool forwardToRunningInstance(const QString &liveryPath, const QString &gameRoot
     return acknowledged;
 }
 
+// Directory names carry the generation ("Forza Horizon 5" / "ForzaHorizon6" / "FH5"). An older
+// install also has media/Cars, so structure alone cannot tell them apart — and a stale setting
+// pointing at one would send every car lookup to the wrong game. Names with no generation number
+// are accepted, since people rename their install folders.
+bool isFh6Root(const QString &path)
+{
+    static const QRegularExpression version(
+        QStringLiteral(R"((?:horizon\s*([0-9]+)|\bFH\s*([0-9]+)\b))"),
+        QRegularExpression::CaseInsensitiveOption);
+    QDir dir(path);
+    for (int depth = 0; depth < 3; ++depth) {
+        const QString name = dir.dirName();
+        if (name.isEmpty()) {
+            break;
+        }
+        QRegularExpressionMatchIterator matches = version.globalMatch(name);
+        while (matches.hasNext()) {
+            const QRegularExpressionMatch match = matches.next();
+            const QString digit = match.captured(1).isEmpty() ? match.captured(2)
+                                                              : match.captured(1);
+            if (digit != QLatin1String("6")) {
+                return false;            // another generation in the path
+            }
+        }
+        if (!dir.cdUp()) {
+            break;
+        }
+    }
+    return true;
+}
+
 bool isGameRoot(const QString &path)
 {
     const QDir dir(path);
-    return QFileInfo(QDir(dir.filePath(QStringLiteral("media"))).filePath(
-                         QStringLiteral("Cars"))).isDir()
-           || QFileInfo(QDir(dir.filePath(QStringLiteral("Content")))
-                            .filePath(QStringLiteral("media/Cars"))).isDir();
+    const bool hasMediaCars =
+        QFileInfo(QDir(dir.filePath(QStringLiteral("media"))).filePath(
+                      QStringLiteral("Cars"))).isDir()
+        || QFileInfo(QDir(dir.filePath(QStringLiteral("Content")))
+                         .filePath(QStringLiteral("media/Cars"))).isDir();
+    return hasMediaCars && isFh6Root(path);
 }
 
 // Normalize to the directory that directly contains media/Cars: Store builds
@@ -208,22 +241,38 @@ QString resolveGameFolder(bool *cancelled)
 {
     QSettings settings;
     QString folder = settings.value(QStringLiteral("gameFolder")).toString();
-    if (!folder.isEmpty() && QFileInfo(folder).isDir()) {
-        return folder;
+    if (!folder.isEmpty()) {
+        const QString normalized = normalizeGameRoot(folder);
+        if (isGameRoot(normalized)) {
+            return normalized;
+        }
+        // Remembered folder is gone or is another generation — drop it so detection runs.
+        settings.remove(QStringLiteral("gameFolder"));
     }
     folder = detectGameFolder();
     if (!folder.isEmpty()) {
         settings.setValue(QStringLiteral("gameFolder"), folder);
         return folder;
     }
-    folder = QFileDialog::getExistingDirectory(
-        nullptr, QStringLiteral("Forza Horizon 6 game folder"));
-    if (folder.isEmpty()) {
-        *cancelled = true;
-        return QString();
+    // Keep asking until a real FH6 folder is chosen: an older install also has media/Cars, and
+    // silently accepting it would make every car model lookup fail.
+    for (;;) {
+        folder = QFileDialog::getExistingDirectory(
+            nullptr, QStringLiteral("Forza Horizon 6 game folder"));
+        if (folder.isEmpty()) {
+            *cancelled = true;
+            return QString();
+        }
+        const QString normalized = normalizeGameRoot(folder);
+        if (isGameRoot(normalized)) {
+            settings.setValue(QStringLiteral("gameFolder"), normalized);
+            return normalized;
+        }
+        QMessageBox::warning(
+            nullptr, QStringLiteral("FH6 3D"),
+            QStringLiteral("这不是 Forza Horizon 6 的安装目录（需要包含 media/Cars，"
+                           "且不能是 Forza Horizon 5 等其它代数）。\n\n请重新选择，或取消。"));
     }
-    settings.setValue(QStringLiteral("gameFolder"), folder);
-    return folder;
 }
 
 } // namespace
@@ -320,12 +369,19 @@ int main(int argc, char *argv[])
     }
 
     bool gameCancelled = false;
-    QString gameRoot = parser.value(gameOption);
+    // Store installs pass the outer folder; point at the media-containing dir.
+    QString gameRoot = normalizeGameRoot(parser.value(gameOption));
+    if (!gameRoot.isEmpty() && !isGameRoot(gameRoot)) {
+        // A stale/incorrect setting (typically an older Forza Horizon install) must not be used:
+        // every car lookup would go to the wrong game. Drop it and let detection / the picker
+        // find the right one.
+        qWarning("ignoring game folder that is not Forza Horizon 6: %s",
+                 qUtf8Printable(gameRoot));
+        gameRoot.clear();
+    }
     if (gameRoot.isEmpty()) {
         gameRoot = resolveGameFolder(&gameCancelled);
     }
-    // Store installs pass the outer folder; point at the media-containing dir.
-    gameRoot = normalizeGameRoot(gameRoot);
 
     // Raster decals: build the on-disk pack from the user's game files on
     // first run (or after a game update); failures only degrade logos.
@@ -391,8 +447,13 @@ int main(int argc, char *argv[])
                         return;
                     }
                     const QString path = QString::fromUtf8(payload.left(first));
-                    const QString root = normalizeGameRoot(
+                    QString root = normalizeGameRoot(
                         QString::fromUtf8(payload.mid(first + 1, second - first - 1)));
+                    if (!root.isEmpty() && !isGameRoot(root)) {
+                        // Same filter as the command line: keep the window's current folder
+                        // rather than switching it to another generation.
+                        root.clear();
+                    }
                     if (!path.isEmpty() && path != window.currentLiveryPath()) {
                         QString error;
                         if (!window.openLivery(path, root, &error)) {

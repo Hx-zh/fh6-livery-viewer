@@ -12,7 +12,6 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
-#include <QRegularExpression>
 #include <QStatusBar>
 #include <QVBoxLayout>
 
@@ -145,27 +144,6 @@ bool ViewerWindow::openLivery(const QString &path, const QString &gameRoot,
     return true;
 }
 
-// Same trap as the host app: an older Forza Horizon install also has media/Cars, so a stale
-// game-folder setting can point the viewer at, say, Forza Horizon 5. Say which one it is instead
-// of only reporting that the archive is missing.
-QString wrongGenerationHint(const QString &gameRoot)
-{
-    static const QRegularExpression version(
-        QStringLiteral(R"((?:horizon\s*([0-9]+)|\bFH\s*([0-9]+)\b))"),
-        QRegularExpression::CaseInsensitiveOption);
-    const QRegularExpressionMatch match = version.match(gameRoot);
-    if (!match.hasMatch()) {
-        return {};
-    }
-    const QString digit = match.captured(1).isEmpty() ? match.captured(2)
-                                                      : match.captured(1);
-    if (digit == QLatin1String("6")) {
-        return {};
-    }
-    return QStringLiteral("（游戏目录看起来是 Forza Horizon %1，3D 预览需要 Forza Horizon 6）")
-        .arg(digit);
-}
-
 void ViewerWindow::applyProject()
 {
     const gui::CarRegistry &registry = gui::sharedCarRegistry();
@@ -218,8 +196,8 @@ void ViewerWindow::loadCarModel()
     if (path.isEmpty()) {
         preview_->clearModel();
         statusLabel_->setText(
-            QStringLiteral("Car archive %1 not found under %2%3")
-                .arg(modelCode, carsDir, wrongGenerationHint(gameRoot_)));
+            QStringLiteral("Car archive %1 not found under %2")
+                .arg(modelCode, carsDir));
         return;
     }
     statusLabel_->setText(QStringLiteral("Loading car model…"));
