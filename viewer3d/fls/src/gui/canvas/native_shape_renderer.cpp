@@ -998,16 +998,21 @@ QOpenGLFramebufferObject *NativeShapeRenderer::beginScenePass(QOpenGLFunctions *
         allowMultisample = false;
     }
     // FH6LiveryViewer local change: skip MSAA on the 4x canvas (8192x4096).
-    // At that resolution one atlas texel is already ~1/8 of an on-screen car pixel and the
-    // atlas is sampled bilinearly with mipmaps, so the multisample pass has nothing left to
-    // smooth. Measured on a 1200x820 window with the project's sample liveries: the canvas
+    // At that resolution one atlas texel is already a small fraction of an on-screen car pixel
+    // and the atlas is sampled bilinearly with mipmaps, so the multisample pass has little left
+    // to smooth. Measured on a 1200x820 window with the project's sample liveries: the canvas
     // interior differs by at most 12/255 on 0.0006% of pixels with MSAA on vs off (the 5.9%
     // "difference" a naive full-window diff reports is entirely the window border shifting by
     // one pixel between captures). It costs ~442 MB of VRAM per viewer instance, which is what
     // limits how many preview windows can be open at once, so spend it only on the scales that
     // need it (1x/2x, where the atlas is close to the display resolution).
-    constexpr int kMultisampleMaxCanvasWidth = 4096;
-    if (allowMultisample && size.width() > kMultisampleMaxCanvasWidth) {
+    // FLS_MSAA_MAX_WIDTH overrides the cut-off, so MSAA on the 4x canvas can still be A/B
+    // compared (e.g. `FLS_MSAA_MAX_WIDTH=99999` forces it on everywhere).
+    int multisampleMaxCanvasWidth = 4096;
+    if (qEnvironmentVariableIsSet("FLS_MSAA_MAX_WIDTH")) {
+        multisampleMaxCanvasWidth = qEnvironmentVariableIntValue("FLS_MSAA_MAX_WIDTH");
+    }
+    if (allowMultisample && size.width() > multisampleMaxCanvasWidth) {
         allowMultisample = false;
     }
     if (allowMultisample) {

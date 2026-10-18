@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -107,8 +108,37 @@ def build_once(commit: str) -> bool:
         log(f"✗ {commit} 拷贝变体失败({e}); 输出/目标 exe 正被运行中的测试窗口占用, "
             f"关闭后重跑 python tools/dev_build.py")
         return False
+    sync_viewer(commit)
     log(f"✓ {commit} -> {TARGET.name} {TARGET.stat().st_size:,}B ({time.time() - t0:.0f}s)")
     return True
+
+
+def sync_viewer(commit: str) -> None:
+    """把本地 viewer3d/build 的查看器同步到 dist/3DViewer。
+
+    测试包(TARGET)是打包模式: 启动查看器时找的是 exe 同目录 3DViewer\\, 而不是源码树。
+    不刷新这一步的话, 每次 commit 都产出「新 app + 上次发版时暂存的旧查看器」的组合——
+    改过 viewer3d/ 却在测试包里看不到效果(2026-10-18 实际踩坑: 抗锯齿修复已提交, 测试包
+    里仍是修复前的 exe)。只拷贝 exe: assets 与 Qt DLL 由发版流程管理, 且校验过是一致的。
+    """
+    src = ROOT / "viewer3d" / "build" / "FH6Livery3DViewer.exe"
+    dst = ROOT / "dist" / "3DViewer" / "FH6Livery3DViewer.exe"
+    if not src.is_file():
+        log(f"· {commit} viewer3d/build 无查看器, 跳过 3DViewer 同步"
+            f"(先跑 pwsh viewer3d/build-local.ps1)")
+        return
+    if not dst.parent.is_dir():
+        log(f"· {commit} dist/3DViewer 不存在, 跳过同步(发版时由 release_build 暂存)")
+        return
+    if dst.is_file() and dst.stat().st_mtime >= src.stat().st_mtime:
+        return
+    try:
+        shutil.copyfile(src, dst)
+    except OSError as e:
+        log(f"· {commit} 3DViewer 同步失败({e}); 测试包将带旧查看器, 关闭预览窗口后重跑")
+        return
+    log(f"· {commit} 已同步 3DViewer <- viewer3d/build "
+        f"({datetime.fromtimestamp(src.stat().st_mtime):%m-%d %H:%M})")
 
 
 def run_hook() -> None:

@@ -30,7 +30,9 @@ This directory contains a vendored snapshot of code from **Forza Livery Studio**
     empty MSAA target would erase the sections it does not redraw.
     `FLS_VERIFY_ATLAS=1` samples 32 tiles of the atlas after each rebuild and
     prints coverage, which is how a bad resolve is caught without watching the
-    screen; `FLS_ATLAS_MSAA=0` turns the path off for on-screen A/B testing.
+    screen; `FLS_ATLAS_MSAA=0` turns the path off for on-screen A/B testing, and
+    `FLS_MSAA_MAX_WIDTH=<px>` overrides the canvas-width cut-off below
+    (`FLS_MSAA_MAX_WIDTH=99999` forces MSAA on at every scale).
     **MSAA is skipped when the canvas is wider than 4096 px** (i.e. the 4x
     texture-quality setting): at 8192x4096 one atlas texel is already ~1/8 of
     an on-screen car pixel and the atlas is sampled bilinearly with mipmaps, so
