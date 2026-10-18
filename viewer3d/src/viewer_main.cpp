@@ -343,6 +343,11 @@ int main(int argc, char *argv[])
     ViewerWindow window(std::move(project), gameRoot, liveryPath);
     window.setStartupNote(rasterNote);
     window.show();
+    // Take the foreground explicitly: the host grants us the right with
+    // AllowSetForegroundWindow(ASFW_ANY) before spawning, but QWidget::show() alone leaves the new
+    // window behind the host on Windows (it only flashes in the taskbar).
+    window.raise();
+    window.activateWindow();
 
     // Serve further previews into this window when the host asked for reuse.
     if (reuse && serverReady) {

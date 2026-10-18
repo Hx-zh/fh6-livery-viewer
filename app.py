@@ -3271,6 +3271,14 @@ class App(tk.Tk):
                     pass
                 self._fls_procs = [(p, b) for p, b in self._fls_procs
                                    if p is not old_proc]
+        # Windows 前台锁: 只有「当前前台进程」才有权把别的窗口提到前台, 而查看器是我们刚
+        # 启动的子进程(复用模式下是那个早已在跑的实例)。ASFW_ANY = -1 把这份权限一次性授给
+        # 任意进程, 于是查看器自己 show()/activateWindow() 才能真正抢到焦点。
+        try:
+            _u32.AllowSetForegroundWindow(-1)          # ASFW_ANY
+        except (AttributeError, OSError):
+            pass
+
         try:
             proc = subprocess.Popen(args, close_fds=True, env=env)  # noqa: S603
             self._fls_procs.append((proc, base))
@@ -3278,7 +3286,23 @@ class App(tk.Tk):
             messagebox.showerror(_("3D 预览"),
                                  _("启动 3D 查看器失败: {err}").format(err=e))
             return
+        # 子进程抢前台仍可能被系统挡住(授权有时只对下一条 SetForegroundWindow 生效, 且复用
+        # 模式下真正弹窗口的是另一个进程), 所以隔几拍再用 AttachThreadInput 版本兜底。
+        for delay in (1200, 3000, 5000):
+            try:
+                self.after(delay, self._fls_raise_viewer)
+            except RuntimeError:
+                break
         self.status_var.set(_("已打开 3D 预览"))
+
+    def _fls_raise_viewer(self):
+        """把 3D 查看器窗口提到前台(关窗后 after 仍可能触发, 全程吞异常)。"""
+        try:
+            hwnd = find_game_window(flsbridge.VIEWER_EXE_NAME.lower())
+            if hwnd:
+                force_foreground(hwnd)
+        except Exception:  # noqa: BLE001  纯 UI 体验兜底, 失败不影响功能
+            pass
 
     def _fls_missing(self):
         """内置查看器缺失(发布包不完整 / 源码运行未本地构建): 说明与出路。"""
