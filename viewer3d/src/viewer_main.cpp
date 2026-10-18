@@ -11,14 +11,21 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QLockFile>
 #include <QMessageBox>
 #include <QRegularExpression>
-#include <QSettings>
+#include <QSaveFile>
 #include <QThread>
 #include <QTimer>
+
+#ifdef Q_OS_WIN
+#  include <qt_windows.h>          // only for the one-time legacy registry cleanup
+#endif
 
 #include <algorithm>
 
@@ -160,6 +167,36 @@ QString normalizeGameRoot(const QString &path)
     return path;
 }
 
+// Read a REG_SZ straight from the registry. Used for Steam's own keys and for the one-time
+// migration of our old setting: QSettings both reads and *creates* keys, and this viewer must not
+// write to the registry at all.
+QString readRegistryString(void *rootKey, const wchar_t *subKey, const wchar_t *valueName)
+{
+#ifdef Q_OS_WIN
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(static_cast<HKEY>(rootKey), subKey, 0, KEY_READ, &key)
+        != ERROR_SUCCESS) {
+        return QString();
+    }
+    wchar_t buffer[1024] = {};
+    DWORD size = sizeof(buffer);
+    DWORD type = 0;
+    QString value;
+    if (RegQueryValueExW(key, valueName, nullptr, &type,
+                         reinterpret_cast<LPBYTE>(buffer), &size) == ERROR_SUCCESS
+        && (type == REG_SZ || type == REG_EXPAND_SZ)) {
+        value = QString::fromWCharArray(buffer).trimmed();
+    }
+    RegCloseKey(key);
+    return value;
+#else
+    Q_UNUSED(rootKey);
+    Q_UNUSED(subKey);
+    Q_UNUSED(valueName);
+    return QString();
+#endif
+}
+
 QStringList steamRoots()
 {
     QStringList roots;
@@ -168,13 +205,9 @@ QStringList steamRoots()
             roots.push_back(p);
         }
     };
-    QSettings cu(QStringLiteral("HKEY_CURRENT_USER\\Software\\Valve\\Steam"),
-                 QSettings::NativeFormat);
-    add(cu.value(QStringLiteral("SteamPath")).toString());
-    QSettings lm(QStringLiteral(
-                     "HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Valve\\Steam"),
-                 QSettings::NativeFormat);
-    add(lm.value(QStringLiteral("InstallPath")).toString());
+    add(readRegistryString(HKEY_CURRENT_USER, L"Software\\Valve\\Steam", L"SteamPath"));
+    add(readRegistryString(HKEY_LOCAL_MACHINE,
+                           L"SOFTWARE\\WOW6432Node\\Valve\\Steam", L"InstallPath"));
     add(QStringLiteral("C:/Program Files (x86)/Steam"));
     for (char drive = 'C'; drive <= 'Z'; ++drive) {
         add(QStringLiteral("%1:/SteamLibrary").arg(drive));
@@ -237,21 +270,111 @@ QString detectGameFolder()
     return QString();
 }
 
+// ---------------------------------------------------------------- app config
+// The remembered game folder belongs in the host app's config file
+// (%LOCALAPPDATA%\FH6LiveryViewer\config.json, field "game_dir"), not in the registry: the viewer
+// used to keep its own copy under HKCU\Software\ForzaTools\... via QSettings, which left two
+// sources of truth for one value — the app could clear a wrong folder while the viewer kept using
+// its own stale one.
+QString appConfigPath()
+{
+    const QString base = qEnvironmentVariable("LOCALAPPDATA").trimmed();
+    if (base.isEmpty()) {
+        return QString();
+    }
+    return QDir(base).filePath(QStringLiteral("FH6LiveryViewer/config.json"));
+}
+
+QString readSavedGameFolder()
+{
+    const QString path = appConfigPath();
+    if (path.isEmpty()) {
+        return QString();
+    }
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return QString();
+    }
+    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+    if (!doc.isObject()) {
+        return QString();
+    }
+    const QJsonValue value = doc.object().value(QStringLiteral("game_dir"));
+    return value.isString() ? value.toString().trimmed() : QString();
+}
+
+// Read-modify-write so the other fields the host owns are preserved, through QSaveFile so a
+// half-written config can never replace a good one.
+void saveGameFolder(const QString &folder)
+{
+    const QString path = appConfigPath();
+    if (path.isEmpty()) {
+        return;
+    }
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QJsonObject root;
+    {
+        QFile file(path);
+        if (file.open(QIODevice::ReadOnly)) {
+            const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+            if (doc.isObject()) {
+                root = doc.object();
+            }
+        }
+    }
+    root.insert(QStringLiteral("game_dir"), folder);
+    QSaveFile out(path);
+    if (!out.open(QIODevice::WriteOnly)) {
+        return;
+    }
+    out.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
+    out.commit();
+}
+
+// One-time: adopt a value left behind by older builds, then drop the registry key for good so the
+// viewer never touches the registry for its own settings again.
+//
+// Read with RegOpenKeyExW and not QSettings: merely reading through QSettings recreates the key,
+// which is the opposite of what this is for. Opening with KEY_READ cannot create anything.
+QString takeLegacyGameFolder()
+{
+#ifdef Q_OS_WIN
+    static const wchar_t *kSubKey = L"Software\\ForzaTools\\FH6Livery3DViewer";
+    const QString value = readRegistryString(HKEY_CURRENT_USER, kSubKey, L"gameFolder");
+    // Drop the key whatever it held: it is our only entry there and nothing reads it any more.
+    RegDeleteTreeW(HKEY_CURRENT_USER, kSubKey);
+    return value;
+#else
+    return QString();
+#endif
+}
+
+void migrateLegacyGameFolder()
+{
+    const QString value = takeLegacyGameFolder();
+    if (value.isEmpty() || !readSavedGameFolder().isEmpty()) {
+        return;
+    }
+    const QString normalized = normalizeGameRoot(value);
+    if (isGameRoot(normalized)) {
+        saveGameFolder(normalized);
+    }
+}
+
 QString resolveGameFolder(bool *cancelled)
 {
-    QSettings settings;
-    QString folder = settings.value(QStringLiteral("gameFolder")).toString();
+    QString folder = readSavedGameFolder();
     if (!folder.isEmpty()) {
         const QString normalized = normalizeGameRoot(folder);
         if (isGameRoot(normalized)) {
             return normalized;
         }
-        // Remembered folder is gone or is another generation — drop it so detection runs.
-        settings.remove(QStringLiteral("gameFolder"));
+        // Remembered folder is gone or is another generation — clear it so detection can run and
+        // the host app sees the same value we do.
+        saveGameFolder(QString());
     }
     folder = detectGameFolder();
     if (!folder.isEmpty()) {
-        settings.setValue(QStringLiteral("gameFolder"), folder);
         return folder;
     }
     // Keep asking until a real FH6 folder is chosen: an older install also has media/Cars, and
@@ -265,7 +388,7 @@ QString resolveGameFolder(bool *cancelled)
         }
         const QString normalized = normalizeGameRoot(folder);
         if (isGameRoot(normalized)) {
-            settings.setValue(QStringLiteral("gameFolder"), normalized);
+            saveGameFolder(normalized);
             return normalized;
         }
         QMessageBox::warning(
@@ -297,6 +420,10 @@ int main(int argc, char *argv[])
         QStringLiteral("folder"));
     parser.addOption(gameOption);
     parser.process(app);
+
+    // Older builds remembered the game folder in the registry; fold it into the host app's config
+    // and delete the key, so this process never reads or writes the registry for settings again.
+    migrateLegacyGameFolder();
 
     const QStringList positional = parser.positionalArguments();
     QString liveryPath = positional.isEmpty() ? QString() : positional.first();
