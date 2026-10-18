@@ -3201,10 +3201,20 @@ class App(tk.Tk):
     def _resolve_game_root(self) -> Path | None:
         """游戏安装目录: 设置里指定且有效 → 自动探测 → 弹一次目录选择框并记住。
         返回值一律归一化为直接含 media 的目录(商店版 = <root>\\Content)。
-        None = 用户放弃(查看器不带 --game 启动, 自行兜底)。"""
+        None = 用户放弃(查看器不带 --game 启动, 自行兜底)。
+
+        每一处都要确认是**第 6 代**: 同一台机器上 Forza Horizon 5 的目录同样含
+        `media\\Cars`, 认错的话所有车模都会报 "Car archive ... not found"。"""
         cand = self._game_dir.strip()
         if cand:
             resolved = flsbridge.resolve_game_root(cand)
+            if resolved is not None and not flsbridge.is_fh6_root(resolved):
+                # 记住的目录其实是旧作(常见于自动探测曾把 FH5 当成 FH6) —— 清掉重新来
+                self._game_dir = ""
+                appconfig.set_game_dir("")
+                self.status_var.set(
+                    _("已清除不是 FH6 的游戏目录设置: {dir}").format(dir=cand))
+                resolved = None
             if resolved is not None:
                 return resolved
         detected = flsbridge.detect_game_root()
@@ -3219,6 +3229,12 @@ class App(tk.Tk):
             messagebox.showwarning(
                 _("3D 预览"),
                 _("所选目录不包含 media\\Cars, 可能不是游戏安装根。"), parent=self)
+            return None
+        if not flsbridge.is_fh6_root(resolved):
+            messagebox.showwarning(
+                _("3D 预览"),
+                _("所选目录看起来是其它代数(如 Forza Horizon 5)。"
+                  "3D 预览需要 Forza Horizon 6 的安装目录。"), parent=self)
             return None
         self._game_dir = str(resolved)
         appconfig.set_game_dir(self._game_dir)

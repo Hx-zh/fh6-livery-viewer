@@ -249,4 +249,6 @@ STRINGS = {
     '上限 1 = 新预览在同一个窗口里换涂装/换车模; 0 = 每次预览都开新窗口': 'Limit 1 reuses one window and swaps the livery/car in place; 0 opens a new window every time',
     '请输入整数': 'Please enter a whole number',
     '窗口数上限取值范围 0~{max}': 'The window limit must be between 0 and {max}',
+    '已清除不是 FH6 的游戏目录设置: {dir}': 'Cleared the game folder setting, which is not Forza Horizon 6: {dir}',
+    '所选目录看起来是其它代数(如 Forza Horizon 5)。3D 预览需要 Forza Horizon 6 的安装目录。': 'That folder looks like another game in the series (e.g. Forza Horizon 5). The 3D preview needs the Forza Horizon 6 install folder.',
 }

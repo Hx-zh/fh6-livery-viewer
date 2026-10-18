@@ -22,6 +22,30 @@ VIEWER_SUBDIR = "3DViewer"          # 发布 zip 内置查看器的子目录
 
 _VDF_LIB_RE = re.compile(r'"path"\s+"([^"]+)"')
 _DRIVES = "CDEFGHIJKLMNOPQRSTUVWXYZ"
+# 目录名里的代数: "Forza Horizon 5" / "ForzaHorizon6" / "FH5" 都按这个抓。
+_HORIZON_VER_RES = (
+    re.compile(r"horizon\s*([0-9]+)", re.IGNORECASE),
+    re.compile(r"\bFH\s*([0-9]+)\b", re.IGNORECASE),
+)
+
+
+def is_fh6_root(path: Path | str) -> bool:
+    """这个（已归一化的）游戏根是不是 **第 6 代**。
+
+    只看 `media\\Cars` 存在与否不够 —— 同一台机器上 Forza Horizon 5 也满足，
+    自动探测会把它当成 FH6 传给查看器，于是所有车模都报 "Car archive ... not found"
+    （用户实测：`D:\\XboxGames\\Forza Horizon 5\\Content`）。所以路径最后几段里
+    只要有代数编号，就必须是 6；没有编号的目录名（有人会把 FH6 改成别的名字）放行。"""
+    try:
+        p = Path(path)
+    except (TypeError, ValueError):
+        return True
+    names = [p.name] + [q.name for q in list(p.parents)[:2]]
+    versions = []
+    for name in names:
+        for pattern in _HORIZON_VER_RES:
+            versions.extend(pattern.findall(name))
+    return not versions or "6" in versions
 
 
 def find_viewer() -> Path | None:
@@ -114,7 +138,9 @@ def _steam_libraries() -> list[Path]:
 
 
 def _xbox_candidates() -> list[Path]:
-    """商店版: 各盘 XboxGames\\ 下最多两层的目录（归一化为含 media 的层）。"""
+    """商店版: 各盘 XboxGames\\ 下最多两层的目录（归一化为含 media 的层）。
+
+    只收 FH6 —— 同机装过的 FH5/FH4 也带 media\\Cars，不过滤就会把车模目录指到旧作。"""
     found: list[Path] = []
     for drive in _DRIVES:
         root = Path(f"{drive}:\\XboxGames")
@@ -122,7 +148,7 @@ def _xbox_candidates() -> list[Path]:
             if not root.is_dir():
                 continue
             for sub in root.iterdir():
-                if not sub.is_dir():
+                if not sub.is_dir() or not is_fh6_root(sub):
                     continue
                 resolved = resolve_game_root(sub)
                 if resolved is not None:
