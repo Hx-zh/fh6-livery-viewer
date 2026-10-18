@@ -2994,8 +2994,42 @@ class App(tk.Tk):
                 pass
             os.startfile(d)  # noqa: S606
 
+        def _clear_legacy():
+            """删除旧版本遗留(注册表键 + %APPDATA% 下的旧贴花缓存)。
+
+            刻意做成显式按钮而不是启动时自动迁移/删除: 该工具整体只读、不擅自动用户数据,
+            旧位置只做只读兼容, 清不清由用户决定。"""
+            items = appconfig.legacy_leftovers()
+            if not items:
+                messagebox.showinfo(
+                    _("清除旧版本缓存/注册表"),
+                    _("没有发现旧版本的缓存或注册表残留。"), parent=dlg)
+                return
+            lines = [f"{p}  ({size / 1048576:.1f} MB)" if size >= 0 else p
+                     for p, size in items]
+            if not messagebox.askyesno(
+                    _("清除旧版本缓存/注册表"),
+                    _("将删除以下旧版本遗留内容(不可撤销):\n\n{items}\n\n"
+                      "新版数据(%LOCALAPPDATA%\\FH6LiveryViewer)与游戏文件不受影响。")
+                    .format(items="\n".join(lines)), parent=dlg):
+                return
+            removed, failed = appconfig.clear_legacy()
+            if failed:
+                messagebox.showwarning(
+                    _("清除旧版本缓存/注册表"),
+                    _("部分内容未能删除:\n{failed}\n\n已删除:\n{removed}").format(
+                        failed="\n".join(failed), removed="\n".join(removed) or _("无")),
+                    parent=dlg)
+            else:
+                messagebox.showinfo(
+                    _("清除旧版本缓存/注册表"),
+                    _("已清除:\n{removed}").format(removed="\n".join(removed)),
+                    parent=dlg)
+
         ttk.Button(btns, text=_("打开配置目录"),
                    command=_open_cfg_dir).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btns, text=_("清除旧版本缓存/注册表"),
+                   command=_clear_legacy).pack(side=tk.LEFT, padx=2)
         ttk.Button(btns, text=_("恢复默认"), command=_reset).pack(side=tk.LEFT, padx=2)
         ttk.Button(btns, text=_("确定"), command=_save).pack(side=tk.LEFT, padx=2)
         ttk.Button(btns, text=_("取消"), command=dlg.destroy).pack(side=tk.LEFT, padx=2)

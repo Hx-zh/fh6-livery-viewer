@@ -83,42 +83,30 @@ QString rasterDecalPackPath()
 
 namespace {
 
-// Where older builds (and upstream FLS) kept it. Only read for the one-time move.
+// Where older builds (and upstream FLS) kept it. Only read, never moved or deleted from here:
+// cleaning it up is an explicit action in the host app's settings.
 QString legacyRasterDecalPackPath()
 {
     return QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
         .filePath(QStringLiteral("raster/decal_textures.bin"));
 }
 
-// Move a pack left in the old location instead of rebuilding or keeping two 67 MB copies.
-void adoptLegacyRasterDecalPack()
+// Any usable pack, new location first. Keeps an install that has not been migrated yet from
+// rebuilding a 67 MB pack it already has somewhere.
+QString existingRasterDecalPack()
 {
-    const QString target = rasterDecalPackPath();
-    const QString legacy = legacyRasterDecalPackPath();
-    if (target == legacy || QFileInfo::exists(target) || !QFileInfo(legacy).isFile()) {
-        return;
+    for (const QString &path : {rasterDecalPackPath(), legacyRasterDecalPackPath()}) {
+        if (QFileInfo(path).isFile()) {
+            return path;
+        }
     }
-    QDir().mkpath(QFileInfo(target).absolutePath());
-    if (!QFile::rename(legacy, target) && !QFile::copy(legacy, target)) {
-        return;
-    }
-    if (QFileInfo::exists(legacy)) {
-        QFile::remove(legacy);
-    }
-    // Drop the now-empty directories we owned (<AppData>/ForzaTools/FH6Livery3DViewer/raster).
-    // rmdir() refuses non-empty directories, so anything else living there is left alone — and
-    // the shared "ForzaTools" parent (also used by other tools) is never touched.
-    const QString rasterDir = QFileInfo(legacy).absolutePath();
-    QDir().rmdir(rasterDir);
-    QDir().rmdir(QFileInfo(rasterDir).absolutePath());
+    return QString();
 }
 
 } // namespace
 
 bool ensureRasterDecalPack(const QString &gameRoot, QString *error)
 {
-    adoptLegacyRasterDecalPack();
-
     // Shipped pack next to the executable wins: releases carry a pre-built
     // decal_textures.bin, so the first preview needs no build at all.
     const QString shipped =
@@ -136,13 +124,15 @@ bool ensureRasterDecalPack(const QString &gameRoot, QString *error)
         if (error != nullptr) {
             *error = QStringLiteral("Decals.zip not found under the game folder");
         }
-        return QFile::exists(rasterDecalPackPath());
+        return !existingRasterDecalPack().isEmpty();
     }
 
+    // A pack in either location counts: an install that has not been migrated yet must not
+    // rebuild 67 MB it already has.
     const QString packPath = rasterDecalPackPath();
-    const QFileInfo packInfo(packPath);
-    if (packInfo.isFile()
-        && packInfo.lastModified() >= zipInfo.lastModified()) {
+    const QFileInfo cachedInfo(existingRasterDecalPack());
+    if (cachedInfo.isFile()
+        && cachedInfo.lastModified() >= zipInfo.lastModified()) {
         return true; // cache exists and is newer than the game archive
     }
 

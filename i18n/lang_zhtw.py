@@ -251,4 +251,9 @@ STRINGS = {
     "窗口数上限取值范围 0~{max}": "視窗數上限取值範圍 0~{max}",
     "已清除不是 FH6 的游戏目录设置: {dir}": "已清除不是 FH6 的遊戲目錄設定: {dir}",
     "所选目录看起来是其它代数(如 Forza Horizon 5)。3D 预览需要 Forza Horizon 6 的安装目录。": "所選目錄看起來是其它世代(如 Forza Horizon 5)。3D 預覽需要 Forza Horizon 6 的安裝目錄。",
+    '清除旧版本缓存/注册表': '清除舊版本快取/登錄檔',
+    '没有发现旧版本的缓存或注册表残留。': '沒有發現舊版本快取或登錄檔殘留。',
+    '将删除以下旧版本遗留内容(不可撤销):\n\n{items}\n\n新版数据(%LOCALAPPDATA%\\FH6LiveryViewer)与游戏文件不受影响。': '將刪除以下舊版本殘留內容(無法復原):\n\n{items}\n\n新版資料(%LOCALAPPDATA%\\FH6LiveryViewer)與遊戲檔案不受影響。',
+    '部分内容未能删除:\n{failed}\n\n已删除:\n{removed}': '部分內容未能刪除:\n{failed}\n\n已刪除:\n{removed}',
+    '已清除:\n{removed}': '已清除:\n{removed}',
 }

@@ -331,31 +331,26 @@ void saveGameFolder(const QString &folder)
     out.commit();
 }
 
-// One-time: adopt a value left behind by older builds, then drop the registry key for good so the
-// viewer never touches the registry for its own settings again.
-//
-// Read with RegOpenKeyExW and not QSettings: merely reading through QSettings recreates the key,
-// which is the opposite of what this is for. Opening with KEY_READ cannot create anything.
-QString takeLegacyGameFolder()
+// Older builds kept the folder in the registry. Read it once so such an install keeps working,
+// but leave the key in place: removing things from the registry is the user's call, via
+// 「设置 → 清除旧版本缓存/注册表」 in the host app.
+QString readLegacyGameFolder()
 {
 #ifdef Q_OS_WIN
-    static const wchar_t *kSubKey = L"Software\\ForzaTools\\FH6Livery3DViewer";
-    const QString value = readRegistryString(HKEY_CURRENT_USER, kSubKey, L"gameFolder");
-    // Drop the key whatever it held: it is our only entry there and nothing reads it any more.
-    RegDeleteTreeW(HKEY_CURRENT_USER, kSubKey);
-    return value;
+    return readRegistryString(HKEY_CURRENT_USER,
+                              L"Software\\ForzaTools\\FH6Livery3DViewer",
+                              L"gameFolder");
 #else
     return QString();
 #endif
 }
 
-void migrateLegacyGameFolder()
+void adoptLegacyGameFolder()
 {
-    const QString value = takeLegacyGameFolder();
-    if (value.isEmpty() || !readSavedGameFolder().isEmpty()) {
-        return;
+    if (!readSavedGameFolder().isEmpty()) {
+        return;                       // already migrated or set by the host
     }
-    const QString normalized = normalizeGameRoot(value);
+    const QString normalized = normalizeGameRoot(readLegacyGameFolder());
     if (isGameRoot(normalized)) {
         saveGameFolder(normalized);
     }
@@ -421,9 +416,10 @@ int main(int argc, char *argv[])
     parser.addOption(gameOption);
     parser.process(app);
 
-    // Older builds remembered the game folder in the registry; fold it into the host app's config
-    // and delete the key, so this process never reads or writes the registry for settings again.
-    migrateLegacyGameFolder();
+    // Older builds remembered the game folder in the registry; adopt it into the app config so
+    // such an install keeps its setting. The key itself stays untouched — 「设置 → 清除旧版本
+    // 缓存/注册表」 in the host app is what removes it.
+    adoptLegacyGameFolder();
 
     const QStringList positional = parser.positionalArguments();
     QString liveryPath = positional.isEmpty() ? QString() : positional.first();

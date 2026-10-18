@@ -254,4 +254,9 @@ STRINGS = {
     "窗口数上限取值范围 0~{max}": "창 개수 한도는 0~{max} 범위여야 합니다",
     "已清除不是 FH6 的游戏目录设置: {dir}": "Forza Horizon 6가 아닌 게임 폴더 설정을 지웠습니다: {dir}",
     "所选目录看起来是其它代数(如 Forza Horizon 5)。3D 预览需要 Forza Horizon 6 的安装目录。": "선택한 폴더는 다른 작품(예: Forza Horizon 5)인 것 같습니다. 3D 미리보기에는 Forza Horizon 6 설치 폴더가 필요합니다.",
+    '清除旧版本缓存/注册表': '이전 버전 캐시/레지스트리 정리',
+    '没有发现旧版本的缓存或注册表残留。': '이전 버전의 캐시나 레지스트리 잔여물이 없습니다.',
+    '将删除以下旧版本遗留内容(不可撤销):\n\n{items}\n\n新版数据(%LOCALAPPDATA%\\FH6LiveryViewer)与游戏文件不受影响。': '다음 이전 버전 잔여물을 삭제합니다(되돌릴 수 없음):\n\n{items}\n\n새 데이터(%LOCALAPPDATA%\\FH6LiveryViewer)와 게임 파일은 영향받지 않습니다.',
+    '部分内容未能删除:\n{failed}\n\n已删除:\n{removed}': '일부를 삭제하지 못했습니다:\n{failed}\n\n삭제됨:\n{removed}',
+    '已清除:\n{removed}': '정리했습니다:\n{removed}',
 }

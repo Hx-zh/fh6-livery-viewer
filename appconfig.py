@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+from pathlib import Path
 from typing import Any
 
 import carupdate
@@ -139,3 +141,115 @@ def set_viewer_max_windows(value: int) -> bool:
     cfg = load()
     cfg["viewer_max_windows"] = min(VIEWER_WINDOWS_MAX, max(0, int(value)))
     return _write(cfg)
+
+
+# ---------------------------------------------------------------- 旧版本遗留
+# 2026-10 之前, 查看器把游戏目录存在注册表 `HKCU\Software\ForzaTools\FH6Livery3DViewer`,
+# 贴花缓存放在 `%APPDATA%\ForzaTools\FH6Livery3DViewer\raster\`。现在两样都归到
+# `%LOCALAPPDATA%\FH6LiveryViewer`, 旧位置只读兼容、**绝不自动删除**——清理是用户显式动作
+# (「设置 → 清除旧版本缓存/注册表」), 而不是启动时的副作用。
+LEGACY_REG_SUBKEY = r"Software\ForzaTools\FH6Livery3DViewer"
+
+
+def _legacy_appdata_dir() -> Path | None:
+    raw = os.environ.get("APPDATA", "").strip()
+    if not raw:
+        return None
+    return Path(raw) / "ForzaTools" / "FH6Livery3DViewer"
+
+
+def _legacy_reg_values() -> list[str] | None:
+    """旧注册表键里的值(形如 "gameFolder=..." ); 键不存在返回 None。"""
+    try:
+        import winreg          # noqa: PLC0415  Windows 专用, 保持模块可导入
+    except ImportError:
+        return None
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, LEGACY_REG_SUBKEY)
+    except OSError:
+        return None
+    values: list[str] = []
+    try:
+        index = 0
+        while True:
+            try:
+                name, data, _kind = winreg.EnumValue(key, index)
+            except OSError:
+                break
+            values.append(f"{name}={data}")
+            index += 1
+    finally:
+        key.Close()
+    return values
+
+
+def legacy_leftovers() -> list[tuple[str, int]]:
+    """旧版本遗留项: [(可读路径, 字节数)]; 字节数 -1 表示注册表键。空列表 = 没有残留。"""
+    found: list[tuple[str, int]] = []
+    d = _legacy_appdata_dir()
+    if d is not None and d.is_dir():
+        total = 0
+        try:
+            for f in d.rglob("*"):
+                try:
+                    if f.is_file():
+                        total += f.stat().st_size
+                except OSError:
+                    continue
+        except OSError:
+            pass
+        found.append((str(d), total))
+    values = _legacy_reg_values()
+    if values is not None:
+        key = f"HKCU\\{LEGACY_REG_SUBKEY}"
+        found.append((f"{key}  ({'; '.join(values)})" if values else key, -1))
+    return found
+
+
+def _delete_reg_tree(root: Any, sub: str) -> None:
+    """递归删除注册表子键(winreg.DeleteKey 拒绝非空键)。"""
+    import winreg                      # noqa: PLC0415
+
+    try:
+        key = winreg.OpenKey(root, sub, 0, winreg.KEY_ALL_ACCESS)
+    except OSError:
+        return
+    try:
+        while True:
+            try:
+                child = winreg.EnumKey(key, 0)
+            except OSError:
+                break
+            _delete_reg_tree(key, child)
+    finally:
+        key.Close()
+    winreg.DeleteKey(root, sub)
+
+
+def clear_legacy() -> tuple[list[str], list[str]]:
+    """删除旧版本遗留(目录 + 注册表键)。返回 (已删除, 失败说明)。
+
+    只碰 `ForzaTools\\FH6Livery3DViewer` 这一层: 共享的 `ForzaTools` 上级目录若还装着
+    别的东西就留着。当前配置与缓存(`%LOCALAPPDATA%\\FH6LiveryViewer`)不受影响。"""
+    removed: list[str] = []
+    failed: list[str] = []
+    d = _legacy_appdata_dir()
+    if d is not None and d.is_dir():
+        try:
+            shutil.rmtree(d)
+            removed.append(str(d))
+            try:
+                d.parent.rmdir()       # 仅当 ForzaTools 已空
+            except OSError:
+                pass
+        except OSError as e:
+            failed.append(f"{d}: {e}")
+    if _legacy_reg_values() is not None:
+        try:
+            import winreg          # noqa: PLC0415
+
+            _delete_reg_tree(winreg.HKEY_CURRENT_USER, LEGACY_REG_SUBKEY)
+            removed.append(f"HKCU\\{LEGACY_REG_SUBKEY}")
+        except OSError as e:
+            failed.append(f"HKCU\\{LEGACY_REG_SUBKEY}: {e}")
+    return removed, failed

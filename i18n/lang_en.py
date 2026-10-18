@@ -251,4 +251,9 @@ STRINGS = {
     '窗口数上限取值范围 0~{max}': 'The window limit must be between 0 and {max}',
     '已清除不是 FH6 的游戏目录设置: {dir}': 'Cleared the game folder setting, which is not Forza Horizon 6: {dir}',
     '所选目录看起来是其它代数(如 Forza Horizon 5)。3D 预览需要 Forza Horizon 6 的安装目录。': 'That folder looks like another game in the series (e.g. Forza Horizon 5). The 3D preview needs the Forza Horizon 6 install folder.',
+    '清除旧版本缓存/注册表': 'Clear old-version cache / registry',
+    '没有发现旧版本的缓存或注册表残留。': 'No leftover cache or registry entries from older versions were found.',
+    '将删除以下旧版本遗留内容(不可撤销):\n\n{items}\n\n新版数据(%LOCALAPPDATA%\\FH6LiveryViewer)与游戏文件不受影响。': 'The following leftovers from older versions will be deleted (this cannot be undone):\n\n{items}\n\nCurrent data (%LOCALAPPDATA%\\FH6LiveryViewer) and game files are not affected.',
+    '部分内容未能删除:\n{failed}\n\n已删除:\n{removed}': 'Some items could not be deleted:\n{failed}\n\nDeleted:\n{removed}',
+    '已清除:\n{removed}': 'Cleared:\n{removed}',
 }
