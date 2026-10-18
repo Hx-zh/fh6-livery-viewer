@@ -3243,8 +3243,10 @@ class App(tk.Tk):
         if root is not None:
             args += ["--game", str(root)]
 
-        # 超出上限: 先关最早启动的窗口, 再开新的(单实例复用模式不会走到这里)。
-        if max_windows > 0:
+        # 超出上限时先关最早启动的窗口。仅在 max_windows > 1 时适用:
+        # max_windows == 1 走单实例接管, 那个"已存在的窗口"正是要被复用的目标,
+        # 提前 terminate 会连它的接管套接字一起杀掉, 新进程就只能另开一个窗口。
+        if max_windows > 1:
             live = self._fls_live()
             while live and len(live) >= max_windows:
                 oldest_proc, _b = live.pop(0)
