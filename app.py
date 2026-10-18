@@ -82,10 +82,10 @@ CARD_W, CARD_H = 224, 232      # 卡片尺寸(用户反馈偏小, 与字号 +1 �
 THUMB_W, THUMB_H = 212, 140    # 卡片缩略图区域
 HEADER_H = 28                  # 重复分组标题行高(通栏色带, 不随卡片缩放)
 
-# 卡片墙缩放(会话级, 不持久化, 每次启动恢复 100%): 右上角 [−] 100% [+] /
+# 卡片墙缩放(appconfig 持久化, 下次启动按原倍数恢复): 右上角 [−] 100% [+] /
 # 画布 Ctrl+滚轮 / Ctrl+加减与 Ctrl+0 重置; 文字字号/偏移/截断长度等比跟随,
 # 缩略图经 LANCZOS 重采样同步缩放(原图小于目标框时同样上采样放大)
-CARD_SCALE_MIN, CARD_SCALE_MAX = 0.2, 5.0
+CARD_SCALE_MIN, CARD_SCALE_MAX = appconfig.CARD_SCALE_MIN, appconfig.CARD_SCALE_MAX
 CARD_SCALE_STEP = 0.1
 
 # 字体: UI 铬件(按钮/菜单/标签/状态)用微软雅黑; 用户数据文本(涂装名/作者/车型/
@@ -498,8 +498,9 @@ class App(tk.Tk):
         self._watch_armed_at = None               # 自动刷新: 本轮防抖首次启动时刻(monotonic, 顺延上限用)
         self._watch_offline = False               # 自动刷新: 目录整体不可访问中(状态翻转时提示一次)
         self._header_fails: dict[str, int] = {}   # 自动刷新: base -> header 解析连续失败次数(退避重试, 封顶放弃)
-        # 卡片墙缩放(会话级, 不持久化): 100% = 基准常量; 派生几何见 _apply_card_geometry
-        self.card_scale = 1.0
+        # 卡片墙缩放(appconfig 持久化): 100% = 基准常量; 派生几何见 _apply_card_geometry
+        self.card_scale = min(CARD_SCALE_MAX,
+                              max(CARD_SCALE_MIN, float(_cfg.get("card_scale", 1.0))))
         self._scale_job = None                 # 缩放防抖 job(滚轮/按钮连续触发合并)
         self._zoom_pending = 0.0               # 防抖窗口内累计的步进量
         self._apply_card_geometry()
@@ -520,11 +521,18 @@ class App(tk.Tk):
                        lambda: self.check_cars_online(manual=False))
 
     def _on_close(self):
-        """关窗: 取消自动刷新防抖 job, 停掉缩略图线程池(cancel 未开始的任务)再销毁。"""
+        """关窗: 取消自动刷新/缩放防抖 job(缩放待应用步进先落盘, 避免
+        关窗前最后一下滚轮/按钮丢失), 停掉缩略图线程池再销毁。"""
         if self._watch_job is not None:
             self.after_cancel(self._watch_job)
             self._watch_job = None
             self._watch_armed_at = None
+        if self._scale_job is not None:
+            # 防抖窗口内未应用的缩放: 不重建界面, 只把目标倍数写进配置
+            self.after_cancel(self._scale_job)
+            self._scale_job = None
+            appconfig.set_card_scale(self.card_scale + self._zoom_pending)
+            self._zoom_pending = 0.0
         if self._thumb_pool is not None:
             self._thumb_pool.shutdown(wait=False, cancel_futures=True)
         self.destroy()
@@ -545,10 +553,11 @@ class App(tk.Tk):
                           (_("备份整个存档"), self.backup_all),
                           (_("打开存档目录"), self.open_folder)):
             ttk.Button(bar, text=text, command=cmd).pack(side=tk.LEFT, padx=2)
-        # 卡片墙缩放(会话级, 不持久化): 右上角 [−] 百分比下拉 [+] 显式控件,
+        # 卡片墙缩放(appconfig 持久化, 启动恢复上次倍数): 右上角 [−] 百分比下拉 [+] 显式控件,
         # 下拉可直接选/输百分比(选中、回车或失焦生效, 非法输入回显当前值);
         # 画布上 Ctrl+滚轮、Ctrl+加减、Ctrl+0 重置同效(绑定见 _bind_zoom_keys)
-        self.scale_pct_var = tk.StringVar(value="100%")
+        self.scale_pct_var = tk.StringVar(
+            value=f"{round(self.card_scale * 100)}%")
         zoom = ttk.Frame(bar)
         zoom.pack(side=tk.RIGHT, padx=2)
         ttk.Button(zoom, text="−", width=2,
@@ -850,7 +859,8 @@ class App(tk.Tk):
     def _set_card_scale(self, scale: float):
         """切换卡片墙缩放并重建: 派生几何 → 失效缩略图缓存(键只有 base 不含
         尺寸, 旧尺寸图必须作废) → 按新列宽手动重算列数(画布宽度未变不会触发
-        <Configure>) → rebuild_grid(代次自增, 全量按新尺寸重解码, 强制重绘)。"""
+        <Configure>) → rebuild_grid(代次自增, 全量按新尺寸重解码, 强制重绘)。
+        新倍数落 appconfig(写失败仅本次运行有效, 不报错)。"""
         scale = min(CARD_SCALE_MAX, max(CARD_SCALE_MIN, round(scale, 2)))
         if abs(scale - self.card_scale) < 1e-9:
             return
@@ -863,6 +873,7 @@ class App(tk.Tk):
         self._auction_photo_amber = None
         self._cols = max(1, max(1, self.canvas.winfo_width()) // self.col_w)
         self.scale_pct_var.set(f"{round(scale * 100)}%")
+        appconfig.set_card_scale(scale)
         self.rebuild_grid()
 
     def _zoom_step(self, delta: float):
