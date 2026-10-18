@@ -20,9 +20,15 @@ if (-not $vcvars) { throw "未找到 vcvars64.bat(VCTools 工作负载未装?)" 
 $preset = if ($Debug) { "local-msvc-debug" } else { "local-msvc" }
 $buildPreset = if ($Debug) { "local-debug" } else { "local" }
 
-cmd /c "`"$vcvars`" >nul && cmake --preset $preset -S `"$root\viewer3d`" && cmake --build --preset $buildPreset"
-if ($LASTEXITCODE -ne 0) { exit 1 }
-
+# `cmake --build --preset` 会从当前目录读 CMakePresets.json, 而本脚本可能在仓库任意
+# 目录被调用, 所以显式切到 viewer3d 再构建(配置步骤用 -S 指定过源目录, 不受影响)。
+Push-Location (Join-Path $root "viewer3d")
+try {
+    cmd /c "`"$vcvars`" >nul && cmake --preset $preset -S `"$root\viewer3d`" && cmake --build --preset $buildPreset"
+    if ($LASTEXITCODE -ne 0) { exit 1 }
+} finally {
+    Pop-Location
+}
 $exe = Join-Path $root "viewer3d\build\FH6Livery3DViewer.exe"
 Write-Host "`n==> $exe"
 if ($Run) {
