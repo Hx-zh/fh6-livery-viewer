@@ -7,6 +7,7 @@
 #include <QStandardPaths>
 
 #include <algorithm>
+#include <memory>
 
 namespace fls {
 namespace {
@@ -31,13 +32,27 @@ void setError(QString *error, const QString &message) {
 } // namespace
 
 bool RasterDecalPack::load(const QString &path, QString *error) {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
+    auto file = std::make_unique<QFile>(path);
+    if (!file->open(QIODevice::ReadOnly)) {
         setError(error, QStringLiteral("could not open raster decal pack: %1").arg(path));
         return false;
     }
 
-    QByteArray bytes = file.readAll();
+    // FH6LiveryViewer local change: memory-map the pack instead of reading it into a private
+    // buffer. The pack is read-only and byte-identical for every viewer process, so mapping it
+    // lets Windows keep one physical copy and share the pages between concurrently open preview
+    // windows (each window used to commit its own 67 MB copy). Falls back to readAll() if the
+    // mapping fails (e.g. a filesystem without mapping support).
+    QByteArray bytes;
+    const qint64 packSize = file->size();
+    const uchar *mapped = packSize > 0 ? file->map(0, packSize) : nullptr;
+    if (mapped != nullptr) {
+        bytes = QByteArray::fromRawData(reinterpret_cast<const char *>(mapped),
+                                        static_cast<int>(packSize));
+        mapping_ = std::move(file);
+    } else {
+        bytes = file->readAll();
+    }
     if (bytes.size() < HeaderSize || bytes.left(8) != QByteArray(Magic, 8)) {
         setError(error, QStringLiteral("not a raster decal pack: %1").arg(path));
         return false;

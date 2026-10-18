@@ -6,6 +6,10 @@
 #include <QString>
 #include <QVector>
 
+#include <memory>
+
+class QFile;
+
 namespace fls {
 
 struct RasterDecal {
@@ -36,6 +40,10 @@ private:
         quint32 flags = 0;
     };
 
+    // FH6LiveryViewer local change: `data_` is usually a non-owning view onto a read-only
+    // memory mapping of the pack (`mapping_` owns the open file that keeps it alive).
+    // Declared before `data_` so the mapping outlives the view at destruction time.
+    std::unique_ptr<QFile> mapping_;
     QByteArray data_;
     QHash<quint32, Entry> entries_;
     QString path_;

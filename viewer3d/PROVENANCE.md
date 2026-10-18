@@ -31,6 +31,15 @@ This directory contains a vendored snapshot of code from **Forza Livery Studio**
     `FLS_VERIFY_ATLAS=1` samples 32 tiles of the atlas after each rebuild and
     prints coverage, which is how a bad resolve is caught without watching the
     screen; `FLS_ATLAS_MSAA=0` turns the path off for on-screen A/B testing.
+    **MSAA is skipped when the canvas is wider than 4096 px** (i.e. the 4x
+    texture-quality setting): at 8192x4096 one atlas texel is already ~1/8 of
+    an on-screen car pixel and the atlas is sampled bilinearly with mipmaps, so
+    the multisample pass has nothing left to smooth — measured over a
+    1200x820 window with the project's sample liveries, canvas pixels differ by
+    at most 12/255 on 0.0006 % of pixels with MSAA on vs off — while it costs
+    ~442 MB of VRAM and ~510 MB of commit per viewer instance, which is what
+    caps how many preview windows can be open at once. The 1x/2x settings keep
+    MSAA, where the atlas resolution is close to the display resolution.
   - `fls/src/gui/widgets/car_preview_widget.cpp` — orbit drag sensitivity
     0.01 -> 0.005 rad/px (user feedback: default felt too twitchy); new
     `highestDetailLodIndex()` (max-triangle LOD) so the viewer defaults to
@@ -43,7 +52,14 @@ This directory contains a vendored snapshot of code from **Forza Livery Studio**
     widget framebuffer went from 4x to 8x MSAA (verified `GL_SAMPLES` = 8).
   - `fls/src/core/raster_decals.cpp` — additional cache lookup path under
     `QStandardPaths::AppDataLocation` (raster decal pack built on first run
-    from the user's game files instead of shipping a 67 MB binary).
+    from the user's game files instead of shipping a 67 MB binary). The pack is
+    also **memory-mapped instead of `readAll()`**: it is read-only and
+    byte-identical in every viewer process, so mapping it lets Windows keep one
+    physical copy shared between concurrently open preview windows (each window
+    used to commit its own 67 MB copy). Raster decal bytes are consequently a
+    non-owning `QByteArray` view — `RasterDecalPack::mapping_` owns the open
+    `QFile` that keeps the mapping alive — and `load()` falls back to
+    `readAll()` when `QFile::map()` fails.
   - `fls/src/core/swatchbin.cpp` — share one D3D11 device across all BC7
     decodes (creating a device per texture made the 270-decal raster pack
     build take ~27 s on first run; a shared device brings it to ~2 s).
