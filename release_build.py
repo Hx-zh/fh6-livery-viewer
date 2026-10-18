@@ -82,7 +82,8 @@ GITEE_API = f"https://gitee.com/api/v5/repos/{GITEE_REPO}"
 PYRIGHT_FILES = ("app.py", "carupdate.py", "fh6save.py", "gamemem.py",
                  "flsbridge.py",
                  "i18n/__init__.py", "check_i18n.py",
-                 "i18n/lang_en.py", "i18n/lang_ja.py", "i18n/lang_ko.py", "i18n/lang_zhtw.py")
+                 "i18n/lang_en.py", "i18n/lang_ja.py", "i18n/lang_ko.py", "i18n/lang_zhtw.py",
+                 "release_build.py")   # 本文件也纳管: 它改动最频繁却一直没被门禁覆盖
 
 
 def _fix_stdio_encoding() -> None:
@@ -362,11 +363,74 @@ def _copy_vc_runtime(stage: Path) -> None:
             return
     print("[3DViewer] 警告: 未找到 VC 运行库 redist 目录, 未携带")
 
+VIEWER_WORKFLOW = "build-viewer.yml"
+# 推送 tag 会同时触发 build-viewer 与 release 两个 workflow。release 若抢先执行, 按"最近一次
+# 成功"取到的工件还是**上一次提交**的产物——实测 1.9.2 首次发布就把 10-17 的旧查看器打进了
+# zip。所以这里按 headSha 找本次提交的 run: 还在跑就等它; 等不到(说明本次没改 viewer3d/**,
+# 也就不会触发)才退回最近一次成功。
+VIEWER_WAIT_SECONDS = 1200        # 等本次提交的 run 跑完的上限
+VIEWER_START_GRACE = 90           # 等 run 出现的宽限(Actions 排队到列出约几秒)
+VIEWER_POLL_SECONDS = 15
+
+
+def _head_commit() -> str:
+    """当前打包对应的提交(Actions 里用 GITHUB_SHA, 本地用 HEAD)。"""
+    sha = os.environ.get("GITHUB_SHA", "").strip()
+    if sha:
+        return sha
+    return (_run(["git", "rev-parse", "HEAD"], check=False).stdout or "").strip()
+
+
+def _gh_run_list(gh: str, extra: list[str]) -> list[dict]:
+    r = _run([gh, "run", "list", "--workflow", VIEWER_WORKFLOW, *extra],
+             check=False)
+    try:
+        data = json.loads(r.stdout or "[]")
+    except ValueError:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _viewer_artifact_run(gh: str) -> dict | None:
+    """挑这次打包该用的 build-viewer 运行: 优先本次提交的, 否则最近一次成功。"""
+    commit = _head_commit()
+    deadline = time.monotonic() + VIEWER_WAIT_SECONDS
+    grace = time.monotonic() + VIEWER_START_GRACE
+    announced = False
+    while commit:
+        runs = _gh_run_list(gh, ["--branch", "main", "-L", "10",
+                                 "--json", "databaseId,status,conclusion,headSha"])
+        mine = [r for r in runs if r.get("headSha") == commit]
+        if mine:
+            run = mine[0]
+            if run.get("conclusion") == "success":
+                return run           # 本次提交自己的产物, 一定是最新的
+            if run.get("status") == "completed":
+                print(f"[3DViewer] 警告: 本次提交的 build-viewer "
+                      f"{run.get('conclusion')}, 改用最近一次成功工件")
+                break
+            if not announced:
+                print(f"[3DViewer] 本次提交的 build-viewer 仍在运行"
+                      f"(run {run['databaseId']}), 等待完成…")
+                announced = True
+        elif time.monotonic() >= grace:
+            # 宽限过后仍没有属于本提交的 run: 说明本次没动 viewer3d/**, 用现成的即可
+            break
+        if time.monotonic() >= deadline:
+            print("[3DViewer] 警告: 等待本次提交的 build-viewer 超时, "
+                  "改用最近一次成功工件")
+            break
+        time.sleep(VIEWER_POLL_SECONDS)
+    runs = _gh_run_list(gh, ["--branch", "main", "--status", "success", "-L", "1",
+                             "--json", "databaseId"])
+    return runs[0] if runs else None
+
+
 def _viewer_stage() -> Path | None:
     """把 3D 查看器暂存到 dist/3DViewer/。已暂存直接用; 否则 gh 拉取
-    build-viewer 工作流最近一次成功工件(发布 zip 内置 3DViewer/ 子目录,
-    端上 flsbridge 优先用它)。任何失败只告警不阻断——zip 不含查看器时,
-    「3D 预览」自动回退用户自装 Forza Livery Studio 链路。"""
+    build-viewer 工件(发布 zip 内置 3DViewer/ 子目录, 端上 flsbridge 优先用它)。
+    工件的提交匹配逻辑见 _viewer_artifact_run()。任何失败只告警不阻断——zip 不含
+    查看器时, 「3D 预览」自动回退用户自装 Forza Livery Studio 链路。"""
     stage = DIST / "3DViewer"
     staged_exe = stage / "FH6Livery3DViewer.exe"
     local_build = ROOT / "viewer3d" / "build" / "FH6Livery3DViewer.exe"
@@ -409,18 +473,15 @@ def _viewer_stage() -> Path | None:
         return stage
     gh = gh_exe()
     try:
-        r = _run([gh, "run", "list", "--workflow", "build-viewer.yml",
-                  "--branch", "main", "--status", "success", "-L", "1",
-                  "--json", "databaseId"], check=False)
-        runs = json.loads(r.stdout or "[]")
-        if not runs:
+        run = _viewer_artifact_run(gh)
+        if run is None:
             print("[3DViewer] 警告: main 上无 build-viewer 成功运行, zip 不含查看器"
                   "(回退外部 Forza Livery Studio 链路)")
             return None
         tmp = ROOT / "build" / "viewer_dl"
         if tmp.is_dir():
             shutil.rmtree(tmp)
-        _run([gh, "run", "download", str(runs[0]["databaseId"]),
+        _run([gh, "run", "download", str(run["databaseId"]),
               "--name", "FH6Livery3DViewer-win64", "-D", str(tmp)], check=True)
         inner = tmp / "FH6Livery3DViewer"
         nested = tmp / "FH6Livery3DViewer-win64.zip"
@@ -441,7 +502,7 @@ def _viewer_stage() -> Path | None:
             print(f"[3DViewer] 警告: 工件内容异常(tmp: {listing}), zip 不含查看器")
             return None
         shutil.copytree(inner, stage, dirs_exist_ok=True)
-        print(f"[3DViewer] 已暂存 {stage} (来自 run {runs[0]['databaseId']})")
+        print(f"[3DViewer] 已暂存 {stage} (来自 run {run['databaseId']})")
         return stage
     except Exception as e:  # noqa: BLE001 —— 打包不因查看器缺位而失败
         print(f"[3DViewer] 警告: 获取查看器工件失败({e}), zip 不含查看器")
