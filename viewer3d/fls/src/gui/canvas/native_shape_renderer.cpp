@@ -516,15 +516,34 @@ bool NativeShapeRenderer::drawSceneToFbo(
         return false;
     }
 
-    if (beginScenePass(functions, size, /*allowMultisample=*/true) == nullptr) {
-        return false;
-    }
-    functions->glDisable(GL_DEPTH_TEST);
-    functions->glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-    functions->glClear(GL_COLOR_BUFFER_BIT);
+    // FH6LiveryViewer local change: render the scene tile by tile so the multisample target is
+    // tile-sized. Each tile re-runs the same draw list with the transform shifted by the tile
+    // origin, so per-pixel sample count and blend order are identical to the single-pass version;
+    // only the peak allocation changes. Without multisampling there is no transient target to
+    // shrink, and beginScenePass() draws straight into the atlas, so tiling would only scale the
+    // viewport down — the direct path always renders the whole canvas in one pass.
+    const bool multisample = multisampleAllowed(size);
+    const QSize tile = multisample ? sceneTileSize(size) : size;
+    bool drew = false;
+    for (int y = 0; y < size.height(); y += tile.height()) {
+        for (int x = 0; x < size.width(); x += tile.width()) {
+            const QRect rect(x, y, std::min(tile.width(), size.width() - x),
+                             std::min(tile.height(), size.height() - y));
+            const QSize passSize = rect.size();
+            if (beginScenePass(functions, passSize, multisample) == nullptr) {
+                return drew;
+            }
+            functions->glDisable(GL_DEPTH_TEST);
+            functions->glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+            functions->glClear(GL_COLOR_BUFFER_BIT);
 
-    const bool drew = drawProjectLayers(functions, project, geometry, worldToScreen, size);
-    endScenePass(functions);
+            // Tile-local screen space: shift the world->screen transform by the tile origin.
+            const QTransform tileTransform = worldToScreen * QTransform::fromTranslate(-rect.x(), -rect.y());
+            drew = drawProjectLayers(functions, project, geometry, tileTransform, passSize) || drew;
+            endScenePass(functions, multisample ? rect : QRect());
+        }
+    }
+    verifyAtlasContent(functions, size);
     return drew;
 }
 
@@ -924,17 +943,41 @@ GLuint NativeShapeRenderer::renderScenesToTexture(
         return 0;
     }
 
-    // The incremental (scissor-preserving) pass must draw straight into the atlas: the MSAA target
-    // starts empty every pass, so resolving it would erase the sections that were not redrawn.
-    if (beginScenePass(functions, size, /*allowMultisample=*/!preserveExisting) == nullptr) {
-        return 0;
-    }
-    functions->glDisable(GL_DEPTH_TEST);
-    if (!preserveExisting) {
+    const auto drawProjects = [&](const QTransform &transform, const QSize &passSize,
+                                  const QRect &passRect, bool preserve) {
+        for (int i = 0; i < projects.size(); ++i) {
+            const QRect clip = i < clipRects.size() ? clipRects[i] : QRect();
+            if (!clip.isEmpty()) {
+                // Clip rects are in canvas space; shift them into this pass's space and clip
+                // against the pass, so a tile only redraws the sections that reach it.
+                QRect bounded = clip.translated(-passRect.x(), -passRect.y())
+                                    .intersected(QRect(QPoint(0, 0), passSize));
+                if (bounded.isEmpty()) {
+                    continue;
+                }
+                functions->glEnable(GL_SCISSOR_TEST);
+                functions->glScissor(bounded.x(),
+                                     passSize.height() - bounded.y() - bounded.height(),
+                                     bounded.width(),
+                                     bounded.height());
+            } else if (preserve) {
+                continue;
+            } else {
+                functions->glDisable(GL_SCISSOR_TEST);
+            }
+            drawProjectLayers(functions, projects[i], geometry, transform, passSize);
+        }
         functions->glDisable(GL_SCISSOR_TEST);
-        functions->glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-        functions->glClear(GL_COLOR_BUFFER_BIT);
-    } else {
+    };
+
+    if (preserveExisting) {
+        // The incremental (scissor-preserving) pass must draw straight into the atlas: the MSAA
+        // target starts empty every pass, so resolving it would erase the sections it does not
+        // redraw. Only the clear and the scissor rects are needed here, so it stays single-pass.
+        if (beginScenePass(functions, size, /*multisample=*/false) == nullptr) {
+            return 0;
+        }
+        functions->glDisable(GL_DEPTH_TEST);
         functions->glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         for (int i = 0; i < projects.size(); ++i) {
             const QRect clip = i < clipRects.size() ? clipRects[i] : QRect();
@@ -949,30 +992,36 @@ GLuint NativeShapeRenderer::renderScenesToTexture(
                                  bounded.height());
             functions->glClear(GL_COLOR_BUFFER_BIT);
         }
+        drawProjects(worldToScreen, size, QRect(QPoint(0, 0), size), /*preserve=*/true);
+        endScenePass(functions);
+        verifyAtlasContent(functions, size);
+        return sceneFbo_->texture();
     }
 
-    for (int i = 0; i < projects.size(); ++i) {
-        const QRect clip = i < clipRects.size() ? clipRects[i] : QRect();
-        if (!clip.isEmpty()) {
-            const QRect bounded = clip.intersected(QRect(QPoint(0, 0), size));
-            if (bounded.isEmpty()) {
-                continue;
+    // Full rebuild: same tiled path as drawSceneToFbo, with the per-section clip rects. Tiling
+    // only applies to the multisampled path — without it beginScenePass() renders straight into
+    // the atlas, where a tile-sized viewport would squash every tile into the same corner.
+    const bool multisample = multisampleAllowed(size);
+    const QSize tile = multisample ? sceneTileSize(size) : size;
+    for (int y = 0; y < size.height(); y += tile.height()) {
+        for (int x = 0; x < size.width(); x += tile.width()) {
+            const QRect rect(x, y, std::min(tile.width(), size.width() - x),
+                             std::min(tile.height(), size.height() - y));
+            const QSize passSize = rect.size();
+            if (beginScenePass(functions, passSize, multisample) == nullptr) {
+                return 0;
             }
-            functions->glEnable(GL_SCISSOR_TEST);
-            functions->glScissor(bounded.x(),
-                                 size.height() - bounded.y() - bounded.height(),
-                                 bounded.width(),
-                                 bounded.height());
-        } else if (preserveExisting) {
-            continue;
-        } else {
+            functions->glDisable(GL_DEPTH_TEST);
             functions->glDisable(GL_SCISSOR_TEST);
+            functions->glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+            functions->glClear(GL_COLOR_BUFFER_BIT);
+            const QTransform tileTransform =
+                worldToScreen * QTransform::fromTranslate(-rect.x(), -rect.y());
+            drawProjects(tileTransform, passSize, rect, /*preserve=*/false);
+            endScenePass(functions, multisample ? rect : QRect());
         }
-        drawProjectLayers(functions, projects[i], geometry, worldToScreen, size);
     }
-
-    functions->glDisable(GL_SCISSOR_TEST);
-    endScenePass(functions);
+    verifyAtlasContent(functions, size);
     return sceneFbo_->texture();
 }
 
@@ -988,40 +1037,56 @@ void NativeShapeRenderer::ensureSceneFramebuffer(const QSize &size) {
     sceneFboSize_ = fboSize;
 }
 
-QOpenGLFramebufferObject *NativeShapeRenderer::beginScenePass(QOpenGLFunctions *functions,
-                                                             const QSize &size,
-                                                             bool allowMultisample) {
-    constexpr int kSceneSamples = 4;
+bool NativeShapeRenderer::multisampleAllowed(const QSize &size) const {
     // FLS_ATLAS_MSAA=0 keeps the direct path, so the same binary can be A/B compared on screen.
-    if (allowMultisample && qEnvironmentVariableIsSet("FLS_ATLAS_MSAA")
+    if (qEnvironmentVariableIsSet("FLS_ATLAS_MSAA")
         && qEnvironmentVariableIntValue("FLS_ATLAS_MSAA") == 0) {
-        allowMultisample = false;
+        return false;
     }
     // FH6LiveryViewer local change: MSAA is on at every texture-quality scale by default.
-    // It costs ~442 MB of VRAM and ~510 MB of commit per viewer instance at 4x (the canvas is
-    // 8192x4096), and measurements showed the image barely changes without it — the canvas
-    // interior differs by at most 12/255 on 0.0006% of pixels at 1200x820, and at most 21/255
-    // on 0.0002% at 2200x1300 — but the quality was preferred over the memory saving
-    // (user decision, 2026-10-18), so the pass stays enabled everywhere.
-    // FLS_MSAA_MAX_WIDTH=<px> skips MSAA above that canvas width, which is how the saving was
-    // measured and how it can be traded back in (FLS_MSAA_MAX_WIDTH=4096 skips the 4x canvas)
-    // without rebuilding. 0 (the default) means no limit.
+    // Measurements showed the image barely changes without it (canvas interior differs by at most
+    // 12/255 on 0.0006% of pixels at 1200x820, 21/255 on 0.0002% at 2200x1300) while it used to
+    // cost ~442 MB of VRAM per viewer instance, but quality was preferred over that saving
+    // (user decision, 2026-10-18). The tiled pass below removes the memory cost instead.
+    // FLS_MSAA_MAX_WIDTH=<px> skips MSAA above that canvas width (0 = no limit, the default).
     int multisampleMaxCanvasWidth = 0;
     if (qEnvironmentVariableIsSet("FLS_MSAA_MAX_WIDTH")) {
         multisampleMaxCanvasWidth = qEnvironmentVariableIntValue("FLS_MSAA_MAX_WIDTH");
     }
-    if (allowMultisample && multisampleMaxCanvasWidth > 0
-        && size.width() > multisampleMaxCanvasWidth) {
-        allowMultisample = false;
+    return multisampleMaxCanvasWidth <= 0 || size.width() <= multisampleMaxCanvasWidth;
+}
+
+QSize NativeShapeRenderer::sceneTileSize(const QSize &canvas) const {
+    // FH6LiveryViewer local change: the multisample target is allocated per tile so its footprint
+    // does not scale with the canvas. 2048x2048 RGBA8 x4 samples = 64 MB, so the 4x canvas
+    // (8192x4096) needs 8 tiles and peaks at 64 MB instead of 512 MB.
+    // Tiling costs draw calls (the draw list is replayed once per tile), so it is user-selectable:
+    //   FH6_VIEWER_TILED_MSAA=0  disable it (single full-canvas target, the pre-2026-10-18 path)
+    //   FLS_ATLAS_TILE=<px>      override the tile edge (0 = off), a raw A/B knob for debugging
+    int tileEdge = 2048;
+    if (qEnvironmentVariableIsSet("FLS_ATLAS_TILE")) {
+        tileEdge = qEnvironmentVariableIntValue("FLS_ATLAS_TILE");
+    } else if (qEnvironmentVariable("FH6_VIEWER_TILED_MSAA") == QLatin1String("0")) {
+        tileEdge = 0;
     }
-    if (allowMultisample) {
-        if (sceneMultisampleFbo_ == nullptr || sceneMultisampleFbo_->size() != size
+    if (tileEdge <= 0 || (canvas.width() <= tileEdge && canvas.height() <= tileEdge)) {
+        return canvas;
+    }
+    return QSize(std::min(canvas.width(), tileEdge), std::min(canvas.height(), tileEdge));
+}
+
+QOpenGLFramebufferObject *NativeShapeRenderer::beginScenePass(QOpenGLFunctions *functions,
+                                                             const QSize &passSize,
+                                                             bool multisample) {
+    constexpr int kSceneSamples = 4;
+    if (multisample) {
+        if (sceneMultisampleFbo_ == nullptr || sceneMultisampleFbo_->size() != passSize
             || !sceneMultisampleFbo_->isValid()) {
             QOpenGLFramebufferObjectFormat format;
             format.setInternalTextureFormat(GL_RGBA8);
             format.setAttachment(QOpenGLFramebufferObject::NoAttachment);
             format.setSamples(kSceneSamples);
-            sceneMultisampleFbo_ = std::make_unique<QOpenGLFramebufferObject>(size, format);
+            sceneMultisampleFbo_ = std::make_unique<QOpenGLFramebufferObject>(passSize, format);
             if (!sceneMultisampleFbo_->isValid()) {
                 sceneMultisampleFbo_.reset();
             }
@@ -1033,29 +1098,55 @@ QOpenGLFramebufferObject *NativeShapeRenderer::beginScenePass(QOpenGLFunctions *
         return nullptr;
     }
     target->bind();
-    functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
+    functions->glViewport(0, 0, std::max(passSize.width(), 1), std::max(passSize.height(), 1));
     return target;
 }
 
-void NativeShapeRenderer::endScenePass(QOpenGLFunctions *functions) {
-    const bool multisampled = sceneMultisampleFbo_ != nullptr;
-    if (multisampled) {
+void NativeShapeRenderer::endScenePass(QOpenGLFunctions *functions, const QRect &targetRect) {
+    if (sceneMultisampleFbo_ != nullptr) {
+        // GL framebuffers are bottom-up while the tile loop works in top-down canvas coordinates,
+        // so the destination rect has to be flipped vertically before resolving. Getting this
+        // wrong shifts every tile by a multiple of the tile height and the atlas comes out
+        // scrambled even though each tile on its own is correct.
+        QRect tileRect = targetRect;
+        if (!tileRect.isEmpty() && sceneFbo_ != nullptr) {
+            const int canvasHeight = sceneFbo_->height();
+            tileRect = QRect(tileRect.x(), canvasHeight - tileRect.y() - tileRect.height(),
+                             tileRect.width(), tileRect.height());
+        }
+        if (tileRect.isEmpty()) {
+            tileRect = QRect(QPoint(0, 0), sceneMultisampleFbo_->size());
+        }
         sceneMultisampleFbo_->release();
+        // Resolve just this tile into the matching region of the atlas. With a tile-sized target
+        // the two rects are the same size, which is what makes the tiled path equivalent to the
+        // single full-canvas resolve.
         QOpenGLFramebufferObject::blitFramebuffer(
-            sceneFbo_.get(), QRect(QPoint(0, 0), sceneFbo_->size()),
+            sceneFbo_.get(), tileRect,
             sceneMultisampleFbo_.get(), QRect(QPoint(0, 0), sceneMultisampleFbo_->size()),
             GL_COLOR_BUFFER_BIT, GL_NEAREST);
     } else if (sceneFbo_ != nullptr) {
         sceneFbo_->release();
     }
-    if (sceneFbo_ != nullptr && sceneFbo_->isValid()) {
-        verifyAtlasContent(functions, sceneFbo_->size());
-    }
-    // Transient: at 4x canvas this is 8192x4096 RGBA8 x4 = ~537 MB, only alive during a rebuild.
-    sceneMultisampleFbo_.reset();
+    // The tile target is kept for the next tile / rebuild; it is bounded by sceneTileSize().
 }
 
 void NativeShapeRenderer::verifyAtlasContent(QOpenGLFunctions *functions, const QSize &size) {
+    // FLS_DUMP_ATLAS=<path> writes the resolved atlas to a PNG. This is the only reliable way to
+    // compare two rendering configurations: window screenshots depend on focus and are polluted
+    // by the border, while the atlas is exactly what the tiled and single-pass paths produce.
+    if (qEnvironmentVariableIsSet("FLS_DUMP_ATLAS") && sceneFbo_ != nullptr
+        && sceneFbo_->isValid()) {
+        sceneFbo_->bind();
+        QByteArray pixels(size.width() * size.height() * 4, '\0');
+        functions->glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        functions->glReadPixels(0, 0, size.width(), size.height(), GL_RGBA,
+                                GL_UNSIGNED_BYTE, pixels.data());
+        sceneFbo_->release();
+        QImage image(reinterpret_cast<const uchar *>(pixels.constData()), size.width(),
+                     size.height(), QImage::Format_RGBA8888);
+        image.mirrored(false, true).save(qEnvironmentVariable("FLS_DUMP_ATLAS"), "PNG");
+    }
     if (!qEnvironmentVariableIsSet("FLS_VERIFY_ATLAS")) {
         return;
     }

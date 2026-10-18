@@ -2109,7 +2109,12 @@ void CarPreviewWidget::paintGL() {
     QOpenGLFunctions *functions = ctx->functions();
 
     if (modelUploadPending_ && carRenderer_.isInitialized()) {
+        QElapsedTimer uploadTimer;
+        uploadTimer.start();
         carRenderer_.uploadModel(model_, selectedLodIndex_);
+        if (qEnvironmentVariableIsSet("QT_FORCE_STDERR_LOGGING")) {
+            qWarning("[perf] model-upload           %6lld ms", uploadTimer.elapsed());
+        }
         modelUploadPending_ = false;
         if (modelFitPending_) {
             fitCameraToModel();
@@ -2125,6 +2130,9 @@ void CarPreviewWidget::paintGL() {
     GLuint liveryTexture = 0;
     if (project_ != nullptr && geometryLoaded_ && shapeRenderer_.isInitialized()) {
         if (liveryDirty_ || liveryTexture_ == 0) {
+            // FH6LiveryViewer diagnostic: atlas rebuild timing (QT_FORCE_STDERR_LOGGING=1).
+            QElapsedTimer atlasTimer;
+            atlasTimer.start();
             const QSize texSize = liveryTextureSize();
             const bool projectImportedLivery = project_->isLivery && liveryMasks_.valid();
             const PackedLiveryLayout paintLayout = projectImportedLivery
@@ -2238,6 +2246,11 @@ void CarPreviewWidget::paintGL() {
                     *project_, geometry_, liveryWorldToScreen(paintTextureSize), paintTextureSize);
             }
             smoothLiveryTexture(functions, liveryTexture_);
+            if (qEnvironmentVariableIsSet("QT_FORCE_STDERR_LOGGING")) {
+                qWarning("[perf] atlas-rebuild          %6lld ms (%dx%d)",
+                         atlasTimer.elapsed(), paintTextureSize.width(),
+                         paintTextureSize.height());
+            }
             liveryDirty_ = false;
             liveLiveryFullDirty_ = false;
             dirtySectionIds_.clear();

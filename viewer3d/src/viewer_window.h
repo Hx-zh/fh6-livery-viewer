@@ -19,8 +19,19 @@ class ViewerWindow final : public QMainWindow {
 public:
     // Takes ownership of the imported livery project; gameRoot may be empty
     // (no car model is loaded then, the livery itself still renders).
+    // liveryPath is remembered so a repeated preview of the same file can be
+    // detected and ignored by the single-instance hand-off.
     ViewerWindow(fls::Project project, const QString &gameRoot,
-                 QWidget *parent = nullptr);
+                 const QString &liveryPath, QWidget *parent = nullptr);
+
+    // Loads another C_livery into this same window, replacing the current
+    // design and (when the car changes) its model. Used by the single-instance
+    // hand-off so repeated previews reuse one window instead of piling up
+    // processes. Returns false and fills `error` when the file cannot be read.
+    bool openLivery(const QString &path, const QString &gameRoot, QString *error);
+
+    // Path of the livery currently shown (empty for a bare project).
+    QString currentLiveryPath() const { return currentLiveryPath_; }
 
 private:
     void applyProject();
@@ -28,6 +39,7 @@ private:
 
     fls::Project project_;
     QString gameRoot_;
+    QString currentLiveryPath_;
     gui::CarPreviewWidget *preview_ = nullptr;
     QLabel *titleLabel_ = nullptr;
     QLabel *statusLabel_ = nullptr;

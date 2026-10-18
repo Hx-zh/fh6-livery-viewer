@@ -4,6 +4,7 @@
 #include "car_preview_widget.h"
 #include "car_registry.h"
 #include "game_paths.h"
+#include "project_codec.h"
 
 #include <QFileDialog>
 #include <QFrame>
@@ -23,8 +24,9 @@ constexpr int kTextureScales[] = {1, 2, 4};
 } // namespace
 
 ViewerWindow::ViewerWindow(fls::Project project, const QString &gameRoot,
-                           QWidget *parent)
-    : QMainWindow(parent), project_(std::move(project)), gameRoot_(gameRoot)
+                           const QString &liveryPath, QWidget *parent)
+    : QMainWindow(parent), project_(std::move(project)), gameRoot_(gameRoot),
+      currentLiveryPath_(liveryPath)
 {
     setWindowTitle(QStringLiteral("%1 — FH6 3D")
                        .arg(project_.name));
@@ -98,6 +100,32 @@ void ViewerWindow::setStartupNote(const QString &note)
     statusLabel_->setText(current.isEmpty()
                               ? note
                               : QStringLiteral("%1 | %2").arg(current, note));
+}
+
+bool ViewerWindow::openLivery(const QString &path, const QString &gameRoot,
+                              QString *error)
+{
+    fls::Project project;
+    try {
+        project = fls::importCLivery(path);
+    } catch (const std::exception &ex) {
+        if (error != nullptr) {
+            *error = QString::fromUtf8(ex.what());
+        }
+        return false;
+    }
+
+    project_ = std::move(project);
+    currentLiveryPath_ = path;
+    if (!gameRoot.isEmpty()) {
+        gameRoot_ = gameRoot;
+    }
+    setWindowTitle(QStringLiteral("%1 — FH6 3D").arg(project_.name));
+    statusLabel_->clear();
+    applyProject();
+    // A second preview should not keep the previous design's model around.
+    preview_->markLiveryDirtyImmediate();
+    return true;
 }
 
 void ViewerWindow::applyProject()

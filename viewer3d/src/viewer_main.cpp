@@ -11,6 +11,8 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QLocalServer>
+#include <QLocalSocket>
 #include <QMessageBox>
 #include <QRegularExpression>
 #include <QSettings>
@@ -18,6 +20,50 @@
 #include <algorithm>
 
 namespace {
+
+// --- Single-instance hand-off -------------------------------------------------
+// When the host app asks for one preview window (the default), a second "3D
+// preview" must reuse the open window instead of spawning another process: the
+// host passes FH6_VIEWER_REUSE=1, the new process forwards its livery path to
+// the running instance over a local socket and exits, and that instance swaps
+// the design (and the model when the car differs) in place.
+constexpr int kForwardConnectMs = 400;
+constexpr int kForwardWriteMs = 600;
+
+QString reuseServerName()
+{
+    QString user = qEnvironmentVariable("USERNAME");
+    if (user.isEmpty()) {
+        user = QStringLiteral("default");
+    }
+    return QStringLiteral("FH6Livery3DViewer-%1").arg(user);
+}
+
+bool reuseRequested()
+{
+    return qEnvironmentVariable("FH6_VIEWER_REUSE") == QLatin1String("1");
+}
+
+// path\n game\n — small enough to arrive in one read, but the reader buffers
+// until it has both lines anyway.
+QByteArray makePayload(const QString &liveryPath, const QString &gameRoot)
+{
+    return liveryPath.toUtf8() + '\n' + gameRoot.toUtf8() + '\n';
+}
+
+bool forwardToRunningInstance(const QString &liveryPath, const QString &gameRoot)
+{
+    QLocalSocket socket;
+    socket.connectToServer(reuseServerName());
+    if (!socket.waitForConnected(kForwardConnectMs)) {
+        return false;
+    }
+    socket.write(makePayload(liveryPath, gameRoot));
+    socket.flush();
+    socket.waitForBytesWritten(kForwardWriteMs);
+    socket.disconnectFromServer();
+    return true;
+}
 
 bool isGameRoot(const QString &path)
 {
@@ -200,6 +246,13 @@ int main(int argc, char *argv[])
     // Store installs pass the outer folder; point at the media-containing dir.
     gameRoot = normalizeGameRoot(gameRoot);
 
+    // Reuse request: hand this preview to the window that is already open and
+    // stop. Only done when the host asked for a single preview window.
+    const bool reuse = reuseRequested();
+    if (reuse && forwardToRunningInstance(liveryPath, gameRoot)) {
+        return 0;
+    }
+
     // Raster decals: build the on-disk pack from the user's game files on
     // first run (or after a game update); failures only degrade logos.
     QString rasterNote;
@@ -213,8 +266,60 @@ int main(int argc, char *argv[])
         rasterNote = QStringLiteral("raster decals: no game folder");
     }
 
-    ViewerWindow window(std::move(project), gameRoot);
+    ViewerWindow window(std::move(project), gameRoot, liveryPath);
     window.setStartupNote(rasterNote);
     window.show();
+
+    // Serve further previews into this window when the host asked for reuse.
+    QLocalServer *server = nullptr;
+    if (reuse) {
+        server = new QLocalServer(&app);
+        QLocalServer::removeServer(reuseServerName());   // clear a stale pipe
+        if (!server->listen(reuseServerName())) {
+            delete server;                               // reuse simply unavailable
+            server = nullptr;
+        } else {
+            QObject::connect(server, &QLocalServer::newConnection, &window,
+                             [server, &window]() {
+                while (QLocalSocket *socket = server->nextPendingConnection()) {
+                    // Buffer until both lines are in: a socket can deliver the
+                    // payload in more than one chunk.
+                    socket->setProperty("payload", QByteArray());
+                    QObject::connect(
+                        socket, &QLocalSocket::readyRead, socket, [socket, &window]() {
+                            QByteArray payload =
+                                socket->property("payload").toByteArray() + socket->readAll();
+                            socket->setProperty("payload", payload);
+                            const int first = payload.indexOf('\n');
+                            if (first < 0) {
+                                return;                     // wait for the rest
+                            }
+                            const int second = payload.indexOf('\n', first + 1);
+                            if (second < 0) {
+                                return;
+                            }
+                            const QString path = QString::fromUtf8(
+                                payload.left(first));
+                            const QString root = QString::fromUtf8(
+                                payload.mid(first + 1, second - first - 1));
+                            if (!path.isEmpty()
+                                && path != window.currentLiveryPath()) {
+                                QString error;
+                                if (!window.openLivery(path, root, &error)) {
+                                    QMessageBox::critical(
+                                        nullptr, QStringLiteral("FH6 3D"),
+                                        QStringLiteral("Could not read the livery:\n%1")
+                                            .arg(error));
+                                }
+                            }
+                            window.raise();
+                            window.activateWindow();
+                            socket->disconnectFromServer();
+                        });
+                }
+            });
+        }
+    }
+    Q_UNUSED(server);
     return QApplication::exec();
 }

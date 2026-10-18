@@ -86,12 +86,19 @@ private:
     void ensureSceneFramebuffer(const QSize &size);
     // FH6-LOCAL PATCH (atlas anti-aliasing): the vinyl atlas used to be rasterised with hard
     // coverage edges, so canvas resolution alone decided how blocky the artwork looked. The scene
-    // now renders into a 4x-multisampled target of the same size and is resolved into the atlas,
-    // which anti-aliases every shape edge without touching the resolution. The MSAA target is
-    // freed after each rebuild (8192x4096 RGBA8 x4 = ~537 MB transient at 4x).
-    QOpenGLFramebufferObject *beginScenePass(QOpenGLFunctions *functions, const QSize &size,
-                                            bool allowMultisample);
-    void endScenePass(QOpenGLFunctions *functions);
+    // renders into a 4x-multisampled target that is resolved into the atlas, which anti-aliases
+    // every shape edge without touching the resolution.
+    // FH6-LOCAL PATCH (tiled atlas MSAA): that target is allocated per *tile* rather than for the
+    // whole canvas. A full-canvas target at 4x (8192x4096 RGBA8 x4) costs ~512 MB of VRAM, which
+    // is what limited how many preview windows could be open; rendering the same scene once per
+    // tile with an offset transform and resolving each tile into its own atlas region produces the
+    // same image (same per-pixel sample count, same blend order) for a fraction of the memory.
+    bool multisampleAllowed(const QSize &size) const;
+    QSize sceneTileSize(const QSize &canvas) const;
+    QOpenGLFramebufferObject *beginScenePass(QOpenGLFunctions *functions, const QSize &passSize,
+                                            bool multisample);
+    // targetRect = region of the atlas the resolved tile lands in (empty = the whole atlas).
+    void endScenePass(QOpenGLFunctions *functions, const QRect &targetRect = QRect());
     void verifyAtlasContent(QOpenGLFunctions *functions, const QSize &size);
     void compositeScene(QOpenGLFunctions *functions, const QSize &size, bool clearBackground);
 
@@ -108,6 +115,8 @@ private:
     QVector<float> vertices_;
     std::unique_ptr<QOpenGLFramebufferObject> sceneFbo_;
     QSize sceneFboSize_;
+    // Tile-sized multisample target: reused across tiles and rebuilt only when the tile size
+    // changes. Peak VRAM is tileW x tileH x 4 bytes x samples instead of the whole canvas.
     std::unique_ptr<QOpenGLFramebufferObject> sceneMultisampleFbo_;
     bool initialized_ = false;
     bool geometryUploaded_ = false;

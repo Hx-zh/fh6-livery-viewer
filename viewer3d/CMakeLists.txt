@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets Svg)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets Svg Network)
 find_package(ZLIB REQUIRED)
 
 file(GLOB FLS_CORE_SOURCES CONFIGURE_DEPENDS "fls/src/core/*.cpp")
@@ -61,6 +61,7 @@ target_link_libraries(FH6Livery3DViewer PRIVATE
     Qt6::OpenGL
     Qt6::OpenGLWidgets
     Qt6::Svg
+    Qt6::Network
     ZLIB::ZLIB
     fls_clipper2
 )
