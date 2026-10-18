@@ -452,8 +452,11 @@ class App(tk.Tk):
         self._locate_cancel = False               # 取消发送标志(发送线程逐键检查)
         self._locate_keys: list[tuple[str, int]] = []
         self._locate_hwnd = None                  # 游戏窗口句柄
-        # 3D 预览(内置查看器): 已启动进程与所开涂装(同款不重复启动)
-        self._fls_proc: subprocess.Popen | None = None
+        # 3D 预览(内置查看器): 已启动的窗口列表 (proc, 涂装 base)
+        # viewer_max_windows=1 时新预览复用同一窗口(单实例接管), >1 时最多并存 N 个,
+        # 0 = 不限制。见 _fls_launch()。
+        self._fls_procs: list[tuple[subprocess.Popen, str]] = []
+        self._fls_proc: subprocess.Popen | None = None   # 最近一次启动(兼容旧引用)
         self._fls_base = ""                       # _fls_proc 打开的涂装 base
         # 按键节奏(appconfig 持久化, 缺省回默认): 「设置」里可改
         _cfg = appconfig.load()
@@ -2871,6 +2874,8 @@ class App(tk.Tk):
 
         body = ttk.Frame(dlg, padding=12)
         body.pack(fill=tk.BOTH, expand=True)
+        # 打开对话框时读一次配置, 作为 3D 预览两项的初值(保存时才写回)。
+        cfg_now = appconfig.load()
         # 第 1 行 = 两组「标签+数值框」并排(紧凑); 标题/开关行跨全部 4 列
         ttk.Label(body, text=_("自动定位按键节奏 (毫秒, 周期 = 保持 + 间隔):")).grid(
             row=0, column=0, columnspan=4, sticky=tk.W, pady=(0, 6))
@@ -2924,8 +2929,29 @@ class App(tk.Tk):
         ttk.Button(row_game, text=_("浏览…"), command=_browse_game).pack(
             side=tk.LEFT, padx=(6, 0))
 
+        # 3D 预览(内置查看器)行为: 窗口数量上限 + 图集是否分块渲染。
+        # 两项都即时生效(下次点「3D 预览」即采用), 无需重启。
+        row_viewer = tk.Frame(body)
+        row_viewer.grid(row=6, column=0, columnspan=4, sticky=tk.W, pady=(10, 0))
+        ttk.Label(row_viewer, text=_("3D 预览窗口数上限(0 = 不限制):")).pack(
+            side=tk.LEFT)
+        windows_var = tk.StringVar(
+            value=str(int(cfg_now.get("viewer_max_windows", 1))))
+        ttk.Spinbox(row_viewer, from_=0, to=appconfig.VIEWER_WINDOWS_MAX, width=6,
+                    textvariable=windows_var).pack(side=tk.LEFT, padx=(6, 0))
+
+        tiled_var = tk.BooleanVar(
+            value=bool(cfg_now.get("viewer_tiled_msaa", True)))
+        ttk.Checkbutton(
+            body, text=_("3D 预览分块渲染(省显存, 关闭可略快)"),
+            variable=tiled_var).grid(row=7, column=0, columnspan=4, sticky=tk.W,
+                                     pady=(6, 0))
+        ttk.Label(body, foreground="#666", text=_(
+            "上限 1 = 新预览在同一个窗口里换涂装/换车模; 0 = 每次预览都开新窗口")).grid(
+            row=8, column=0, columnspan=4, sticky=tk.W, pady=(2, 0))
+
         btns = ttk.Frame(body)
-        btns.grid(row=6, column=0, columnspan=4, sticky=tk.E, pady=(10, 0))
+        btns.grid(row=9, column=0, columnspan=4, sticky=tk.E, pady=(10, 0))
 
         def _save():
             try:
@@ -2936,10 +2962,23 @@ class App(tk.Tk):
             if not (0 <= hold <= 2000 and 0 <= gap <= 2000):
                 messagebox.showerror(_("设置"), _("取值范围 0~2000 毫秒"), parent=dlg)
                 return
+            try:
+                windows = int(windows_var.get())
+            except ValueError:
+                messagebox.showerror(_("设置"), _("请输入整数"), parent=dlg)
+                return
+            if not (0 <= windows <= appconfig.VIEWER_WINDOWS_MAX):
+                messagebox.showerror(
+                    _("设置"),
+                    _("窗口数上限取值范围 0~{max}").format(
+                        max=appconfig.VIEWER_WINDOWS_MAX), parent=dlg)
+                return
             self.key_hold_ms, self.key_gap_ms = hold, gap
             appconfig.save_key_timing(hold, gap)
             self._game_dir = game_var.get().strip()
             appconfig.set_game_dir(self._game_dir)
+            appconfig.set_viewer_max_windows(windows)
+            appconfig.set_viewer_tiled_msaa(tiled_var.get())
             self.status_var.set(
                 _("按键节奏: 保持 {hold}ms + 间隔 {gap}ms (已保存)").format(
                     hold=hold, gap=gap))
@@ -3142,8 +3181,7 @@ class App(tk.Tk):
                   "所以缩略图与 3D 渲染结果会不一致。"),
                 parent=self)
             return
-        if (self._fls_proc is not None and self._fls_base == it.base
-                and self._fls_proc.poll() is None):
+        if self._fls_same_livery_open(it.base):
             self.status_var.set(_("该涂装已在 3D 预览中打开"))
             return
         exe = flsbridge.find_viewer()
@@ -3151,6 +3189,16 @@ class App(tk.Tk):
             self._fls_missing()
             return
         self._fls_launch(exe, c_liv, it.base)
+
+    def _fls_live(self) -> list[tuple[subprocess.Popen, str]]:
+        """存活中的 3D 预览进程(顺手剔除已退出的——单实例接管时转发的进程会立刻退出)。"""
+        self._fls_procs = [(p, b) for p, b in self._fls_procs
+                           if p.poll() is None]
+        return self._fls_procs
+
+    def _fls_same_livery_open(self, base: str) -> bool:
+        """该涂装是否已有窗口在显示。复用模式下窗口不退出, 靠这条避免重复转发。"""
+        return any(b == base for _p, b in self._fls_live())
 
     def _resolve_game_root(self) -> Path | None:
         """游戏安装目录: 设置里指定且有效 → 自动探测 → 弹一次目录选择框并记住。
@@ -3180,14 +3228,44 @@ class App(tk.Tk):
 
     def _fls_launch(self, exe: Path, c_liv: Path, base: str):
         """启动内置 3D 查看器打开涂装文件; 自动附 --game 游戏目录(零配置优先);
-        找不到游戏目录时弹一次选择框并记住。失败弹窗(文件被删/占用等)。"""
+        找不到游戏目录时弹一次选择框并记住。失败弹窗(文件被删/占用等)。
+
+        窗口策略由 config.json 的 viewer_max_windows 决定:
+          1(默认) —— 只保留一个窗口: 新预览转发给已运行的实例, 由它就地换涂装/换车模
+                      (查看器侧 FH6_VIEWER_REUSE=1 + 本地套接字接管);
+          0        —— 不限制, 每次预览新开一个独立进程;
+          N(2..16) —— 最多并存 N 个, 超出时关掉最早启动的那个。
+        viewer_tiled_msaa 传给查看器决定图集是否分块渲染(省显存 / 少画几遍)。"""
+        cfg = appconfig.load()
+        max_windows = int(cfg.get("viewer_max_windows", 1))
+        env = os.environ.copy()
+        env["FH6_VIEWER_TILED_MSAA"] = "1" if cfg.get("viewer_tiled_msaa", True) else "0"
+        if max_windows == 1:
+            env["FH6_VIEWER_REUSE"] = "1"
+        else:
+            env.pop("FH6_VIEWER_REUSE", None)
+
         args = [str(exe), str(c_liv)]
         root = self._resolve_game_root()
         if root is not None:
             args += ["--game", str(root)]
+
+        # 超出上限: 先关最早启动的窗口, 再开新的(单实例复用模式不会走到这里)。
+        if max_windows > 0:
+            live = self._fls_live()
+            while live and len(live) >= max_windows:
+                oldest_proc, _b = live.pop(0)
+                try:
+                    oldest_proc.terminate()
+                except OSError:
+                    pass
+                self._fls_procs = [(p, b) for p, b in self._fls_procs
+                                   if p is not oldest_proc]
         try:
-            self._fls_proc = subprocess.Popen(args, close_fds=True)  # noqa: S603
+            proc = subprocess.Popen(args, close_fds=True, env=env)  # noqa: S603
+            self._fls_proc = proc
             self._fls_base = base
+            self._fls_procs.append((proc, base))
         except OSError as e:
             messagebox.showerror(_("3D 预览"),
                                  _("启动 3D 查看器失败: {err}").format(err=e))

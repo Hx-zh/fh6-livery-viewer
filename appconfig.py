@@ -26,11 +26,15 @@ CONFIG_NAME = "config.json"
 KEY_TIMING_MAX = 2000   # 毫秒上限, 与设置对话框校验一致
 # 卡片墙缩放合法范围(app.py 的同名常量来自这里, 单一来源)
 CARD_SCALE_MIN, CARD_SCALE_MAX = 0.2, 5.0
+# 同时打开的 3D 预览窗口上限: 0 = 不限制; 默认 1 = 只保留一个窗口, 后续预览替换其内容
+VIEWER_WINDOWS_MAX = 16
 
 _DEFAULTS: dict[str, Any] = {"key_hold_ms": 15, "key_gap_ms": 50,
                               "auto_refresh": True, "cars_auto_check": True,
                               "manual_dir": "", "game_dir": "",
-                              "card_scale": 1.0}
+                              "card_scale": 1.0,
+                              "viewer_tiled_msaa": True,
+                              "viewer_max_windows": 1}
 
 
 def load() -> dict[str, Any]:
@@ -63,6 +67,13 @@ def load() -> dict[str, Any]:
         if (isinstance(v, (int, float)) and not isinstance(v, bool)
                 and CARD_SCALE_MIN <= float(v) <= CARD_SCALE_MAX):
             out["card_scale"] = float(v)
+        v = obj.get("viewer_tiled_msaa")
+        if isinstance(v, bool):
+            out["viewer_tiled_msaa"] = v
+        v = obj.get("viewer_max_windows")
+        if (isinstance(v, int) and not isinstance(v, bool)
+                and 0 <= v <= VIEWER_WINDOWS_MAX):
+            out["viewer_max_windows"] = v
     return out
 
 
@@ -122,4 +133,19 @@ def set_card_scale(value: float) -> bool:
     写失败退化为仅本次运行有效, 不报错。"""
     cfg = load()
     cfg["card_scale"] = min(CARD_SCALE_MAX, max(CARD_SCALE_MIN, round(float(value), 2)))
+    return _write(cfg)
+
+
+def set_viewer_tiled_msaa(value: bool) -> bool:
+    """保存「3D 预览分块 MSAA」开关(读-改-写, 保留其它字段)。
+    True = 分块渲染(省显存), False = 整张单块(旧行为, 略快)。"""
+    cfg = load()
+    cfg["viewer_tiled_msaa"] = bool(value)
+    return _write(cfg)
+
+
+def set_viewer_max_windows(value: int) -> bool:
+    """保存同时打开的 3D 预览窗口上限(0=不限制; 越界收敛到合法范围)。"""
+    cfg = load()
+    cfg["viewer_max_windows"] = min(VIEWER_WINDOWS_MAX, max(0, int(value)))
     return _write(cfg)
