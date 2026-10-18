@@ -149,6 +149,24 @@ def set_viewer_max_windows(value: int) -> bool:
 # `%LOCALAPPDATA%\FH6LiveryViewer`, 旧位置只读兼容、**绝不自动删除**——清理是用户显式动作
 # (「设置 → 清除旧版本缓存/注册表」), 而不是启动时的副作用。
 LEGACY_REG_SUBKEY = r"Software\ForzaTools\FH6Livery3DViewer"
+LEGACY_REG_PARENT = r"Software\ForzaTools"
+
+
+def _reg_key_is_empty(sub: str) -> bool:
+    """键存在且既无子键也无值(旧版自动清理只删了子键, 会留下这种空壳)。"""
+    try:
+        import winreg          # noqa: PLC0415
+    except ImportError:
+        return False
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, sub)
+    except OSError:
+        return False
+    try:
+        subkeys, values, _ = winreg.QueryInfoKey(key)
+        return subkeys == 0 and values == 0
+    finally:
+        key.Close()
 
 
 def _legacy_appdata_dir() -> Path | None:
@@ -203,6 +221,9 @@ def legacy_leftovers() -> list[tuple[str, int]]:
     if values is not None:
         key = f"HKCU\\{LEGACY_REG_SUBKEY}"
         found.append((f"{key}  ({'; '.join(values)})" if values else key, -1))
+    elif _reg_key_is_empty(LEGACY_REG_PARENT):
+        # 只剩空壳: 旧版的自动清理删了子键但没删上级
+        found.append((f"HKCU\\{LEGACY_REG_PARENT}  (空键)", -1))
     return found
 
 
@@ -252,4 +273,13 @@ def clear_legacy() -> tuple[list[str], list[str]]:
             removed.append(f"HKCU\\{LEGACY_REG_SUBKEY}")
         except OSError as e:
             failed.append(f"HKCU\\{LEGACY_REG_SUBKEY}: {e}")
+    if _reg_key_is_empty(LEGACY_REG_PARENT):
+        try:
+            import winreg          # noqa: PLC0415
+
+            # 只在上级确实为空时成功(别的东西在用就留着)
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, LEGACY_REG_PARENT)
+            removed.append(f"HKCU\\{LEGACY_REG_PARENT}")
+        except OSError as e:
+            failed.append(f"HKCU\\{LEGACY_REG_PARENT}: {e}")
     return removed, failed
