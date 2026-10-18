@@ -140,11 +140,20 @@ const RasterDecalPack &sharedRasterDecals() {
     static RasterDecalPack pack = [] {
         RasterDecalPack loaded;
         const QString appPath = QCoreApplication::applicationDirPath();
-        // FH6LiveryViewer local change: also look in AppData, where the viewer
-        // builds the pack on first run from the user's game files.
+        const QString localBase = qEnvironmentVariable("LOCALAPPDATA").trimmed();
+        // FH6LiveryViewer local change: also look where the viewer builds the pack on first run
+        // from the user's game files.
         const QStringList candidates = {
             QDir(appPath).filePath(QStringLiteral("assets/raster/decal_textures.bin")),
             QDir(QDir::currentPath()).filePath(QStringLiteral("assets/raster/decal_textures.bin")),
+            // %LOCALAPPDATA%\FH6LiveryViewer, next to our config (current location).
+            localBase.isEmpty()
+                ? QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
+                      .filePath(QStringLiteral("raster/decal_textures.bin"))
+                : QDir(localBase).filePath(
+                      QStringLiteral("FH6LiveryViewer/raster/decal_textures.bin")),
+            // Pre-2026-10 location (%APPDATA%\ForzaTools\...), so an install that has not been
+            // migrated yet keeps working.
             QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
                 .filePath(QStringLiteral("raster/decal_textures.bin")),
         };

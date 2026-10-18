@@ -69,13 +69,56 @@ QByteArray buildPack(const QVector<DecalImage> &images)
 
 QString rasterDecalPackPath()
 {
-    return QDir(QStandardPaths::writableLocation(
-                    QStandardPaths::AppDataLocation))
+    // Kept next to the app config (%LOCALAPPDATA%\FH6LiveryViewer) so everything this tool caches
+    // for a machine lives in one directory. It used to sit in %APPDATA%\ForzaTools\..., which is
+    // the upstream FLS location and a different subtree from our settings.
+    const QString base = qEnvironmentVariable("LOCALAPPDATA").trimmed();
+    if (!base.isEmpty()) {
+        return QDir(base).filePath(
+            QStringLiteral("FH6LiveryViewer/raster/decal_textures.bin"));
+    }
+    return QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
         .filePath(QStringLiteral("raster/decal_textures.bin"));
 }
 
+namespace {
+
+// Where older builds (and upstream FLS) kept it. Only read for the one-time move.
+QString legacyRasterDecalPackPath()
+{
+    return QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
+        .filePath(QStringLiteral("raster/decal_textures.bin"));
+}
+
+// Move a pack left in the old location instead of rebuilding or keeping two 67 MB copies.
+void adoptLegacyRasterDecalPack()
+{
+    const QString target = rasterDecalPackPath();
+    const QString legacy = legacyRasterDecalPackPath();
+    if (target == legacy || QFileInfo::exists(target) || !QFileInfo(legacy).isFile()) {
+        return;
+    }
+    QDir().mkpath(QFileInfo(target).absolutePath());
+    if (!QFile::rename(legacy, target) && !QFile::copy(legacy, target)) {
+        return;
+    }
+    if (QFileInfo::exists(legacy)) {
+        QFile::remove(legacy);
+    }
+    // Drop the now-empty directories we owned (<AppData>/ForzaTools/FH6Livery3DViewer/raster).
+    // rmdir() refuses non-empty directories, so anything else living there is left alone — and
+    // the shared "ForzaTools" parent (also used by other tools) is never touched.
+    const QString rasterDir = QFileInfo(legacy).absolutePath();
+    QDir().rmdir(rasterDir);
+    QDir().rmdir(QFileInfo(rasterDir).absolutePath());
+}
+
+} // namespace
+
 bool ensureRasterDecalPack(const QString &gameRoot, QString *error)
 {
+    adoptLegacyRasterDecalPack();
+
     // Shipped pack next to the executable wins: releases carry a pre-built
     // decal_textures.bin, so the first preview needs no build at all.
     const QString shipped =
