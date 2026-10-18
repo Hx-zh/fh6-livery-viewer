@@ -169,18 +169,32 @@ bool ensureRasterDecalPack(const QString &gameRoot, QString *error)
     }
 
     QDir().mkpath(QFileInfo(packPath).absolutePath());
-    QFile output(packPath);
-    if (!output.open(QIODevice::WriteOnly)) {
+    // Write to a fixed-name temp file and replace atomically. Two reasons: a crash or a full disk
+    // must not leave a truncated pack behind (the "is it newer than Decals.zip?" check would then
+    // keep it forever), and another viewer process may have the current pack memory-mapped.
+    const QString tmpPath = packPath + QStringLiteral(".tmp");
+    QFile output(tmpPath);
+    if (!output.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         if (error != nullptr) {
-            *error = QStringLiteral("cannot write %1").arg(packPath);
+            *error = QStringLiteral("cannot write %1").arg(tmpPath);
         }
         return false;
     }
     const QByteArray pack = buildPack(images);
     if (output.write(pack) != pack.size()) {
-        output.remove();
+        output.close();
+        QFile::remove(tmpPath);
         if (error != nullptr) {
-            *error = QStringLiteral("short write to %1").arg(packPath);
+            *error = QStringLiteral("short write to %1").arg(tmpPath);
+        }
+        return false;
+    }
+    output.close();
+    QFile::remove(packPath);            // Windows needs the target gone for a rename
+    if (!QFile::rename(tmpPath, packPath)) {
+        QFile::remove(tmpPath);
+        if (error != nullptr) {
+            *error = QStringLiteral("cannot replace %1").arg(packPath);
         }
         return false;
     }

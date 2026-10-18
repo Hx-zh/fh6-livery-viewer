@@ -5,6 +5,7 @@
 #include "car_registry.h"
 #include "game_paths.h"
 #include "project_codec.h"
+#include "raster_pack.h"
 
 #include <QFileDialog>
 #include <QFrame>
@@ -116,15 +117,30 @@ bool ViewerWindow::openLivery(const QString &path, const QString &gameRoot,
     }
 
     project_ = std::move(project);
+    const QString previousRoot = gameRoot_;
     currentLiveryPath_ = path;
     if (!gameRoot.isEmpty()) {
-        gameRoot_ = gameRoot;
+        gameRoot_ = gameRoot;   // caller normalizes to the folder that holds media/Cars
     }
+    // Drop the previous design's model and livery masks before the new ones are installed: the
+    // masks drive the atlas packing layout, so reusing the old car's masks would lay the new
+    // design out against the old car for as long as the new model takes to load — and forever if
+    // that load fails. clearModel() also releases the previous ZIP extraction directory.
+    preview_->clearModel();
     setWindowTitle(QStringLiteral("%1 — FH6 3D").arg(project_.name));
     statusLabel_->clear();
     applyProject();
     // A second preview should not keep the previous design's model around.
     preview_->markLiveryDirtyImmediate();
+    // The raster decal pack is built per game folder and only happens in main(), so a window that
+    // started without a folder would otherwise keep missing its logos after one is supplied here.
+    if (!gameRoot_.isEmpty() && gameRoot_ != previousRoot) {
+        QString rasterError;
+        fls::ensureRasterDecalPack(gameRoot_, &rasterError);
+        if (!rasterError.isEmpty()) {
+            setStartupNote(QStringLiteral("raster decals: %1").arg(rasterError));
+        }
+    }
     return true;
 }
 
@@ -147,12 +163,16 @@ void ViewerWindow::applyProject()
     preview_->markLiveryDirty();
 
     if (project_.carId == 0) {
+        // No car to put the design on: drop any previously loaded model rather than leaving the
+        // old car on screen under a new livery.
+        preview_->clearModel();
         statusLabel_->setText(
             QStringLiteral("Livery loaded (no car id — model not loaded)"));
         return;
     }
     const QString modelCode = registry.modelCode(project_.carId);
     if (modelCode.isEmpty()) {
+        preview_->clearModel();
         statusLabel_->setText(
             QStringLiteral("Unknown car id %1 — model not loaded")
                 .arg(project_.carId));
@@ -164,6 +184,7 @@ void ViewerWindow::applyProject()
 void ViewerWindow::loadCarModel()
 {
     if (gameRoot_.isEmpty()) {
+        preview_->clearModel();
         statusLabel_->setText(
             QStringLiteral("No game folder — livery shown without car model"));
         return;
@@ -173,6 +194,7 @@ void ViewerWindow::loadCarModel()
         gui::sharedCarRegistry().modelCode(project_.carId);
     const QString path = fls::findCarModelPath(carsDir, modelCode);
     if (path.isEmpty()) {
+        preview_->clearModel();
         statusLabel_->setText(
             QStringLiteral("Car archive %1 not found under %2")
                 .arg(modelCode, carsDir));

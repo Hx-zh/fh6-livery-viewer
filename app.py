@@ -456,8 +456,6 @@ class App(tk.Tk):
         # viewer_max_windows=1 时新预览复用同一窗口(单实例接管), >1 时最多并存 N 个,
         # 0 = 不限制。见 _fls_launch()。
         self._fls_procs: list[tuple[subprocess.Popen, str]] = []
-        self._fls_proc: subprocess.Popen | None = None   # 最近一次启动(兼容旧引用)
-        self._fls_base = ""                       # _fls_proc 打开的涂装 base
         # 按键节奏(appconfig 持久化, 缺省回默认): 「设置」里可改
         _cfg = appconfig.load()
         self.key_hold_ms = int(_cfg.get("key_hold_ms", DEFAULT_KEY_HOLD_MS))
@@ -2979,6 +2977,7 @@ class App(tk.Tk):
         def _reset():
             hold_var.set(str(DEFAULT_KEY_HOLD_MS))
             gap_var.set(str(DEFAULT_KEY_GAP_MS))
+            windows_var.set("1")
 
         def _open_cfg_dir():
             """打开配置/缓存目录(%LOCALAPPDATA%\\FH6LiveryViewer, 资源管理器)。"""
@@ -3173,7 +3172,11 @@ class App(tk.Tk):
                   "所以缩略图与 3D 渲染结果会不一致。"),
                 parent=self)
             return
-        if self._fls_same_livery_open(it.base):
+        # 复用模式(上限 1)下这个判断不可靠: 转发进程会立刻退出, 表里剩下的是最初那个窗口的
+        # 记录, 它的 base 永远是第一张涂装 —— 于是"A→B→A"会被误判成"已在预览中"而窗口其实
+        # 显示的是 B。查看器侧对同一路径已经做了去重(不重载只置前), 这里直接跳过。
+        if (int(appconfig.load().get("viewer_max_windows", 1)) != 1
+                and self._fls_same_livery_open(it.base)):
             self.status_var.set(_("该涂装已在 3D 预览中打开"))
             return
         exe = flsbridge.find_viewer()
@@ -3256,10 +3259,20 @@ class App(tk.Tk):
                     pass
                 self._fls_procs = [(p, b) for p, b in self._fls_procs
                                    if p is not oldest_proc]
+        elif max_windows == 1:
+            # 从 N 改回 1 时, 之前留下的那些「各自开窗口、没有接管服务」的进程不会被复用,
+            # 新预览会另开一个, 上限 1 反而变成 3 个窗口。只保留一个, 由它当接管目标。
+            live = self._fls_live()
+            while len(live) > 1:
+                old_proc, _b = live.pop(0)
+                try:
+                    old_proc.terminate()
+                except OSError:
+                    pass
+                self._fls_procs = [(p, b) for p, b in self._fls_procs
+                                   if p is not old_proc]
         try:
             proc = subprocess.Popen(args, close_fds=True, env=env)  # noqa: S603
-            self._fls_proc = proc
-            self._fls_base = base
             self._fls_procs.append((proc, base))
         except OSError as e:
             messagebox.showerror(_("3D 预览"),

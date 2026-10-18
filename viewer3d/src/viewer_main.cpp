@@ -13,9 +13,12 @@
 #include <QFileInfo>
 #include <QLocalServer>
 #include <QLocalSocket>
+#include <QLockFile>
 #include <QMessageBox>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QThread>
+#include <QTimer>
 
 #include <algorithm>
 
@@ -29,6 +32,25 @@ namespace {
 // the design (and the model when the car differs) in place.
 constexpr int kForwardConnectMs = 400;
 constexpr int kForwardWriteMs = 600;
+// The client waits for a one-byte acknowledgement from the running window. Without it the
+// forward "succeeds" as soon as the bytes reach the pipe, which is exactly how a hand-off gets
+// lost when the owner is still starting up and has not accepted the connection yet.
+constexpr int kForwardAckMs = 1200;
+// Retries so a click that arrives while the first window is still starting up waits for it
+// instead of racing it into a second window.
+constexpr int kForwardAttempts = 20;
+constexpr int kForwardRetryMs = 250;
+// Instance ownership lives in a lock file: QLocalServer::listen() is not exclusive on Windows
+// (the named pipe is created with unlimited instances), so two processes can both listen on the
+// same name. QLockFile also spots a stale lock left by a crashed owner.
+constexpr int kInstanceLockStaleMs = 30000;
+constexpr int kSocketIdleTimeoutMs = 3000;
+constexpr int kMaxPayloadBytes = 64 * 1024;
+
+QString instanceLockPath()
+{
+    return QDir(QDir::tempPath()).filePath(QStringLiteral("FH6Livery3DViewer.lock"));
+}
 
 QString reuseServerName()
 {
@@ -58,11 +80,23 @@ bool forwardToRunningInstance(const QString &liveryPath, const QString &gameRoot
     if (!socket.waitForConnected(kForwardConnectMs)) {
         return false;
     }
-    socket.write(makePayload(liveryPath, gameRoot));
+    if (socket.write(makePayload(liveryPath, gameRoot)) < 0) {
+        return false;
+    }
     socket.flush();
-    socket.waitForBytesWritten(kForwardWriteMs);
+    if (!socket.waitForBytesWritten(kForwardWriteMs)) {
+        return false;
+    }
+    // Wait for the running window to confirm it took the preview. A write into the pipe only
+    // proves the bytes were queued: the owner may not have reached its event loop yet, and
+    // treating that as success is how a hand-off silently disappears.
+    if (!socket.waitForReadyRead(kForwardAckMs)) {
+        socket.abort();
+        return false;
+    }
+    const bool acknowledged = !socket.read(1).isEmpty();
     socket.disconnectFromServer();
-    return true;
+    return acknowledged;
 }
 
 bool isGameRoot(const QString &path)
@@ -217,6 +251,53 @@ int main(int argc, char *argv[])
 
     const QStringList positional = parser.positionalArguments();
     QString liveryPath = positional.isEmpty() ? QString() : positional.first();
+
+    // Reuse request: hand this preview to the window that is already open **before** importing
+    // the livery or resolving the game folder. Doing that work first would parse the file twice
+    // (the server re-imports it), and a missing game folder would pop a directory dialog in a
+    // process that is only going to exit.
+    const bool reuse = reuseRequested();
+    const QString requestedRoot = normalizeGameRoot(parser.value(gameOption));
+
+    // Claim the instance *first* — before the expensive import. Ownership comes from a lock file
+    // because QLocalServer::listen() is not exclusive on Windows (the named pipe is created with
+    // unlimited instances, so two processes can both listen on the same name); the socket only
+    // carries the payload. A stale lock left by a crashed owner is reclaimed by QLockFile.
+    QLockFile instanceLock(instanceLockPath());
+    instanceLock.setStaleLockTime(kInstanceLockStaleMs);
+    bool ownsInstance = reuse && instanceLock.tryLock(0);
+    QLocalServer server;
+    bool serverReady = false;
+    if (ownsInstance) {
+        QLocalServer::removeServer(reuseServerName());   // no-op on Windows, needed on Unix
+        serverReady = server.listen(reuseServerName());
+        if (!serverReady) {
+            ownsInstance = false;
+            instanceLock.unlock();
+        }
+    }
+
+    // Not the owner: hand this preview to whoever is, waiting for it to finish starting up
+    // (the loser of a simultaneous launch would otherwise open a second window).
+    if (reuse && !ownsInstance && !liveryPath.isEmpty()) {
+        for (int attempt = 0; attempt < kForwardAttempts; ++attempt) {
+            if (forwardToRunningInstance(liveryPath, requestedRoot)) {
+                return 0;
+            }
+            QThread::msleep(kForwardRetryMs);
+        }
+        // The owner never answered — it may have died between claiming and listening. Reclaim the
+        // instance if its lock is now stale; otherwise open a window without a server.
+        if (instanceLock.tryLock(0)) {
+            ownsInstance = true;
+            QLocalServer::removeServer(reuseServerName());
+            serverReady = server.listen(reuseServerName());
+            if (!serverReady) {
+                instanceLock.unlock();
+            }
+        }
+    }
+
     if (liveryPath.isEmpty()) {
         liveryPath = QFileDialog::getOpenFileName(
             nullptr, QStringLiteral("Open C_livery"), QString(),
@@ -246,13 +327,6 @@ int main(int argc, char *argv[])
     // Store installs pass the outer folder; point at the media-containing dir.
     gameRoot = normalizeGameRoot(gameRoot);
 
-    // Reuse request: hand this preview to the window that is already open and
-    // stop. Only done when the host asked for a single preview window.
-    const bool reuse = reuseRequested();
-    if (reuse && forwardToRunningInstance(liveryPath, gameRoot)) {
-        return 0;
-    }
-
     // Raster decals: build the on-disk pack from the user's game files on
     // first run (or after a game update); failures only degrade logos.
     QString rasterNote;
@@ -271,55 +345,84 @@ int main(int argc, char *argv[])
     window.show();
 
     // Serve further previews into this window when the host asked for reuse.
-    QLocalServer *server = nullptr;
-    if (reuse) {
-        server = new QLocalServer(&app);
-        QLocalServer::removeServer(reuseServerName());   // clear a stale pipe
-        if (!server->listen(reuseServerName())) {
-            delete server;                               // reuse simply unavailable
-            server = nullptr;
-        } else {
-            QObject::connect(server, &QLocalServer::newConnection, &window,
-                             [server, &window]() {
-                while (QLocalSocket *socket = server->nextPendingConnection()) {
-                    // Buffer until both lines are in: a socket can deliver the
-                    // payload in more than one chunk.
-                    socket->setProperty("payload", QByteArray());
-                    QObject::connect(
-                        socket, &QLocalSocket::readyRead, socket, [socket, &window]() {
-                            QByteArray payload =
-                                socket->property("payload").toByteArray() + socket->readAll();
-                            socket->setProperty("payload", payload);
-                            const int first = payload.indexOf('\n');
-                            if (first < 0) {
-                                return;                     // wait for the rest
-                            }
-                            const int second = payload.indexOf('\n', first + 1);
-                            if (second < 0) {
-                                return;
-                            }
-                            const QString path = QString::fromUtf8(
-                                payload.left(first));
-                            const QString root = QString::fromUtf8(
-                                payload.mid(first + 1, second - first - 1));
-                            if (!path.isEmpty()
-                                && path != window.currentLiveryPath()) {
-                                QString error;
-                                if (!window.openLivery(path, root, &error)) {
-                                    QMessageBox::critical(
-                                        nullptr, QStringLiteral("FH6 3D"),
-                                        QStringLiteral("Could not read the livery:\n%1")
-                                            .arg(error));
-                                }
-                            }
-                            window.raise();
-                            window.activateWindow();
-                            socket->disconnectFromServer();
-                        });
+    if (reuse && serverReady) {
+        // The listener is created before the (expensive) import, so a forwarded preview can
+        // already be waiting by the time we get here. Its newConnection() emission happened while
+        // nothing was connected to the signal, so drain whatever is pending once the handler is
+        // in place — otherwise those hand-offs are silently lost.
+        auto servePending = [&server, &window]() {
+            while (QLocalSocket *socket = server.nextPendingConnection()) {
+                // The server owns the socket; make sure it dies with this hand-off instead of
+                // accumulating for the process lifetime.
+                socket->setProperty("payload", QByteArray());
+                // A client that never finishes writing (killed mid-send) must not pin a socket
+                // forever.
+                QTimer::singleShot(kSocketIdleTimeoutMs, socket, [socket]() {
+                    if (socket->state() != QLocalSocket::UnconnectedState) {
+                        socket->abort();
+                        socket->deleteLater();
+                    }
+                });
+                auto consume = [socket, &window]() {
+                    // deleteLater() is already queued: ignore any late readyRead.
+                    if (socket->property("handled").toBool()) {
+                        return;
+                    }
+                    QByteArray payload = socket->property("payload").toByteArray()
+                        + socket->readAll();
+                    socket->setProperty("payload", payload);
+                    if (payload.size() > kMaxPayloadBytes) {
+                        socket->abort();          // not one of ours
+                        return;
+                    }
+                    // Buffer until both lines are in: a socket can deliver the payload in more
+                    // than one chunk.
+                    const int first = payload.indexOf('\n');
+                    if (first < 0) {
+                        return;
+                    }
+                    const int second = payload.indexOf('\n', first + 1);
+                    if (second < 0) {
+                        return;
+                    }
+                    const QString path = QString::fromUtf8(payload.left(first));
+                    const QString root = normalizeGameRoot(
+                        QString::fromUtf8(payload.mid(first + 1, second - first - 1)));
+                    if (!path.isEmpty() && path != window.currentLiveryPath()) {
+                        QString error;
+                        if (!window.openLivery(path, root, &error)) {
+                            QMessageBox::critical(
+                                nullptr, QStringLiteral("FH6 3D"),
+                                QStringLiteral("Could not read the livery:\n%1")
+                                    .arg(error));
+                        }
+                    }
+                    window.raise();
+                    window.activateWindow();
+                    // Acknowledge only after the design was installed: the forwarded process
+                    // stays alive until this byte arrives, which keeps the hand-off from being
+                    // dropped when the owner was still starting up.
+                    socket->write("1", 1);
+                    socket->flush();
+                    socket->waitForBytesWritten(kForwardWriteMs);
+                    socket->setProperty("handled", true);
+                    socket->disconnectFromServer();
+                    socket->deleteLater();
+                };
+                QObject::connect(socket, &QLocalSocket::readyRead, socket, consume);
+                // A client that forwarded while this window was still importing has already put
+                // its payload into the buffer, so readyRead will never fire for it. Drain what is
+                // there right away.
+                if (socket->bytesAvailable() > 0) {
+                    consume();
                 }
-            });
+            }
+        };
+        QObject::connect(&server, &QLocalServer::newConnection, &window,
+                         [&servePending]() { servePending(); });
+        if (server.hasPendingConnections()) {
+            servePending();
         }
     }
-    Q_UNUSED(server);
     return QApplication::exec();
 }

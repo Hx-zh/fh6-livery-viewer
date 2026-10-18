@@ -32,6 +32,14 @@ void setError(QString *error, const QString &message) {
 } // namespace
 
 bool RasterDecalPack::load(const QString &path, QString *error) {
+    // Reset first: a second load() that fails must not leave `data_` pointing at memory the
+    // previous mapping owned (that mapping is dropped when `mapping_` is replaced) while
+    // `loaded_` still claims success.
+    loaded_ = false;
+    mapping_.reset();
+    data_.clear();
+    entries_.clear();
+
     auto file = std::make_unique<QFile>(path);
     if (!file->open(QIODevice::ReadOnly)) {
         setError(error, QStringLiteral("could not open raster decal pack: %1").arg(path));

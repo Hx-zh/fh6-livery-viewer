@@ -131,17 +131,23 @@ def sync_viewer(commit: str) -> None:
         log(f"· {commit} dist/3DViewer 不存在, 跳过同步(发版时由 release_build 暂存)")
         return
     try:
-        src_mtime = src.stat().st_mtime
-        if dst.is_file() and dst.stat().st_mtime >= src_mtime:
+        src_stat = src.stat()
+        if (dst.is_file() and dst.stat().st_mtime >= src_stat.st_mtime
+                and dst.stat().st_size == src_stat.st_size):
             return
-        shutil.copyfile(src, dst)
+        # 先写固定名 tmp 再原子替换: 拷贝中途被打断(钩子被杀/磁盘满/目标被占用)不能留下
+        # 截断的 exe —— copyfile 会把 dst 的 mtime 更新成"现在", 之后 mtime 比较就会一直
+        # 判定"已是最新", 测试包会长期带一个起不来的查看器。
+        tmp = dst.with_name(dst.name + ".tmp")
+        shutil.copyfile(src, tmp)
+        os.replace(tmp, dst)
     except OSError as e:
         # 同步是尽力而为: 目标正被运行中的预览窗口占用、或被并发删除, 都只记日志。
         # 不能让"测试包带旧查看器"变成"构建失败"。
         log(f"· {commit} 3DViewer 同步失败({e}); 测试包将带旧查看器, 关闭预览窗口后重跑")
         return
     log(f"· {commit} 已同步 3DViewer <- viewer3d/build "
-        f"({datetime.fromtimestamp(src_mtime):%m-%d %H:%M})")
+        f"({datetime.fromtimestamp(src_stat.st_mtime):%m-%d %H:%M})")
 
 
 def run_hook() -> None:
