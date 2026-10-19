@@ -73,15 +73,20 @@ jobs:
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item viewer3d\build\FH6Livery3DViewer.exe $stage
           Copy-Item viewer3d\build\*.dll $stage -ErrorAction SilentlyContinue
+          # 与本地 `--gitee-local` 的暂存保持一致(否则 GitHub 包比 Gitee 大 8MB):
+          # 插件目录一个不落, 而 dxcompiler/dxil 是 Qt 的 D3D12 RHI 后端才用的着色器编译器,
+          # 查看器只走 QOpenGLWidget + 桌面 OpenGL, 从不加载它们。
           Copy-Item viewer3d\build\platforms, viewer3d\build\imageformats, `
-            viewer3d\build\styles, viewer3d\build\iconengines $stage `
-            -ErrorAction SilentlyContinue -Recurse
+            viewer3d\build\styles, viewer3d\build\iconengines, `
+            viewer3d\build\generic, viewer3d\build\networkinformation, `
+            viewer3d\build\tls $stage -ErrorAction SilentlyContinue -Recurse
           Copy-Item viewer3d\assets $stage\assets -Recurse
           Copy-Item viewer3d\SOURCE.md $stage\SOURCE.md
           Copy-Item viewer3d\licenses $stage\licenses -Recurse
           # D3DCompile is loaded dynamically; some Windows 10 installs cannot load
           # d3dcompiler_47.dll (old msvcp_win), so never ship it.
           Remove-Item $stage\D3Dcompiler_47.dll -ErrorAction SilentlyContinue
+          Remove-Item $stage\dxcompiler.dll, $stage\dxil.dll -ErrorAction SilentlyContinue
           # Ship the VC++ runtime the exe links against (MSVCP140*/VCRUNTIME140*).
           $crt = @()
           $crt += Get-ChildItem "$env:VCToolsRedistDir\x64\Microsoft.VC143.CRT\*.dll" -ErrorAction SilentlyContinue

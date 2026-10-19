@@ -448,9 +448,14 @@ def _viewer_stage() -> Path | None:
                 shutil.rmtree(stage, ignore_errors=True)
                 stage.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(local_build, stage / local_build.name)
+                # 与 CI 的 build-viewer.yml 暂存保持一致:
+                # - d3dcompiler_47 动态加载, 旧 msvcp_win 的 Win10 反而起不来;
+                # - dxcompiler/dxil 是 Qt D3D12 RHI 后端的着色器编译器, 我们只走 OpenGL,
+                #   从不需要(CI 的 Qt 带这两个文件, 不排除会让 GitHub 包比 Gitee 大 8MB)。
+                skipped = {"d3dcompiler_47.dll", "dxcompiler.dll", "dxil.dll"}
                 for f in build_dir.glob("*.dll"):
-                    if f.name.lower() == "d3dcompiler_47.dll":
-                        continue  # 动态加载; 系统/更新时间不确定的 msvcp_win 会让它起不来
+                    if f.name.lower() in skipped:
+                        continue
                     shutil.copy2(f, stage / f.name)
                 _copy_vc_runtime(stage)
                 for d in ("platforms", "imageformats", "styles", "iconengines",
