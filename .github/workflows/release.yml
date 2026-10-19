@@ -26,10 +26,15 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          # Pin the exact patch release the maintainer builds `--gitee-local` with.
+          # A floating 3.13 picks whatever is newest that week, and CPython's bundled
+          # OpenSSL (libcrypto-3/libssl-3) and the compiled .pyd files then differ in
+          # size — enough to make the GitHub exe ~580 KB larger than the Gitee one for
+          # no functional reason. Bump both this and the local venv together.
+          python-version: '3.13.5'
 
       - name: 安装构建依赖
-        run: pip install pyinstaller pillow
+        run: pip install pyinstaller==6.22.0 pillow==12.3.0
 
       - name: 解析版本(tag 名去 v 前缀; 手动触发用输入)
         shell: bash
