@@ -9,6 +9,7 @@
 #include <QOpenGLContext>
 #include <QOpenGLExtraFunctions>
 #include <QOpenGLFunctions>
+#include <QRegularExpression>
 
 #include <clipper2/clipper.h>
 
@@ -308,6 +309,7 @@ void main()
             if (coverage > 0.5) {
                 vec4 paint = texture(livery_tex, paintUv);
                 albedo = albedo * (1.0 - paint.a) + paint.rgb;
+                outputAlpha = mix(outputAlpha, 1.0, paint.a);
             }
         } else {
         float bestScore = -1.0;
@@ -377,6 +379,7 @@ void main()
         if (bestCoverage > 0.5) {
             vec4 paint = texture(livery_tex, bestUv);
             albedo = albedo * (1.0 - paint.a) + paint.rgb;
+            outputAlpha = mix(outputAlpha, 1.0, paint.a);
         }
         }
     }
@@ -1175,6 +1178,33 @@ int allowedWindowSidesForPart(const QString &rawName) {
     if (n.startsWith(QStringLiteral("glasstop_")) || n.startsWith(QStringLiteral("glassroof_"))) return kSideGlassTop;
     if (n.startsWith(QStringLiteral("glasslf_")) || n.startsWith(QStringLiteral("glasslr_"))) return kSideGlassLeft;
     if (n.startsWith(QStringLiteral("glassrf_")) || n.startsWith(QStringLiteral("glassrr_"))) return kSideGlassRight;
+    // Side panes are not always named glass{L,R}{F,M,R}_: the mid window can be "glassLM"/"glassRM",
+    // the small quarter light "glassLFSmall", the rear quarter "glassLRSmall". Those still take the
+    // side window's vinyl in the game, so match the side letter plus an optional position/size
+    // qualifier instead of a fixed list of three suffixes.
+    // "glassf_"/"glassr_" (windshield / rear screen) are handled above, and the roof panes
+    // "glassT"/"glassM" (spanning both sides, no side letter) are deliberately not side panes.
+    static const QRegularExpression sidePane(
+        QStringLiteral("^glass([lr])(?:f|m|r)?(?:small|vent|large)?"));
+    const QRegularExpressionMatch match = sidePane.match(n);
+    if (match.hasMatch()) {
+        const QString side = match.captured(1);
+        const QString rest = n.mid(match.capturedLength(0));
+        // A bare "glassL_"/"glassR_" is the rear quarter light; a trailing side marker, mirror,
+        // lens, badge or body trim is a separate part and must not swallow the pane's vinyl.
+        if (rest.startsWith(QLatin1Char('_'))
+            && !rest.contains(QStringLiteral("marker"))
+            && !rest.contains(QStringLiteral("mirror"))
+            && !rest.contains(QStringLiteral("lens"))
+            && !rest.contains(QStringLiteral("bumper"))
+            && !rest.contains(QStringLiteral("fender"))
+            && !rest.contains(QStringLiteral("hood"))
+            && !rest.contains(QStringLiteral("wing"))
+            && !rest.contains(QStringLiteral("trunk"))
+            && !rest.contains(QStringLiteral("body"))) {
+            return side == QLatin1String("l") ? kSideGlassLeft : kSideGlassRight;
+        }
+    }
     return 0;
 }
 
