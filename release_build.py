@@ -319,6 +319,49 @@ def check_gates(skip: bool, allow_dirty: bool, force_pyright: bool) -> None:
     print("[门禁] 工作区干净(追踪文件无改动)")
 
 
+def check_tag_baseline(version: str) -> None:
+    """发版前确认 tag 打在当前基线上, 且没有漏掉远端已推送的提交。
+
+    2026-10-20 实弹: v1.9.3 的 tag 打在旧提交上, 而 main 已被另一个会话推了
+    `1ca14ed`(打包对齐)。结果该修复没进 1.9.3 的包, GitHub 包比 Gitee 大 8.5MB,
+    事后只能等下一个版本再发。这里把它变成硬门禁:
+
+    1. tag 必须指向 HEAD(否则你打包的东西和你以为的不一样);
+    2. 本地 HEAD 不能落后 origin/main(否则别人的修复会被静默漏掉)。
+    """
+    tag = f"v{version}"
+    tag_sha = (_run(["git", "rev-list", "-n", "1", tag], check=False).stdout or "").strip()
+    head_sha = (_run(["git", "rev-parse", "HEAD"], check=False).stdout or "").strip()
+    if not tag_sha:
+        raise SystemExit(f"[基线] 读不到 {tag} 指向的提交")
+    if tag_sha != head_sha:
+        behind = _run(["git", "log", "--oneline", f"{tag}..HEAD"], check=False).stdout or ""
+        raise SystemExit(
+            f"[基线] {tag} 指向 {tag_sha[:8]}, 但 HEAD 是 {head_sha[:8]}——"
+            f"tag 之后还有提交, 打出来的包不含它们。\n"
+            f"tag 之后的提交:\n{behind.strip()}\n"
+            f"处理: git tag -d {tag} && git tag -a {tag} -F dist/release_notes_{tag}.md")
+
+    # 远端基线: 拉不到就跳过(离线/无凭据不该阻断发版), 能拉到就严格比对
+    fetch = _run(["git", "fetch", "--quiet", "origin", "main"], check=False)
+    if fetch.returncode != 0:
+        print("[基线] 警告: git fetch origin main 失败, 跳过远端基线检查")
+        return
+    behind = (_run(["git", "rev-list", "--count", "HEAD..origin/main"],
+                   check=False).stdout or "").strip()
+    if behind and behind != "0":
+        missing = _run(["git", "log", "--oneline", "HEAD..origin/main"],
+                       check=False).stdout or ""
+        raise SystemExit(
+            f"[基线] 本地 HEAD 落后 origin/main {behind} 个提交——"
+            f"这些修复不会进包:\n{missing.strip()}\n"
+            f"处理: git rebase origin/main(或 merge), 然后重新打 tag")
+    ahead = (_run(["git", "rev-list", "--count", "origin/main..HEAD"],
+                  check=False).stdout or "").strip()
+    print(f"[基线] {tag} -> {head_sha[:8]}, 与 origin/main 一致"
+          f"{f'(本地领先 {ahead} 个提交, 属本次发布)' if ahead and ahead != '0' else ''}")
+
+
 def build() -> None:
     py = pyinstaller_python()
     r = _run([py, "-m", "PyInstaller", str(ROOT / "FH6LiveryViewer.spec"),
@@ -838,6 +881,7 @@ def main() -> int:
         if not _run(["git", "rev-parse", "-q", "--verify", f"v{version}"],
                     check=False).stdout.strip():
             raise SystemExit(f"tag v{version} 不存在——先 git tag -a v{version} -m '发布说明…'")
+        check_tag_baseline(version)
         token = get_gitee_token(sys.stdin.isatty())
         check_gates(args.skip_checks, args.allow_dirty, args.pyright)
         build()

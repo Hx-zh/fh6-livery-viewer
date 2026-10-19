@@ -177,6 +177,37 @@ def fetch_range(url: str, opener, start: int, end: int, fh, lock,
     raise SystemExit(f"块 {name} 下载失败(重试 {RETRY} 次): {last_err}")
 
 
+def fetch_whole(url: str, total: int, fh, opener, counters) -> None:
+    """整档单线程下载, 写给不支持 Range 的源(如 Gitee release 附件)。
+
+    Gitee 的下载端点**不支持 Range**: 带 Range 头也回 200 全档。早期实现只认 206,
+    于是「每块都 200 → 三次重试全失败 → 退出码 1」, 明明服务端能下却下不下来
+    (2026-10-20 实测)。这里退化为一次 GET 全量落盘, 仍做长度校验。
+    """
+    last_err: Exception | None = None
+    for attempt in range(RETRY):
+        try:
+            req = urllib.request.Request(url, method="GET")
+            got = 0
+            with opener.open(req, timeout=120) as r:
+                os.lseek(fh, 0, os.SEEK_SET)
+                while True:
+                    chunk = r.read(1 << 20)
+                    if not chunk:
+                        break
+                    os.write(fh, chunk)
+                    got += len(chunk)
+                    with counters["lock"]:
+                        counters["done"] = got
+            if total > 0 and got != total:
+                raise OSError(f"整档长度不符: {got} != {total}")
+            return
+        except OSError as e:
+            last_err = e
+            time.sleep(0.8 * (attempt + 1))
+    raise SystemExit(f"整档下载失败(重试 {RETRY} 次): {last_err}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="多线程分块下载器(Clash 友好)")
     ap.add_argument("url")
@@ -212,21 +243,27 @@ def main() -> int:
         | getattr(os, "O_BINARY", 0), 0o644)
     counters = {"lock": threading.Lock(), "done": 0}
     try:
-        with ThreadPoolExecutor(max_workers=nthread) as pool:
-            futs = [pool.submit(fetch_range, final, opener, s, e, fh, lock,
-                                counters, f"{s//step+1}/{len(chunks)}")
-                    for s, e in chunks]
-            while any(not f.done() for f in futs):
-                time.sleep(0.4)
-                with counters["lock"]:
-                    done = counters["done"]
-                spd = done / max(time.time() - t0, 0.001) / 1048576
-                pct = done * 100 // total
-                print(f"\r  {pct:3d}%  {done / 1048576:8.1f}/"
-                      f"{total / 1048576:.1f}MB  {spd:6.1f}MB/s   ",
-                      end="", flush=True)
-            for f in futs:                    # 逐个 get, 抛出首个异常
-                f.result()
+        if not ranged:
+            # 服务端不接受 Range(或没报 Accept-Ranges): 整档单线程。别按块发——
+            # 每块都会拿到 200 全档, 逐块重试必然全灭(见 fetch_whole 注释)。
+            print("[mode] 服务端不支持 Range, 改用整档下载")
+            fetch_whole(final, total, fh, opener, counters)
+        else:
+            with ThreadPoolExecutor(max_workers=nthread) as pool:
+                futs = [pool.submit(fetch_range, final, opener, s, e, fh, lock,
+                                    counters, f"{s//step+1}/{len(chunks)}")
+                        for s, e in chunks]
+                while any(not f.done() for f in futs):
+                    time.sleep(0.4)
+                    with counters["lock"]:
+                        done = counters["done"]
+                    spd = done / max(time.time() - t0, 0.001) / 1048576
+                    pct = done * 100 // total
+                    print(f"\r  {pct:3d}%  {done / 1048576:8.1f}/"
+                          f"{total / 1048576:.1f}MB  {spd:6.1f}MB/s   ",
+                          end="", flush=True)
+                for f in futs:                    # 逐个 get, 抛出首个异常
+                    f.result()
     finally:
         os.close(fh)
     print()
