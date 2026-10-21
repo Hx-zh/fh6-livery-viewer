@@ -22,6 +22,7 @@ import sys
 import threading
 import time
 import traceback
+import unicodedata
 import urllib.request
 from bisect import bisect_right
 from typing import Any
@@ -221,6 +222,46 @@ def fmt_size(n: int) -> str:
 
 def ellipsize(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
+
+
+# 搜索/筛选用的「归一化」: 组合用变音符号(音标附加符)代码点区间。
+# NFKD 把 'é' 拆成 'e' + U+0301, 这里把附加符丢掉 = 重音折叠(coupon→coupe)。
+# 只删组合标记, 不删预组合字符本身——日文假名(バ/ハ/パ)的 NFKD 同样会拆成
+# 基字 + U+3099/U+309A, 若一并删除就会把假名打散成残字, 故白名单严格限定
+# 在「拉丁/希腊/西里尔等文字常用的组合附加符」区间, 不含日文/韩文/泰文的
+# 组合标记区间(3099-309A / 1160-11FF / 1E000+ 等), 保证 CJK 与谚文原样保留。
+_COMBINING_MARKS = re.compile(
+    "[\u0300-\u036f\u1ab0-\u1aff\u1dc0-\u1dff]")
+
+
+def fold_text(s: str) -> str:
+    """搜索/筛选归一化: 折叠重音与全角形式后 casefold, 用于双向子串匹配。
+
+    例: 'Coupé'→'coupe'、'Citroën'→'citroen'、'Ｆｅｒｒａｒｉ'→'ferrari';
+    日文假名与谚文经 NFC 复原, 不会被拆散('リバリー'→'リバリー' 不变)。
+    仅用于「用户输入 vs 候选串」的匹配, 不用于展示。"""
+    s = _COMBINING_MARKS.sub("", unicodedata.normalize("NFKD", s))
+    return unicodedata.normalize("NFC", s).casefold()
+
+
+def search_forms(q: str) -> list[str]:
+    """单个搜索关键字的候选匹配形式(任一命中即算该关键字命中)。
+
+    先按旧版口径 strip(首尾空白不参与匹配); 空/纯空白关键字返回空表,
+    调用方据此跳过「与」判定循环。除归一化后的原串外, 纯数字关键字额外给出
+    「去掉前导零」的形式: 车型 ID 在条目里按 int 渲染(249), 而用户常把它当
+    编号补零输入(输入 0249 想搜 id 249) —— 子串匹配下 '0249' 永远命中不了
+    '249', 故在查询侧补出去零形式。'0249'→['0249','249']; '0'/'000' 去零
+    为空, 只保留原串, 不产生「空串命中一切」的灾难。"""
+    f = fold_text(q.strip())
+    if not f:
+        return []
+    forms = [f]
+    if f.isdigit():
+        stripped = f.lstrip("0")
+        if stripped and stripped != f:
+            forms.append(stripped)
+    return forms
 
 
 # 「已喷涂检测」机制与风险说明: 已喷涂筛选开关使用的确认框文案
@@ -2441,10 +2482,12 @@ class App(tk.Tk):
         self.rebuild_grid()
 
     def _filtered(self) -> list[SaveItem]:
-        # 双搜索关键字: 都非空才都要求命中(与); 单框使用时等同旧版单关键字
-        qwords = [s.strip().lower() for s in
+        # 双搜索关键字: 都非空才都要求命中(与); 单框使用时等同旧版单关键字。
+        # 每个关键字先归一化(折叠重音/全角, 见 fold_text), 再展开为若干候选
+        # 形式(见 search_forms: 纯数字关键字兼容前导零写法)。
+        qforms = [search_forms(s) for s in
                   (self.search_var.get(), self.search2_var.get())]
-        qwords = [s for s in qwords if s]
+        qforms = [f for f in qforms if f]
         brand = self.brand_var.get()
         out = []
         for it in self.items:
@@ -2495,11 +2538,16 @@ class App(tk.Tk):
                     continue
                 if qf[0] == "source" and (qf[1] == "auction") != auction:
                     continue
-            if qwords:
-                hay = f"{it.name} {it.creator} {it.car_id} {self.car_display(it)}".lower()
-                if auction:
-                    hay = _("拍卖涂装") + " " + hay
-                if any(t not in hay for t in qwords):
+            if qforms:
+                # 匹配串 = 标题 + 作者 + 车型 ID + 车型全名。
+                # 标题取 _livery_title(与卡片/详情一致: 拍卖涂装 →「拍卖涂装」,
+                # 空标题 →「(未解析)」), 让界面上看得见的字都搜得到; 再并上原始
+                # it.name, 保留旧版对 header 原始标题(含哨兵名)的命中能力。
+                hay = fold_text(" ".join((
+                    self._livery_title(it), it.name, it.creator,
+                    str(it.car_id), self.car_display(it))))
+                # 每个关键字的所有候选形式任一命中即算该关键字命中(关键字间为与)
+                if any(not any(f in hay for f in forms) for forms in qforms):
                     continue
             out.append(it)
         return out
