@@ -64,6 +64,10 @@ public:
     void setBuildUnwrapOverlays(bool enabled);
     void cycleLod();
     void cycleDebugMode();
+    // FH6LiveryViewer local addition: one-click access to the PARTS page —
+    // expands the collapsed side panel and switches straight to it (the
+    // read-only viewer's shell surfaces this as a top-bar button).
+    void showPartsPanel();
     // FH6LiveryViewer local addition: select the highest-poly LOD
     // (by total triangle count) — the viewer auto-applies it on load.
     void applyHighestDetailLod();

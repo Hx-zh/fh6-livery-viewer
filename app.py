@@ -62,7 +62,7 @@ else:
     CARS_JSON = APP_DIR / "cars.json"
 BACKUP_DIR = APP_DIR / "backups"
 
-APP_VERSION = "1.9.5"
+APP_VERSION = "1.9.6"
 PROJECT_URL = "https://github.com/Hx-zh/fh6-livery-viewer"
 RELEASES_URL = PROJECT_URL + "/releases"
 # Gitee 镜像(国内更新加速; 发布时需同步推送到该仓库并建同名 release):
@@ -361,6 +361,73 @@ def _auction_badge_sprite(applied: bool, leg: int = 34):
     return _auction_sprites[key]
 
 
+# 快捷按钮图标色调(hex, PIL 与 Canvas 文字共用): white=深/蓝底上,
+# slate=浅底常态, pale=浅底禁用, navy=选中蓝卡的白底按钮常态, frost=选中蓝卡禁用
+_CARD_BTN_INK = {
+    "white": "#ffffff", "slate": "#5b6572", "pale": "#c3c9d1",
+    "navy": "#005a9e", "frost": "#cfe0f0",
+}
+
+
+def _build_card_btn_icon(action: str, tone: str, out: int):
+    """卡片快捷按钮图标素材(透明底 RGBA): 24 基准坐标 4x 超采样, LANCZOS 缩放。
+    只画图形不带底片(底片是 Canvas 矩形, 悬停变色由矩形承担);
+    preview=眼睛(预览), locate=地图定位针, folder=文件夹剪影。"""
+    from PIL import ImageDraw
+    S = 4
+    img = Image.new("RGBA", (24 * S, 24 * S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    ink = _CARD_BTN_INK[tone]
+
+    def p(v):
+        return v * S
+
+    if action == "preview":
+        # 眼睛(预览): 杏仁形 = 上/下两条抛物线弧采样成 polygon, 瞳孔透明透底
+        top, bot = [], []
+        for i in range(25):
+            x = 2.5 + 19 * i / 24
+            k = 1 - ((x - 12) / 9.5) ** 2
+            top.append((p(x), p(12 - 6.5 * k)))
+            bot.append((p(x), p(12 + 7.0 * k)))
+        d.polygon(top + bot[::-1], fill=ink)
+        d.ellipse((p(8.2), p(8.2), p(15.8), p(15.8)),
+                  fill=(0, 0, 0, 0))        # 瞳孔: ImageDraw 直写像素即透明
+    elif action == "locate":
+        d.ellipse((p(5.5), p(3), p(18.5), p(16)), fill=ink)      # 头圆
+        d.polygon([(p(6.8), p(13.5)), (p(17.2), p(13.5)), (p(12), p(21.5))],
+                  fill=ink)                                      # 针尖
+        d.ellipse((p(9.4), p(6.9), p(14.6), p(12.1)),
+                  fill=(0, 0, 0, 0))        # 中心孔: ImageDraw 直写像素即透明
+    else:  # folder
+        d.polygon([(p(3), p(19.5)), (p(3), p(5.5)), (p(10), p(5.5)),
+                   (p(12), p(8)), (p(21), p(8)), (p(21), p(19.5))], fill=ink)
+    return img.resize((out, out), Image.Resampling.LANCZOS)
+
+
+_card_btn_icons: dict[tuple[str, str, int], object] = {}
+
+
+def _card_btn_icon(action: str, tone: str, out: int):
+    """快捷按钮图标 PIL 素材缓存(按 动作×色调×边长): 同规格只生成一次。"""
+    key = (action, tone, out)
+    if key not in _card_btn_icons:
+        _card_btn_icons[key] = _build_card_btn_icon(action, tone, out)
+    return _card_btn_icons[key]
+
+
+_card_btn_photos: dict[tuple[str, str, int], object] = {}
+
+
+def _card_btn_photo(action: str, tone: str, out: int):
+    """图标 PhotoImage 缓存(按钮常驻后全卡共用, 否则每卡 3 份 PhotoImage)。"""
+    key = (action, tone, out)
+    if key not in _card_btn_photos:
+        _card_btn_photos[key] = ImageTk.PhotoImage(
+            _card_btn_icon(action, tone, out))
+    return _card_btn_photos[key]
+
+
 class ZoomPreview(tk.Toplevel):
     """可缩放的大图预览: 滚轮/按钮缩放, 左键拖动平移。"""
 
@@ -531,6 +598,9 @@ class App(tk.Tk):
         self._vis_cards: dict[str, dict] = {}     # 可视区各卡的 canvas item id 表(重配色/贴图用)
         self._redraw_win = None                   # 已绘行窗口 (r0, r1), 同窗跳过重绘
         self._filtered_items: list[SaveItem] = [] # 最近一次筛选结果(变列数重排复用, 不再走筛选)
+        self._hover_base: str | None = None       # 悬停快捷按钮所在卡(配色/状态栏用)
+        self._hover_button: str | None = None     # 指针当前悬停的快捷按钮动作
+        self._hover_status: str | None = None     # 悬停按钮前的状态栏文本(离开恢复)
         self._applied_from_button = False         # 本次扫描来自确认流程(完成后弹「已标记喷涂」)
         self._selected: str | None = None
         self._detail_img = None
@@ -739,7 +809,9 @@ class App(tk.Tk):
         self.thumb_label = ttk.Label(right, text=_("(无预览)"), anchor=tk.CENTER,
                                      relief=tk.SUNKEN)
         self.thumb_label.pack(fill=tk.X, pady=(0, 6))
-        self.thumb_label.bind("<Double-1>", lambda _e: self.show_big_preview())
+        # 双击右侧大图 = 打开 3D 预览(改动5; 「查看大图」入口保留在按钮与右键菜单)
+        self.thumb_label.bind("<Double-1>", lambda _e: self.open_fls_preview())
+        self.thumb_label.configure(cursor="hand2")
         # 详情: 只读文本框, 支持鼠标选择 / 原生 Ctrl+C / 右键菜单
         self.info_text = tk.Text(right, height=12, wrap=tk.WORD, relief=tk.FLAT,
                                  bd=0, bg="#f0f0f0", font=(FONT_DATA, 9),
@@ -821,6 +893,8 @@ class App(tk.Tk):
         self.canvas.bind("<Button-1>", self._on_card_click)
         self.canvas.bind("<Double-Button-1>", self._on_card_dbl)
         self.canvas.bind("<Button-3>", self._on_card_rclick)
+        self.canvas.bind("<Motion>", self._on_card_motion)
+        self.canvas.bind("<Leave>", self._on_card_leave)
         # 全局滚轮: 指针在网格区域内才滚动(不能靠 Enter/Leave)
         self.bind_all("<MouseWheel>", self._on_wheel)
         self._bind_zoom_keys()
@@ -900,6 +974,11 @@ class App(tk.Tk):
         self.pos_m = max(2, round(3 * s))     # 位置角标距缩略图框边距
         self.pos_pad = max(2, round(4 * s))   # 位置角标文字内边距
         self.badge_leg = max(20, round(34 * s))  # 喷漆罐/拍卖锤角标 sprite 边长
+        # 卡片快捷按钮(常驻): 尺寸随缩放派生, 物理命中区恒不小于 16×16
+        self.card_btn_size = max(16, round(24 * s))
+        self.card_btn_gap = max(2, round(4 * s))
+        self.card_btn_margin = max(2, round(4 * s))
+        self.card_btn_font = (FONT_UI, max(7, round(8 * s)), "bold")
 
     def _set_card_scale(self, scale: float):
         """切换卡片墙缩放并重建: 派生几何 → 失效缩略图缓存(键只有 base 不含
@@ -1178,7 +1257,7 @@ class App(tk.Tk):
         def new(kind, *args, **kw):
             return getattr(c, f"create_{kind}")(*args, tags=(tag,), **kw)
 
-        ids = {"x": x, "y": y}
+        ids = {"x": x, "y": y, "col": col, "ri": ri}
         tx, ty = x + self.card_pad, y + self.card_pad
         ids["tx"], ids["ty"] = tx, ty
         ids["border"] = new("rectangle", x, y, x + self.card_w, y + self.card_h,
@@ -1211,6 +1290,7 @@ class App(tk.Tk):
                          anchor=tk.NW,
                          text=ellipsize(third, self.ellip_sub),
                          font=self.card_font_sub, fill=sub_fg)
+        self._draw_card_buttons(base, ids)      # 快捷按钮常驻(配色随选中态)
         self._vis_cards[base] = ids
 
     def _paint_thumb(self, base: str, ids: dict):
@@ -1284,17 +1364,10 @@ class App(tk.Tk):
         return self._auction_photo_gray
 
     def _recolor_card(self, base: str | None):
-        """就地切换某可视卡的选中配色(不重绘整屏); 不在可视区则是空操作。"""
-        ids = self._vis_cards.get(base or "")
-        if not ids:
-            return
-        border, face, name_fg, car_fg, sub_fg = self._palette(base == self._selected)
-        c = self.canvas
-        c.itemconfigure(ids["border"], fill=border)
-        c.itemconfigure(ids["face"], fill=face)
-        c.itemconfigure(ids["name"], fill=name_fg)
-        c.itemconfigure(ids["car"], fill=car_fg)
-        c.itemconfigure(ids["sub"], fill=sub_fg)
+        """就地切换某可视卡的选中配色(不重绘整屏); 选中卡同时显示快捷按钮,
+        故直接按卡片粒度重画(不在可视区则是空操作)。"""
+        if base:
+            self._redraw_single_card(base)
 
     def _set_card_image(self, base: str, _img):
         """缩略图解码结果回贴入口(替代旧 Card.set_image): 图已写入缓存,
@@ -1302,6 +1375,194 @@ class App(tk.Tk):
         ids = self._vis_cards.get(base)
         if ids:
             self._paint_thumb(base, ids)
+            if ids.get("buttons"):
+                self.canvas.tag_raise(f"cardbtn:{base}")
+
+    # ---- 卡片快捷按钮(悬停/选中卡显示) ----------------------------------------
+
+    _CARD_BUTTON_ORDER = (
+        ("preview", _("3D")),
+        ("locate", _("定位")),
+        ("folder", _("目录")),
+    )
+
+    # 快捷按钮配色: (底片, 描边, 图标色调) × 常态/悬停/禁用 × 未选中/选中卡
+    _CARD_BTN_STYLE = {
+        False: {"normal": ("#eceff3", "#d5dbe3", "slate"),
+                "hover":  ("#0078d7", "#0063b1", "white"),
+                "off":    ("#f3f4f6", "#e3e6ea", "pale")},
+        True:  {"normal": ("#ffffff", "#d0d7e0", "navy"),
+                "hover":  ("#004a83", "#ffffff", "white"),
+                "off":    ("#5a9bd4", "#7fb2de", "frost")},
+    }
+
+    def _draw_card_buttons(self, base: str, ids: dict):
+        """在卡片右下角(作者名行右侧空白)画 3D/定位/目录 三个图标快捷按钮
+        (常驻, 纯 Canvas 图元不建子控件; 有 PIL 画图标, 无 PIL 回退文字标签)。
+        配色随卡片选中态分两套(_CARD_BTN_STYLE), 按钮 hover 态只换底片色+图标。"""
+        it = self.item_map.get(base)
+        if it is None:
+            return
+        c = self.canvas
+        tag = (f"card:{base}", f"cardbtn:{base}")
+        size, gap, margin = self.card_btn_size, self.card_btn_gap, self.card_btn_margin
+        boxes = []
+        total_w = size * 3 + gap * 2
+        # 作者行至少要留的宽度(过窄时按钮改宫格, 不把文字整个压住)
+        text_min = max(24, round(60 * self.card_scale))
+        if total_w + margin * 2 + text_min <= self.card_w:
+            # 常规: 卡片底部右下角横排(与作者名行同高, 底边对齐卡片)
+            y1 = ids["y"] + self.card_h - margin
+            x1 = ids["x"] + self.card_w - margin
+            for _i in reversed(range(3)):
+                x0 = x1 - size
+                y0 = y1 - size
+                boxes.append((x0, y0, x1, y1))
+                x1 = x0 - gap
+            boxes.reverse()
+        else:
+            # 极小幅面(如 20%)横排放不下: 改 2×2 宫格贴卡片右下角,
+            # 按阅读序填充(3D 左上 / 定位 右上 / 目录 左下)
+            x1 = ids["x"] + self.card_w - margin
+            y1 = ids["y"] + self.card_h - margin
+            for i in reversed(range(3)):
+                col, row = i % 2, i // 2
+                bx1 = x1 - (1 - col) * (size + gap)
+                by1 = y1 - (1 - row) * (size + gap)
+                boxes.append((bx1 - size, by1 - size, bx1, by1))
+            boxes.reverse()
+        sty = self._CARD_BTN_STYLE[base == self._selected]
+        icon_leg = max(8, size - 2 * max(2, round(3 * self.card_scale)))
+        ids["buttons"] = {}
+        for (action, label), box in zip(self._CARD_BUTTON_ORDER, boxes):
+            enabled = True
+            if action == "locate":
+                enabled = base in self._pos_map
+            elif action == "preview":
+                enabled = it.files.get("C_livery") is not None
+            x0, y0, x1, y1 = box
+            hovered = action == self._hover_button and base == self._hover_base
+            state = "off" if not enabled else ("hover" if hovered else "normal")
+            fill, outline, tone = sty[state]
+            hfill, houtline, htone = sty["hover"]
+            btn = {"box": box, "enabled": enabled, "fill": fill,
+                   "outline": outline, "hfill": hfill, "houtline": houtline}
+            btn["rect"] = c.create_rectangle(x0, y0, x1, y1, fill=fill,
+                                             outline=outline, width=1, tags=tag)
+            if HAS_PIL:
+                # 图标透明底贴底片中央(PhotoImage 全卡共用缓存); 悬停换底片+图标
+                btn["icon"] = _card_btn_photo(action, tone, icon_leg)
+                btn["hicon"] = (_card_btn_photo(action, htone, icon_leg)
+                                if enabled else btn["icon"])
+                btn["img"] = c.create_image((x0 + x1) / 2, (y0 + y1) / 2,
+                                            image=btn["icon"], tags=tag)
+            else:
+                btn["fg"] = _CARD_BTN_INK[tone]
+                btn["hfg"] = _CARD_BTN_INK[htone] if enabled else btn["fg"]
+                btn["img"] = c.create_text((x0 + x1) / 2, (y0 + y1) / 2,
+                                           anchor=tk.CENTER, text=label,
+                                           font=self.card_btn_font,
+                                           fill=btn["fg"], tags=tag)
+            ids["buttons"][action] = btn
+
+    def _hit_card_button(self, e) -> tuple[str, str, bool] | None:
+        """命中卡片快捷按钮则返回 (base, action, enabled); 空白/普通卡面返回 None。"""
+        base = self._hit_base(e)          # 按钮常驻: 先定位卡再查按钮(无需悬停态)
+        if base is None:
+            return None
+        c = self.canvas
+        try:
+            cx, cy = c.canvasx(e.x), c.canvasy(e.y)
+        except tk.TclError:
+            return None
+        for action, btn in self._vis_cards.get(base, {}).get("buttons", {}).items():
+            x0, y0, x1, y1 = btn["box"]
+            if x0 <= cx <= x1 and y0 <= cy <= y1:
+                return base, action, btn["enabled"]
+        return None
+
+    def _paint_btn(self, btn: dict, hover: bool):
+        """切换单个按钮的底片配色与图标(常态/悬停两态; 禁用态不调用)。"""
+        if hover:
+            self.canvas.itemconfigure(btn["rect"], fill=btn["hfill"],
+                                      outline=btn["houtline"])
+        else:
+            self.canvas.itemconfigure(btn["rect"], fill=btn["fill"],
+                                      outline=btn["outline"])
+        if HAS_PIL:
+            self.canvas.itemconfigure(btn["img"],
+                                      image=btn["hicon"] if hover else btn["icon"])
+        else:
+            self.canvas.itemconfigure(btn["img"],
+                                      fill=btn["hfg"] if hover else btn["fg"])
+
+    def _set_card_button_hover(self, base: str | None, action: str | None):
+        """切换按钮悬停配色/光标/状态栏提示; 只改按钮图元, 不整卡重画。"""
+        if action == self._hover_button and base == self._hover_base:
+            return
+        old_base, old_action = self._hover_base, self._hover_button
+        if old_base is not None and old_action is not None:
+            btn = self._vis_cards.get(old_base, {}).get("buttons", {}).get(old_action)
+            if btn and btn["enabled"]:
+                self._paint_btn(btn, False)
+        self._hover_base = base if action is not None else None
+        self._hover_button = action
+        if action is None:
+            if self._hover_status is not None:
+                # 仅当状态栏仍显示按钮动作名时才恢复旧文本;
+                # 期间被后台任务改过的状态栏保持新内容不覆盖
+                if self.status_var.get() in frozenset(
+                        self._card_button_title(a) for a, _l in self._CARD_BUTTON_ORDER):
+                    self.status_var.set(self._hover_status)
+                self._hover_status = None
+            self.canvas.configure(cursor="arrow")
+            return
+        btn = self._vis_cards.get(base or "", {}).get("buttons", {}).get(action)
+        if btn is None:
+            return
+        if btn["enabled"]:
+            self._paint_btn(btn, True)
+            self.canvas.configure(cursor="hand2")
+        else:
+            self.canvas.configure(cursor="arrow")
+        if self._hover_status is None:
+            self._hover_status = self.status_var.get()
+        self.status_var.set(self._card_button_title(action))
+
+    @staticmethod
+    def _card_button_title(action: str) -> str:
+        return {"preview": _("3D 预览"), "locate": _("定位到涂装位置"),
+                "folder": _("所在文件夹")}[action]
+
+    def _run_card_button(self, base: str, action: str):
+        """执行卡片快捷按钮动作; 刻意不改选中项(按钮目标就是所点的那张卡)。"""
+        if action == "preview":
+            self.open_fls_preview(base)
+        elif action == "locate":
+            self.auto_locate(base)
+        elif action == "folder":
+            self.open_item_folder(base)
+
+    def _redraw_single_card(self, base: str | None):
+        """只重画某张可视卡(选中换色用); 缩略图从缓存复用, 不重解码。"""
+        if not base:
+            return
+        ids = self._vis_cards.get(base)
+        if not ids:
+            return
+        self.canvas.delete(f"card:{base}")
+        self._draw_card(base, ids["col"], ids["ri"])
+
+    def _on_card_motion(self, e):
+        hit = self._hit_card_button(e)
+        if hit:
+            base, action, _enabled = hit
+            self._set_card_button_hover(base, action)
+            return
+        self._set_card_button_hover(None, None)
+
+    def _on_card_leave(self, _e):
+        self._set_card_button_hover(None, None)
 
     # ---- 画布上的卡片交互(原 Card 绑定迁移) ------------------------------------
 
@@ -1325,12 +1586,24 @@ class App(tk.Tk):
         return None
 
     def _on_card_click(self, e):
+        hit = self._hit_card_button(e)
+        if hit:
+            base, action, enabled = hit
+            if enabled:
+                self._run_card_button(base, action)
+            return "break"
         base = self._hit_base(e)
         if base:
             self.select(base)
 
     def _on_card_dbl(self, e):
-        """双击 = 自动定位到游戏内该涂装(右键菜单仍可查看缩略图)。"""
+        """双击 = 自动定位到游戏内该涂装; 点在快捷按钮上时按按钮动作执行。"""
+        hit = self._hit_card_button(e)
+        if hit:
+            base, action, enabled = hit
+            if enabled:
+                self._run_card_button(base, action)
+            return "break"
         base = self._hit_base(e)
         if base:
             self.select(base)
@@ -1391,6 +1664,8 @@ class App(tk.Tk):
         menu.add_command(label=_("定位到涂装位置"),
                          state=tk.NORMAL if pos else tk.DISABLED,
                          command=self.auto_locate)
+        menu.add_command(label=_("所在文件夹"),
+                         command=self.open_item_folder)
         menu.add_separator()
         menu.add_command(label=_("复制游戏内位置 ({pos})").format(pos=pos) if pos
                          else _("复制游戏内位置"),
@@ -1648,6 +1923,9 @@ class App(tk.Tk):
             self._redraw_win = None
             self._shown = []
             self._selected = None
+            self._hover_base = None
+            self._hover_button = None
+            self._hover_status = None
             self._set_info(_("未选择条目"))
             self.thumb_label.configure(image="", text=_("(无预览)"))
             self.rebuild_grid()
@@ -1691,6 +1969,9 @@ class App(tk.Tk):
         self._redraw_win = None
         self._shown = []
         self._selected = None
+        self._hover_base = None
+        self._hover_button = None
+        self._hover_status = None
         self._set_info(_("未选择条目"))
         self.thumb_label.configure(image="", text=_("(无预览)"))
         # 车厂下拉: 只列出当前存档涂装实际涉及的车厂
@@ -1851,6 +2132,10 @@ class App(tk.Tk):
             self._selected = None
             self._set_info(_("未选择条目"))
             self.thumb_label.configure(image="", text=_("(无预览)"))
+        if self._hover_base in gone:            # 悬停卡被删: 清快捷按钮悬停态, 防脏引用
+            self._hover_base = None
+            self._hover_button = None
+            self._hover_status = None
         # 派生数据: 游戏内位置(全量重算仅毫秒级)/喷涂集合求交/车厂下拉
         self._total_cols, self._layout = fh6save.game_layout(self.items)
         self._pos_map = {b: _("{x}行{y}列").format(x=x, y=y)
@@ -3090,12 +3375,13 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------ 自动定位(发送方向键)
 
-    def auto_locate(self):
-        """立即切到游戏窗口并经 keybd_event 发送方向键; 发送中再点按钮或按 Esc 取消。"""
+    def auto_locate(self, base: str | None = None):
+        """立即切到游戏窗口并经 keybd_event 发送方向键; 发送中再点按钮或按 Esc 取消。
+        base 非空时定位该卡(卡片快捷按钮入口), 否则沿用当前选中项。"""
         if self._locate_running:
             self._cancel_locate()
             return
-        it = self.selected_item()
+        it = self.item_map.get(base) if base else self.selected_item()
         rc = self._layout.get(it.base) if it else None
         if not rc:
             msg = _("该涂装没有游戏内位置信息") if it else _("请先在左侧选中一个涂装")
@@ -3227,21 +3513,36 @@ class App(tk.Tk):
         if self.current:
             os.startfile(self.current["dir"])  # noqa: S606
 
-    def open_item_folder(self):
-        it = self.selected_item()
+    def open_item_folder(self, base: str | None = None):
+        """打开所在文件夹并在资源管理器里选中该条目(explorer /select, 语义)。
+        目录型条目(pgs)选中其容器文件夹; 平铺文件型(Steam)选中一个真实存在的
+        分片(header 优先)。目标已不存在(条目刚被外部删除)时回退只开父目录。"""
+        it = self.item_map.get(base) if base else self.selected_item()
         if not it:
             return
-        target = it.folder / it.base if it.is_dir else it.folder
-        os.startfile(target)  # noqa: S606
+        target: Path | None = it.folder / it.base if it.is_dir else None
+        if target is None:
+            # 平铺文件型没有与 base 同名的文件: 挑一个真实存在的分片(header 优先)
+            cands = [it.files["header"]] if "header" in it.files else []
+            cands += [p for k, p in it.files.items() if k != "header"]
+            target = next((p for p in cands if Path(p).exists()), None)
+        if target is not None and Path(target).exists():
+            explorer = Path(os.environ.get("SystemRoot",
+                                           r"C:\Windows")) / "explorer.exe"
+            # /select, 与路径分两个 argv(免疫逗号/空格); Popen 开火即忘
+            # (explorer 选中成功也常返回非零, 不能用 run/check)
+            subprocess.Popen([str(explorer), "/select,", str(target)])  # noqa: S606
+        else:
+            os.startfile(it.folder)  # noqa: S606
 
     # ------------------------------------------------------------ 3D 预览(外部 FLS)
 
-    def open_fls_preview(self):
-        """3D 预览: 把选中涂装的 C_livery 交给外部 Forza Livery Studio 打开。
+    def open_fls_preview(self, base: str | None = None):
+        """3D 预览: 把涂装的 C_livery 交给内置查看器打开。
+        base 非空时预览该卡(卡片快捷按钮入口), 否则沿用当前选中项。
 
-        本工具不自带渲染; FLS(开源 AGPL-3.0)读取游戏目录明文车包做实时 3D 预览。
-        找不到程序时弹引导(官网下载/手动指定); 同一涂装的进程还活着则不重复启动。"""
-        it = self.selected_item()
+        找不到程序时弹引导; 同一涂装的查看器窗口还活着则不重复启动。"""
+        it = self.item_map.get(base) if base else self.selected_item()
         if not it:
             self.status_var.set(_("请先在左侧选中一个涂装"))
             return

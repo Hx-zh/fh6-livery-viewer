@@ -2457,6 +2457,16 @@ void CarPreviewWidget::updateModelStatus() {
     layoutOverlayControls();
 }
 
+void CarPreviewWidget::showPartsPanel() {
+    setSidePanelVisible(true);
+    if (categoryButtons_ != nullptr && categoryPages_ != nullptr) {
+        if (QAbstractButton *parts = categoryButtons_->button(1)) {
+            parts->setChecked(true);
+        }
+        categoryPages_->setCurrentIndex(1);   // 0=PAINT 1=PARTS 2=LOD
+    }
+}
+
 void CarPreviewWidget::setSidePanelVisible(bool visible) {
     sidePanelVisible_ = visible;
     if (sidePanel_ != nullptr) {

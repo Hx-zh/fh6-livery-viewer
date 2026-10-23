@@ -50,6 +50,11 @@ ViewerWindow::ViewerWindow(fls::Project project, const QString &gameRoot,
     auto *lodButton = new QPushButton(QStringLiteral("LOD"), topBar);
     lodButton->setToolTip(QStringLiteral("Cycle model level of detail"));
     topLayout->addWidget(lodButton);
+    // 套件选择直达: 展开侧栏并切到 PARTS 页(原需先点 "<" 再点 PARTS 两步)
+    auto *partsButton = new QPushButton(QStringLiteral("Parts"), topBar);
+    partsButton->setToolTip(
+        QStringLiteral("Show body kit and exterior part selection"));
+    topLayout->addWidget(partsButton);
     auto *shotButton = new QPushButton(QStringLiteral("PNG"), topBar);
     shotButton->setToolTip(QStringLiteral("Save a snapshot image"));
     topLayout->addWidget(shotButton);
@@ -74,6 +79,8 @@ ViewerWindow::ViewerWindow(fls::Project project, const QString &gameRoot,
     });
     connect(lodButton, &QPushButton::clicked, this,
             [this] { preview_->cycleLod(); });
+    connect(partsButton, &QPushButton::clicked, this,
+            [this] { preview_->showPartsPanel(); });
     connect(shotButton, &QPushButton::clicked, this, [this] {
         const QString path = QFileDialog::getSaveFileName(
             this, QStringLiteral("Save snapshot"),
