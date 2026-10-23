@@ -469,6 +469,24 @@ def _viewer_artifact_run(gh: str) -> dict | None:
     return runs[0] if runs else None
 
 
+def _viewer_assets_stale(build_dir: Path, stage: Path) -> bool:
+    """build/assets 里是否有暂存缺失或内容更新的文件。
+
+    2026-10-24 实弹(v1.9.7): 提交后的 dev_build 钩子只同步 exe, 并把目标 mtime 刷成
+    "现在", 于是 `newer` 判否; 新增的 part_names.<lang>.json 没进暂存, 发出去的包里
+    查看器仍显示英文套件名。按文件清单(相对路径/大小/mtime)比较, 与 exe 新鲜度解耦。
+    """
+    def manifest(root: Path) -> dict[str, tuple[int, int]]:
+        if not root.is_dir():
+            return {}
+        return {p.relative_to(root).as_posix(): (p.stat().st_size, p.stat().st_mtime_ns)
+                for p in root.rglob("*") if p.is_file()}
+
+    src = manifest(build_dir / "assets")
+    dst = manifest(stage / "assets")
+    return any(rel not in dst or dst[rel] != meta for rel, meta in src.items())
+
+
 def _viewer_stage() -> Path | None:
     """把 3D 查看器暂存到 dist/3DViewer/。已暂存直接用; 否则 gh 拉取
     build-viewer 工件(发布 zip 内置 3DViewer/ 子目录, 端上 flsbridge 优先用它)。
@@ -486,8 +504,8 @@ def _viewer_stage() -> Path | None:
                 not (stage / "licenses").is_dir()
             newer = local_build.is_file() and \
                 local_build.stat().st_mtime > staged_exe.stat().st_mtime
-            if junk or missing_legal or newer:
-                build_dir = local_build.parent
+            build_dir = local_build.parent
+            if junk or missing_legal or newer or _viewer_assets_stale(build_dir, stage):
                 shutil.rmtree(stage, ignore_errors=True)
                 stage.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(local_build, stage / local_build.name)
@@ -515,7 +533,7 @@ def _viewer_stage() -> Path | None:
                                     dirs_exist_ok=True)
                 if (src_dir / "SOURCE.md").is_file():
                     shutil.copy2(src_dir / "SOURCE.md", stage / "SOURCE.md")
-                print("[3DViewer] 本地构建较新, 已刷新 dist/3DViewer(白名单)")
+                print("[3DViewer] 本地构建或资产较新, 已刷新 dist/3DViewer(白名单)")
         except OSError as e:
             print(f"[3DViewer] 警告: 刷新暂存失败({e}), 沿用现有暂存")
         return stage
