@@ -36,6 +36,8 @@ qt_add_executable(FH6Livery3DViewer WIN32
     src/viewer_main.cpp
     src/viewer_window.h
     src/viewer_window.cpp
+    src/viewer_i18n.h
+    src/viewer_i18n.cpp
     src/car_locator.h
     src/car_locator.cpp
     src/raster_pack.h

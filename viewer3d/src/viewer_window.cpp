@@ -6,6 +6,7 @@
 #include "game_paths.h"
 #include "project_codec.h"
 #include "raster_pack.h"
+#include "viewer_i18n.h"
 
 #include <QFileDialog>
 #include <QFrame>
@@ -45,18 +46,19 @@ ViewerWindow::ViewerWindow(fls::Project project, const QString &gameRoot,
     titleLabel_->setStyleSheet(QStringLiteral("font-weight: bold;"));
     topLayout->addWidget(titleLabel_, 1);
     qualityButton_ = new QPushButton(topBar);
-    qualityButton_->setToolTip(QStringLiteral("Livery texture scale"));
+    qualityButton_->setToolTip(viewer_i18n::tr(QStringLiteral("Livery texture scale")));
     topLayout->addWidget(qualityButton_);
     auto *lodButton = new QPushButton(QStringLiteral("LOD"), topBar);
-    lodButton->setToolTip(QStringLiteral("Cycle model level of detail"));
+    lodButton->setToolTip(viewer_i18n::tr(QStringLiteral("Cycle model level of detail")));
     topLayout->addWidget(lodButton);
     // 套件选择直达: 展开侧栏并切到 PARTS 页(原需先点 "<" 再点 PARTS 两步)
-    auto *partsButton = new QPushButton(QStringLiteral("Parts"), topBar);
+    auto *partsButton = new QPushButton(
+        viewer_i18n::tr(QStringLiteral("Parts")), topBar);
     partsButton->setToolTip(
-        QStringLiteral("Show body kit and exterior part selection"));
+        viewer_i18n::tr(QStringLiteral("Show body kit and exterior part selection")));
     topLayout->addWidget(partsButton);
     auto *shotButton = new QPushButton(QStringLiteral("PNG"), topBar);
-    shotButton->setToolTip(QStringLiteral("Save a snapshot image"));
+    shotButton->setToolTip(viewer_i18n::tr(QStringLiteral("Save a snapshot image")));
     topLayout->addWidget(shotButton);
     layout->addWidget(topBar);
 
@@ -83,7 +85,7 @@ ViewerWindow::ViewerWindow(fls::Project project, const QString &gameRoot,
             [this] { preview_->showPartsPanel(); });
     connect(shotButton, &QPushButton::clicked, this, [this] {
         const QString path = QFileDialog::getSaveFileName(
-            this, QStringLiteral("Save snapshot"),
+            this, viewer_i18n::tr(QStringLiteral("Save snapshot")),
             QStringLiteral("%1.png").arg(project_.name),
             QStringLiteral("PNG (*.png)"));
         if (path.isEmpty()) {
@@ -101,7 +103,7 @@ void ViewerWindow::setStartupNote(const QString &note)
         return;
     }
     const QString current = statusLabel_->text();
-    if (current == QStringLiteral("Loading car model…")) {
+    if (current == viewer_i18n::tr(QStringLiteral("Loading car model…"))) {
         statusLabel_->setText(note);               // 加载占位被首个结果替换
         return;
     }
@@ -145,7 +147,8 @@ bool ViewerWindow::openLivery(const QString &path, const QString &gameRoot,
         QString rasterError;
         fls::ensureRasterDecalPack(gameRoot_, &rasterError);
         if (!rasterError.isEmpty()) {
-            setStartupNote(QStringLiteral("raster decals: %1").arg(rasterError));
+            setStartupNote(
+                viewer_i18n::tr(QStringLiteral("raster decals: %1")).arg(rasterError));
         }
     }
     return true;
@@ -173,16 +176,15 @@ void ViewerWindow::applyProject()
         // No car to put the design on: drop any previously loaded model rather than leaving the
         // old car on screen under a new livery.
         preview_->clearModel();
-        statusLabel_->setText(
-            QStringLiteral("Livery loaded (no car id — model not loaded)"));
+        statusLabel_->setText(viewer_i18n::tr(
+            QStringLiteral("Livery loaded (no car id — model not loaded)")));
         return;
     }
     const QString modelCode = registry.modelCode(project_.carId);
     if (modelCode.isEmpty()) {
         preview_->clearModel();
-        statusLabel_->setText(
-            QStringLiteral("Unknown car id %1 — model not loaded")
-                .arg(project_.carId));
+        statusLabel_->setText(viewer_i18n::tr(
+            QStringLiteral("Unknown car id %1 — model not loaded")).arg(project_.carId));
         return;
     }
     loadCarModel();
@@ -192,8 +194,8 @@ void ViewerWindow::loadCarModel()
 {
     if (gameRoot_.isEmpty()) {
         preview_->clearModel();
-        statusLabel_->setText(
-            QStringLiteral("No game folder — livery shown without car model"));
+        statusLabel_->setText(viewer_i18n::tr(
+            QStringLiteral("No game folder — livery shown without car model")));
         return;
     }
     const QString carsDir = fls::gameCarsDir(gameRoot_);
@@ -203,14 +205,15 @@ void ViewerWindow::loadCarModel()
     if (path.isEmpty()) {
         preview_->clearModel();
         statusLabel_->setText(
-            QStringLiteral("Car archive %1 not found under %2")
+            viewer_i18n::tr(QStringLiteral("Car archive %1 not found under %2"))
                 .arg(modelCode, carsDir));
         return;
     }
-    statusLabel_->setText(QStringLiteral("Loading car model…"));
+    statusLabel_->setText(viewer_i18n::tr(QStringLiteral("Loading car model…")));
     preview_->loadCarAsync(path, [this](bool ok, const QString &error) {
-        setStartupNote(ok ? QStringLiteral("Ready")
-                          : QStringLiteral("Car model failed: %1").arg(error));
+        setStartupNote(ok ? viewer_i18n::tr(QStringLiteral("Ready"))
+                          : viewer_i18n::tr(QStringLiteral("Car model failed: %1"))
+                                .arg(error));
         if (ok) {
             // Default to the highest-detail LOD (user preference).
             preview_->applyHighestDetailLod();

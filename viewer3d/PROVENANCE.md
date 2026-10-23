@@ -17,7 +17,10 @@ This directory contains a vendored snapshot of code from **Forza Livery Studio**
   - `assets/vector/`, `assets/cars/` — vinyl shape geometry catalog and
     car-id → model-directory mapping. **These are derived data**, decoded
     from the local game files, distributed under AGPL following the upstream
-    repository's precedent.
+    repository's precedent. The localized part catalogs
+    (`assets/cars/part_names.<lang>.json`, see the local modifications below)
+    are derived data too, generated from the game's own localisation string
+    tables — AGPL, same precedent as the rest of `assets/`.
 - Local modifications (tracked in this repository's history):
   - `fls/src/gui/canvas/native_shape_renderer.cpp` — the vinyl atlas is
     rendered into a 4x-multisampled target and resolved with
@@ -124,6 +127,47 @@ This directory contains a vendored snapshot of code from **Forza Livery Studio**
     other creators' work; this repository builds a strictly **read-only
     viewer** of the user's own save (no editing or export code compiled in)
     that only shows what the game itself already displays locally.
+  - `src/viewer_i18n.{h,cpp}` (new files) — viewer UI language selection:
+    `--lang` (passed by the host app, BCP 47) > `FH6_LANG` > English. Two things
+    are localized. (1) Part catalogs come from the game's own string tables:
+    `assets/cars/part_names.<lang>.json` sit next to the upstream table, English
+    keeps using `part_names.json`, and a missing file or entry falls back to
+    English per lookup. (2) The viewer's own chrome strings go through
+    `viewer_i18n::tr()`; `viewer_window.cpp`, `viewer_main.cpp`,
+    `raster_pack.cpp` and the vendored `car_preview_widget.cpp` all use it.
+    `viewer_i18n.cpp` holds four chrome tables — zh-cn, zh-tw, ja and ko, 53
+    strings each, selected by `chromeTable()`; English is the source language,
+    so `en` (or a missing entry) returns the source string unchanged. The
+    `--lang` / `FH6_LANG` precedence is unchanged. `isCjk()` (zh-cn / zh-tw /
+    ja / ko) drives a readability bump for CJK interfaces: the whole UI font
+    grows by 2 pt, the side panel's maximum width goes from 292 to 380 px, and
+    two fixed caption/tab sizes switch to their larger values; English keeps the
+    upstream sizing. One caveat for future strings:
+    `ViewerWindow::setStartupNote()` compares the status label against
+    `tr("Loading car model…")` to recognise the loading placeholder, so any
+    string compared with existing UI text must be compared in its translated
+    form.
+  - `fls/src/gui/widgets/car_preview_widget.cpp` (localization follow-up, then
+    PAINT page removal) — `catalogPartName()` and `partTypeDisplayName()` now
+    read the per-language catalog (`viewer_i18n`): localized option names and
+    category names generated from the game's own string tables
+    (`tools/update_part_names.py`); the hardcoded English switch remains the
+    fallback. Chrome strings (top-bar tooltips, PARTS/LOD, status bar, generic
+    option fallbacks) now go through `viewer_i18n::tr()` — four language tables
+    (zh-cn / zh-tw / ja / ko), English being the source. The two hard-coded
+    font sizes are language-aware (10 px Latin / 12 px CJK for the top-left
+    "only for reference" caption, 10 px / 13 px for the side-panel tabs), and
+    the side panel max width is 292 px (Latin) / 380 px (CJK) so translated
+    labels are not clipped — Japanese options such as
+    "Forza Horizon 6 - リアウィング (レース仕様)" measure ~315 px under the
+    Chinese font fallback (YaHei), which a 320 px panel could not hold.
+    Upstream's PAINT page (per-region colours, finish picker, "Clear all") was
+    removed: the read-only
+    viewer never installs an `EditorState`, so those controls could never act
+    and only showed inert widgets. `project.liveryPaint` rendering and the
+    `basePaint_` lookup (`updateCarColorControl()`) are unchanged; the side
+    panel now holds only PARTS (index 0, the default) and LOD (index 1), and
+    `showPartsPanel()` selects PARTS by index 0.
 - Runtime dependencies of the shipped binary (licensing notices live in
   `licenses/` and in `SOURCE.md` which is included in release zips):
   Qt 6.8.3 dynamically linked under LGPL-3.0 (source: download.qt.io /

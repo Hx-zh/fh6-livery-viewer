@@ -62,7 +62,7 @@ else:
     CARS_JSON = APP_DIR / "cars.json"
 BACKUP_DIR = APP_DIR / "backups"
 
-APP_VERSION = "1.9.6"
+APP_VERSION = "1.9.7"
 PROJECT_URL = "https://github.com/Hx-zh/fh6-livery-viewer"
 RELEASES_URL = PROJECT_URL + "/releases"
 # Gitee 镜像(国内更新加速; 发布时需同步推送到该仓库并建同名 release):
@@ -3647,6 +3647,8 @@ class App(tk.Tk):
         root = self._resolve_game_root()
         if root is not None:
             args += ["--game", str(root)]
+        # 查看器按此加载 assets/cars/part_names.<code>.json(游戏串表生成), 与界面语言一致
+        args += ["--lang", i18n.LANG_TAG]
 
         # 超出上限时先关最早启动的窗口。仅在 max_windows > 1 时适用:
         # max_windows == 1 走单实例接管, 那个"已存在的窗口"正是要被复用的目标,

@@ -44,6 +44,9 @@ def _detect_lang() -> str:
 
 LANG = _detect_lang()
 
+# BCP 47 标签: 传给 3D 查看器 --lang(查看器 assets/cars/part_names.<code>.json 按此命名)
+LANG_TAG = {"zh": "zh-CN", "zhtw": "zh-TW", "en": "en", "ja": "ja", "ko": "ko"}[LANG]
+
 # 静态导入四个语言文件: PyInstaller 静态分析才能识别并打包它们
 # (动态 __import__(f"lang_{LANG}") 分析不到, 打包后会全部回退中文)
 from . import lang_en

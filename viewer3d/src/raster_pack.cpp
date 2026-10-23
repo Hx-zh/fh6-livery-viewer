@@ -3,6 +3,7 @@
 #include "binary_io.h"
 #include "swatchbin.h"
 #include "zip_extract.h"
+#include "viewer_i18n.h"
 
 #include <QDateTime>
 #include <QCoreApplication>
@@ -122,7 +123,8 @@ bool ensureRasterDecalPack(const QString &gameRoot, QString *error)
     if (!zipInfo.isFile()) {
         // No game files at hand: keep whatever cache exists, never fail hard.
         if (error != nullptr) {
-            *error = QStringLiteral("Decals.zip not found under the game folder");
+            *error = viewer_i18n::tr(
+                QStringLiteral("Decals.zip not found under the game folder"));
         }
         return !existingRasterDecalPack().isEmpty();
     }
@@ -166,7 +168,8 @@ bool ensureRasterDecalPack(const QString &gameRoot, QString *error)
               [](const auto &a, const auto &b) { return a.first < b.first; });
     if (decals.isEmpty()) {
         if (error != nullptr) {
-            *error = QStringLiteral("Decals.zip has no decal*.swatchbin entries");
+            *error = viewer_i18n::tr(
+                QStringLiteral("Decals.zip has no decal*.swatchbin entries"));
         }
         return false;
     }
@@ -187,7 +190,7 @@ bool ensureRasterDecalPack(const QString &gameRoot, QString *error)
             if (error != nullptr) {
                 *error = QStringLiteral("%1: %2").arg(
                     entry, entryError.isEmpty()
-                               ? QStringLiteral("invalid swatchbin")
+                               ? viewer_i18n::tr(QStringLiteral("invalid swatchbin"))
                                : entryError);
             }
             return false;
@@ -209,7 +212,7 @@ bool ensureRasterDecalPack(const QString &gameRoot, QString *error)
     QFile output(tmpPath);
     if (!output.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         if (error != nullptr) {
-            *error = QStringLiteral("cannot write %1").arg(tmpPath);
+            *error = viewer_i18n::tr(QStringLiteral("cannot write %1")).arg(tmpPath);
         }
         return false;
     }
@@ -218,7 +221,7 @@ bool ensureRasterDecalPack(const QString &gameRoot, QString *error)
         output.close();
         QFile::remove(tmpPath);
         if (error != nullptr) {
-            *error = QStringLiteral("short write to %1").arg(tmpPath);
+            *error = viewer_i18n::tr(QStringLiteral("short write to %1")).arg(tmpPath);
         }
         return false;
     }
@@ -227,7 +230,7 @@ bool ensureRasterDecalPack(const QString &gameRoot, QString *error)
     if (!QFile::rename(tmpPath, packPath)) {
         QFile::remove(tmpPath);
         if (error != nullptr) {
-            *error = QStringLiteral("cannot replace %1").arg(packPath);
+            *error = viewer_i18n::tr(QStringLiteral("cannot replace %1")).arg(packPath);
         }
         return false;
     }

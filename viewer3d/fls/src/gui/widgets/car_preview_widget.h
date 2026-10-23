@@ -106,7 +106,6 @@ private:
     void updateLodControl();
     void layoutOverlayControls();
     void rebuildPartsPanel();
-    void rebuildColorsPanel();
     void rebuildModelPanel();
     void selectPartOption(int partType, int optionId);
     void selectLod(int lodIndex);
@@ -114,14 +113,6 @@ private:
     void switchCarUnwrapOverlay();
     void setSidePanelVisible(bool visible);
     int previewViewportWidth() const;
-    void chooseRegionColor(const QVector<quint64> &materialHashes,
-                           bool secondary,
-                           const QVector<quint64> &fallbackHashes = {});
-    void chooseRegionFinish(const QVector<quint64> &materialHashes,
-                            quint32 finish);
-    QVector<quint64> effectivePaintHashes(
-        const QVector<quint64> &materialHashes) const;
-    void clearPaintOverrides();
     void updateCarColorControl();
 
     NativeShapeRenderer shapeRenderer_;
@@ -171,15 +162,12 @@ private:
     QButtonGroup *categoryButtons_ = nullptr;
     QStackedWidget *categoryPages_ = nullptr;
     QWidget *partsPage_ = nullptr;
-    QWidget *colorsPage_ = nullptr;
     QWidget *modelPage_ = nullptr;
     QVBoxLayout *partsOptionsLayout_ = nullptr;
-    QVBoxLayout *colorsLayout_ = nullptr;
     QVBoxLayout *modelOptionsLayout_ = nullptr;
     QHash<int, int> selectedPartOptions_;
     int selectedLodIndex_ = 0;
     bool sidePanelVisible_ = false;
-    bool overrideBodyChildPaint_ = true;
 
     QVector3D target_;
     float modelRadius_ = 1.0f;

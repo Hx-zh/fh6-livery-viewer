@@ -1,5 +1,6 @@
 #include "viewer_window.h"
 #include "raster_pack.h"
+#include "viewer_i18n.h"
 
 #include "livery_codec.h"
 #include "project_codec.h"
@@ -11,6 +12,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFont>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -376,7 +378,7 @@ QString resolveGameFolder(bool *cancelled)
     // silently accepting it would make every car model lookup fail.
     for (;;) {
         folder = QFileDialog::getExistingDirectory(
-            nullptr, QStringLiteral("Forza Horizon 6 game folder"));
+            nullptr, viewer_i18n::tr(QStringLiteral("Forza Horizon 6 game folder")));
         if (folder.isEmpty()) {
             *cancelled = true;
             return QString();
@@ -388,8 +390,10 @@ QString resolveGameFolder(bool *cancelled)
         }
         QMessageBox::warning(
             nullptr, QStringLiteral("FH6 3D"),
-            QStringLiteral("这不是 Forza Horizon 6 的安装目录（需要包含 media/Cars，"
-                           "且不能是 Forza Horizon 5 等其它代数）。\n\n请重新选择，或取消。"));
+            viewer_i18n::tr(QStringLiteral(
+                "This is not a Forza Horizon 6 install folder (it must contain "
+                "media/Cars and must not be another Forza generation).\n\n"
+                "Please choose again, or cancel.")));
     }
 }
 
@@ -414,7 +418,24 @@ int main(int argc, char *argv[])
         QStringLiteral("Forza Horizon 6 install folder"),
         QStringLiteral("folder"));
     parser.addOption(gameOption);
+    QCommandLineOption langOption(
+        QStringLiteral("lang"),
+        QStringLiteral("Interface language: zh-cn / zh-tw / en / ja / ko"),
+        QStringLiteral("code"));
+    parser.addOption(langOption);
     parser.process(app);
+
+    // The host app passes its own interface language; standalone runs fall back to FH6_LANG,
+    // then English (assets/cars/part_names.<code>.json).
+    viewer_i18n::setLanguageCode(parser.value(langOption));
+
+    // CJK glyphs look smaller than Latin at the same point size. Bump the whole UI font before
+    // any widget exists so buttons, labels, status bar and message boxes all grow together.
+    if (viewer_i18n::isCjk()) {
+        QFont uiFont = app.font();
+        uiFont.setPointSizeF(uiFont.pointSizeF() + 2.0);
+        app.setFont(uiFont);
+    }
 
     // Older builds remembered the game folder in the registry; adopt it into the app config so
     // such an install keeps its setting. The key itself stays untouched — 「设置 → 清除旧版本
@@ -472,9 +493,9 @@ int main(int argc, char *argv[])
 
     if (liveryPath.isEmpty()) {
         liveryPath = QFileDialog::getOpenFileName(
-            nullptr, QStringLiteral("Open C_livery"), QString(),
-            QStringLiteral("C_livery (C_livery Livery_*.C_livery);;"
-                           "All files (*)"));
+            nullptr, viewer_i18n::tr(QStringLiteral("Open C_livery")), QString(),
+            viewer_i18n::tr(QStringLiteral(
+                "C_livery (C_livery Livery_*.C_livery);;All files (*)")));
         if (liveryPath.isEmpty()) {
             return 0;
         }
@@ -486,7 +507,7 @@ int main(int argc, char *argv[])
     } catch (const std::exception &ex) {
         QMessageBox::critical(
             nullptr, QStringLiteral("FH6 3D"),
-            QStringLiteral("Could not read the livery:\n%1")
+            viewer_i18n::tr(QStringLiteral("Could not read the livery:\n%1"))
                 .arg(QString::fromUtf8(ex.what())));
         return 1;
     }
@@ -513,10 +534,11 @@ int main(int argc, char *argv[])
         QString rasterError;
         fls::ensureRasterDecalPack(gameRoot, &rasterError);
         rasterNote = rasterError.isEmpty()
-                         ? QStringLiteral("raster decals: ready")
-                         : QStringLiteral("raster decals: %1").arg(rasterError);
+                         ? viewer_i18n::tr(QStringLiteral("raster decals: ready"))
+                         : viewer_i18n::tr(QStringLiteral("raster decals: %1"))
+                               .arg(rasterError);
     } else {
-        rasterNote = QStringLiteral("raster decals: no game folder");
+        rasterNote = viewer_i18n::tr(QStringLiteral("raster decals: no game folder"));
     }
 
     ViewerWindow window(std::move(project), gameRoot, liveryPath);
@@ -582,7 +604,8 @@ int main(int argc, char *argv[])
                         if (!window.openLivery(path, root, &error)) {
                             QMessageBox::critical(
                                 nullptr, QStringLiteral("FH6 3D"),
-                                QStringLiteral("Could not read the livery:\n%1")
+                                viewer_i18n::tr(
+                                    QStringLiteral("Could not read the livery:\n%1"))
                                     .arg(error));
                         }
                     }
