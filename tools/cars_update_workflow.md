@@ -30,7 +30,7 @@
 | 脚本 | 用途 | 前提 |
 |---|---|---|
 | `tools/update_cars.py` | 磁盘 `.str`（ID 锚点）vs cars.json：ID 集合比对 + 首选内存文案 / 新 ID 磁盘文案 join → diff 报告（默认模式；无文案覆盖的新 ID 报「新增·待人工」） | 只读游戏安装目录；内存数据源需游戏运行（界面语言简中）；离线时自动用磁盘全名文案 |
-| `tools/update_car_ids.py` | 扫描 `media/Cars/*.zip` 的 `<CODE>.carbin` 头 `Ordinal`，同步 3D 查看器 `viewer3d/assets/cars/car_ids.json`（默认报告，`--write` 只追加缺失） | 只读游戏安装目录；不需要游戏运行 |
+| `tools/update_car_ids.py` | 扫描 `media/Cars/*.zip` 的 `<CODE>.carbin` 头 `Ordinal`，同步 3D 查看器 `viewer3d/assets/cars/car_ids.json`；`--check` 做覆盖门禁，`--emit-map` 导出纯 ID→模型表，`--allow-short-names` 在名字未定时用 `Data_Car` 短名先落库 | 只读游戏安装目录；不需要游戏运行 |
 | `gamemem.py` 直接跑 | `read_car_years()` 拍照文案年份表 | 游戏运行（界面语言简中） |
 
 > 原 `tmp_check_str.py` / `tmp_probe_ui.py` / `tmp_probe_ui2.py` 三个临时脚本已被 `tools/update_cars.py` 取代并删除。
@@ -39,6 +39,26 @@
 （磁盘 .str 解析 + 内存拍照文案年份 join）→ 人工过目 diff 后 `--write` 应用 → `python tools/update_car_ids.py --write`
 补齐查看器注册表 → commit → `release_build.py --data-only` 发布（用户端 24h 自动更新，不发版）。
 离线时 `update_cars.py` 会改用磁盘全名文案，只给新 ID 补名；`--no-disk-captions` 可强制只信内存文案。
+
+### 纯 ID / 模型路径（不依赖名称，推荐先跑）
+
+`tools/update_car_ids.py` 只用游戏文件里的 `<CODE>.carbin` 头 `Ordinal`，与 `cars.json` 的名称/年份完全解耦：
+
+```bash
+python tools/update_car_ids.py --check
+# 退出码 0 = 所有游戏 ID 都已在 car_ids.json；1 = 有缺失/待人工/冲突
+
+python tools/update_car_ids.py --allow-short-names --write
+# 缺失 ID 一律补入；名字优先 cars.json/磁盘全名文案，仍无则用 Data_Car ModelShort
+
+python tools/update_car_ids.py --emit-map=build/car_id_map.json
+# 纯 { "车ID": "模型代码" } 表，便于 diff/审计/给其他工具消费
+```
+
+这条路径**只更新 `viewer3d/assets/cars/car_ids.json`**，不写 `cars.json`。`cars.json` 的名称/年份仍走
+`tools/update_cars.py`；ID 表可作为交叉校验，二者互不阻塞。`--allow-short-names` 写入的是游戏短名
+（如 `GR GT Prototype`），只保证查看器能加载模型，不冒充完整年份全名。
+
 
 
 ## 三、2026-09-19 修正证据链（对应本次 git diff）
