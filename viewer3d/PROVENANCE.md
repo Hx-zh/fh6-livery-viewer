@@ -168,6 +168,12 @@ This directory contains a vendored snapshot of code from **Forza Livery Studio**
     `basePaint_` lookup (`updateCarColorControl()`) are unchanged; the side
     panel now holds only PARTS (index 0, the default) and LOD (index 1), and
     `showPartsPanel()` selects PARTS by index 0.
+  - `assets/cars/car_ids.json` — synchronized against the installed game with
+    `tools/update_car_ids.py`: each `<CODE>.carbin` Scene header carries the
+    save's car id in its `Ordinal` field (verified for all 691 cars, and equal
+    to the `carclips_<ID>.clipd` number inside the same archive). Nine newly
+    shipped cars were appended on 2026-11-05; existing upstream entries are
+    left untouched.
 - Runtime dependencies of the shipped binary (licensing notices live in
   `licenses/` and in `SOURCE.md` which is included in release zips):
   Qt 6.8.3 dynamically linked under LGPL-3.0 (source: download.qt.io /

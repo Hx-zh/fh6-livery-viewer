@@ -2,22 +2,26 @@
 """tools/update_cars.py — cars.json 维护闭环工具（PLAN.md「改动7」落地）。
 
 用法:
-    python tools/update_cars.py              # 报告模式: 串表 ID 锚点 + (可选)GameDB 文案 → diff
+    python tools/update_cars.py              # 报告模式: 串表 ID 锚点 + 文案 → diff
     python tools/update_cars.py --write      # 应用模式: 追加新增/修正差异(不自动删除) + _updated 打戳
     python tools/update_cars.py --str PATH   # 手动指定 EN.zip 或 Data_Car.str(默认自动找游戏目录)
-    python tools/update_cars.py --no-mem     # 跳过内存数据源(仅探测新增 ID)
+    python tools/update_cars.py --no-mem     # 跳过内存数据源
+    python tools/update_cars.py --no-disk-captions  # 跳过磁盘全名文案(只信 GameDB 内存文案)
 
-数据源(2026-09-19 简化, 仅留 GameDB 系):
-    - **GameDB 文案**(gamemem.read_car_years, 运行时解密, 界面语言须简中) = 唯一权威
+数据源:
+    - **GameDB 文案**(gamemem.read_car_years, 运行时解密, 界面语言须简中) = 首选
       命名/年份源; 双向唯一 join 到 .str 车型 ID。
-    - **磁盘 Data_Car.str** 仅作 ID 锚点/新增探测(GameDB 文案不带 ID, 结构性必需)。
+    - **磁盘全名文案**(ChallengeCarCollectionObjective / ChallengeTakePhotoObjective /
+      ChallengeData / ContentOffers 的 "Own the 2025 …" 等) = 游戏自带文案, 仅在
+      内存文案未覆盖且该 ID **不在 cars.json** 时补名; 现存值一律不覆盖。
+    - **磁盘 Data_Car.str** 提供 ID 锚点与短名; 它的 ModelShort 后缀年份不作来源。
     - cars.json 现存值 = 人工实证缓存(文案未覆盖条目维持原值)。
     已废弃: 品牌展开表(BR/FW/MM)与 ModelShort 后缀年份推导——两者均被实证会错
     (2163 后缀 '16 vs 游戏内 2015), 猜错不如不猜, 无文案即报「待人工」。
 
 教训(2026-09-19): 串表区域里「' 2015 ' + ' Mercedes-AMG GT S'」看似年份+全名成对,
 实乃中文文案「拍摄 2015 年份的 Mercedes-AMG GT S」的 ASCII 碎片(非 ASCII 字节被
-忽略造成的假象)——勿再据此臆造新数据源; 拍照文案即 GameDB 全名+年份的唯一内存载体。
+忽略造成的假象)——勿再据此臆造新数据源; 只采信完整句子模板而非相邻碎片。
 
 只读原则: EN.zip 只读打开不解压写入; 内存只读(ReadProcessMemory), 不写不 hook。
 """
@@ -105,6 +109,68 @@ def load_str_entries(str_path: Path) -> dict[int, tuple[str, str]]:
     return car_entries(*parse_str_table(data))
 
 
+# ---- 磁盘全名文案(②, 仅补新 ID) ----
+
+_DISK_CAPTION_PATTERNS = (
+    re.compile(r"^Own the (\d{4}) (.+)$"),
+    re.compile(r"^Take a photograph featuring the (\d{4}) (.+)$"),
+    re.compile(r"^Forza Horizon 6 (\d{4}) (.+)$"),
+)
+
+
+def load_disk_captions(str_path: Path) -> dict[str, tuple[str, int]]:
+    """从 EN.zip 全部 .str 提取完整 "年份 + 全名" 文案。
+
+    返回 norm(全名) -> (全名, 年份)。同一全名出现多个年份时丢弃(不猜); 单文件
+    Data_Car.str 不含这些句子, 返回空表。这些是游戏自己的挑战/拍照/商店文案,
+    只用于给 cars.json 里**尚不存在**的新 ID 补名, 不覆盖人工实证值。
+    """
+    if str_path.suffix.lower() != ".zip":
+        return {}
+    years: dict[str, set[int]] = {}
+    origin: dict[str, str] = {}
+    with zipfile.ZipFile(str_path) as z:
+        for info in z.infolist():
+            if not info.filename.endswith(".str"):
+                continue
+            try:
+                _keys, vals = parse_str_table(z.read(info))
+            except (struct.error, ValueError, IndexError):
+                continue
+            for v in vals:
+                for pat in _DISK_CAPTION_PATTERNS:
+                    m = pat.match(v.strip())
+                    if not m:
+                        continue
+                    year, name = int(m.group(1)), m.group(2).strip()
+                    nn = norm(name)
+                    years.setdefault(nn, set()).add(year)
+                    origin.setdefault(nn, name)
+                    break
+    return {nn: (origin[nn], next(iter(ys))) for nn, ys in years.items() if len(ys) == 1}
+
+
+def match_captions(entries: dict[int, tuple[str, str]],
+                   pool: dict[str, tuple[str, int]]) -> dict[int, tuple[str, int]]:
+    """把 norm(全名) -> (全名, 年份) 的文案池 join 到车 ID。
+
+    唯一最长后缀才匹配: ① 全名以该 ID 的 DisplayName 结尾; ② 取匹配到的最长
+    DisplayName, 且该长度只有一辆车。这样既消歧 Civic Type R ×5, 也避免短名
+    "e" 把 "…Giulietta Quadrifoglio Verde" 抢走。
+    """
+    ds_norms = {c: norm(d) for c, (d, _) in entries.items()}
+    out: dict[int, tuple[str, int]] = {}
+    for nn, (orig, y) in pool.items():
+        hits = [c for c, nds in ds_norms.items() if nn.endswith(nds)]
+        if not hits:
+            continue
+        longest = max(len(ds_norms[c]) for c in hits)
+        best = [c for c in hits if len(ds_norms[c]) == longest]
+        if len(best) == 1:
+            out[best[0]] = (orig, y)
+    return out
+
+
 # ---- 内存数据源(①, 游戏运行时可用; 只读) ----
 
 def caption_years() -> list[tuple[int, str]] | None:
@@ -131,13 +197,14 @@ def split_name(v: str) -> tuple[int | None, str]:
 def main(argv: list[str]) -> int:
     args = set(argv)
     str_arg = next((a.split("=", 1)[1] for a in argv if a.startswith("--str=")), None)
-    no_mem, write = "--no-mem" in args, "--write" in args
+    no_mem, no_disk = "--no-mem" in args, "--no-disk-captions" in args
+    write = "--write" in args
 
     str_path = Path(str_arg) if str_arg else find_game_str()
     if not str_path:
         raise SystemExit("未找到游戏 EN.zip(用 --str=PATH 手动指定)")
     entries = load_str_entries(str_path)
-    print(f"[串表] {str_path} → {len(entries)} 辆(仅作 ID 锚点/新增探测, 不作命名来源)")
+    print(f"[串表] {str_path} → {len(entries)} 辆(ID 锚点 + 短名)")
 
     cars: dict[str, str] = json.loads(CARS_JSON.read_text(encoding="utf-8"))["fh6"]
 
@@ -145,31 +212,25 @@ def main(argv: list[str]) -> int:
     if not no_mem:
         caps = caption_years() or []
         if caps:
-            print(f"[内存] 拍照文案 {len(caps)} 条(GameDB 全名+年份, 唯一权威命名/年份源)")
+            print(f"[内存] 拍照文案 {len(caps)} 条(GameDB 全名+年份, 首选命名/年份源)")
         else:
-            print("[内存] 拍照文案不可用(游戏未运行/界面语言非简中), 本轮只能探测新增 ID, 不产出命名/年份")
+            print("[内存] 拍照文案不可用(游戏未运行/界面语言非简中), 改用磁盘全名文案补新 ID")
 
-    def build_matches(pool: dict[str, tuple[str, int]]) -> dict[int, tuple[str, int]]:
-        """pool: norm(全名) -> (全名原文, 年份)。返回 code -> (全名原文, 年份)。
+    disk_pool = {} if no_disk else load_disk_captions(str_path)
+    if disk_pool:
+        print(f"[磁盘] 全名文案 {len(disk_pool)} 条(仅给 cars.json 尚不存在的新 ID 补名)")
+    elif not no_disk:
+        print("[磁盘] 无全名文案(单文件 .str 或表内无匹配句子), 新 ID 可能报待人工")
 
-        双向唯一才匹配: ① 全名以该 code 的 DisplayName 结尾; ② 该全名不被任何
-        其他 code 的 DisplayName 后缀匹配(消歧, 如 Civic Type R ×5 / Corvette Z06 ×2)。
-        """
-        ds_norms = {c: norm(d) for c, (d, _) in entries.items()}
-        out: dict[int, tuple[str, int]] = {}
-        for nn, (orig, y) in pool.items():
-            hits = [c for c, nds in ds_norms.items() if nn.endswith(nds)]
-            if len(hits) == 1:
-                out[hits[0]] = (orig, y)
-        return out
-
-    cap_hit = build_matches({norm(n): (n, y) for y, n in caps}) if caps else {}
+    cap_hit = match_captions(entries, {norm(n): (n, y) for y, n in caps}) if caps else {}
+    disk_hit = match_captions(entries, disk_pool) if disk_pool else {}
 
     def resolve(code: int, ds: str) -> tuple[str | None, int | None, str]:
-        """解析 (全名, 年份, 证据)。唯一命名/年份源 = GameDB 文案(双向唯一匹配)。
+        """解析 (全名, 年份, 证据)。
 
-        无文案匹配: 现存条目维持 cars.json 值(人工实证缓存), 新 ID 返回 (None,…)=待人工。
-        品牌展开/后缀年份推导已废弃(2026-09-19 简化: 仅信 GameDB, 猜错不如不猜)。
+        优先级: GameDB 文案 > 现存 cars.json 值 > 磁盘全名文案 > 待人工。
+        现存值永远不被磁盘文案覆盖; 品牌展开/后缀年份推导已废弃(2026-09-19),
+        猜错不如不猜, 无文案即报「待人工」。
         """
         if code in cap_hit:
             nn, y = cap_hit[code]
@@ -178,7 +239,11 @@ def main(argv: list[str]) -> int:
         if old is not None:
             oy, oname = split_name(old)
             return oname, oy, "现存"
+        if code in disk_hit:
+            nn, y = disk_hit[code]
+            return nn, y, "串表文案"
         return None, None, "待人工"
+
 
     added, pending, removed, changed, same = [], [], [], [], 0
     for code in sorted(entries):

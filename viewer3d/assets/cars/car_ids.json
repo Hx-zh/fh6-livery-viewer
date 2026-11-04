@@ -965,5 +965,14 @@
 "3839": {"model": "MER_AMGGT_24", "name": "Mercedes-AMG GT 63 4MATIC+ 24", "version": "FH6"},
 "3857": {"model": "EUN_Cosmo_90", "name": "Eunos Cosmo 90", "version": "FH6"},
 "4122": {"model": "BMW_M4CS_25", "name": "BMW M4 CS 25", "version": "FH6"},
-"4188": {"model": "DAT_5_240ZRallye_72", "name": "Datsun 240Z #5 Rallye 72", "version": "FH6"}
+"4188": {"model": "DAT_5_240ZRallye_72", "name": "Datsun 240Z #5 Rallye 72", "version": "FH6"},
+"1325": {"model": "ALF_Giulietta_11", "name": "Alfa Romeo Giulietta Quadrifoglio Verde 11", "version": "FH6"},
+"2487": {"model": "HON_S660_16", "name": "Honda S660 Alpha 16", "version": "FH6"},
+"3084": {"model": "SUN_Imp_66", "name": "Hillman Imp 66", "version": "FH6"},
+"3978": {"model": "FIA_Panda_87", "name": "FIAT Panda 87", "version": "FH6"},
+"4086": {"model": "POR_MacanGTS_25", "name": "Porsche Macan GTS 25", "version": "FH6"},
+"4181": {"model": "NIS_00_240RSWRC_83", "name": "Nissan 240RS 83", "version": "FH6"},
+"4270": {"model": "FOR_MustangGTD_25", "name": "Ford Mustang GTD 25", "version": "FH6"},
+"4282": {"model": "VW_IDBuzz_25", "name": "Volkswagen Electric Buzz 25", "version": "FH6"},
+"4311": {"model": "CIT_Ami_25", "name": "Citroën Ami 25", "version": "FH6"}
 }
