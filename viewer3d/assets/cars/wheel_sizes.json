@@ -682,5 +682,14 @@
   "HON_Prelude_00": { "front": {"width": 205, "aspect": 50, "rim": 16, "track": 1.7335, "ride": 0.2037}, "rear": {"width": 205, "aspect": 50, "rim": 16, "track": 1.7335, "ride": 0.2037} },
   "LAM_Espada400GT_73": { "front": {"width": 215, "aspect": 70, "rim": 15, "track": 1.735, "ride": 0.165}, "rear": {"width": 215, "aspect": 70, "rim": 15, "track": 1.74, "ride": 0.196} },
   "MER_AMGGT_24": { "front": {"width": 295, "aspect": 33, "rim": 21, "track": 1.97, "ride": 0.145}, "rear": {"width": 305, "aspect": 33, "rim": 21, "track": 1.97, "ride": 0.145} },
-  "SAL_S7_04": { "front": {"width": 275, "aspect": 30, "rim": 19, "track": 1.9, "ride": 0.1742}, "rear": {"width": 345, "aspect": 25, "rim": 20, "track": 1.9, "ride": 0.1865} }
+  "SAL_S7_04": { "front": {"width": 275, "aspect": 30, "rim": 19, "track": 1.9, "ride": 0.1742}, "rear": {"width": 345, "aspect": 25, "rim": 20, "track": 1.9, "ride": 0.1865} },
+  "ALF_Giulietta_11": { "front": {"width": 225, "aspect": 40, "rim": 18, "track": 1.777034, "ride": 0.182261}, "rear": {"width": 225, "aspect": 40, "rim": 18, "track": 1.776365, "ride": 0.180002} },
+  "CIT_Ami_25": { "front": {"width": 155, "aspect": 65, "rim": 14, "track": 1.36, "ride": 0.135}, "rear": {"width": 155, "aspect": 65, "rim": 14, "track": 1.36, "ride": 0.135} },
+  "FIA_Panda_87": { "front": {"width": 145, "aspect": 80, "rim": 13, "track": 1.4, "ride": 0.25}, "rear": {"width": 145, "aspect": 80, "rim": 13, "track": 1.405, "ride": 0.25} },
+  "FOR_MustangGTD_25": { "front": {"width": 325, "aspect": 30, "rim": 20, "track": 2.07, "ride": 0.105}, "rear": {"width": 345, "aspect": 30, "rim": 20, "track": 2.075, "ride": 0.135} },
+  "HON_S660_16": { "front": {"width": 165, "aspect": 55, "rim": 15, "track": 1.455, "ride": 0.125}, "rear": {"width": 195, "aspect": 45, "rim": 16, "track": 1.45, "ride": 0.125} },
+  "NIS_00_240RSWRC_83": { "front": {"width": 225, "aspect": 45, "rim": 15, "track": 1.705, "ride": 0.205}, "rear": {"width": 225, "aspect": 45, "rim": 15, "track": 1.715, "ride": 0.23} },
+  "POR_MacanGTS_25": { "front": {"width": 265, "aspect": 40, "rim": 21, "track": 1.925, "ride": 0.27}, "rear": {"width": 295, "aspect": 35, "rim": 21, "track": 1.965, "ride": 0.285} },
+  "SUN_Imp_66": { "front": {"width": 155, "aspect": 80, "rim": 12, "track": 1.4, "ride": 0.215}, "rear": {"width": 155, "aspect": 80, "rim": 12, "track": 1.36, "ride": 0.225} },
+  "VW_IDBuzz_25": { "front": {"width": 235, "aspect": 50, "rim": 20, "track": 1.925, "ride": 0.215}, "rear": {"width": 265, "aspect": 45, "rim": 20, "track": 1.925, "ride": 0.22} }
 }

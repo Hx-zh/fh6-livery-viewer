@@ -174,6 +174,13 @@ This directory contains a vendored snapshot of code from **Forza Livery Studio**
     to the `carclips_<ID>.clipd` number inside the same archive). Nine newly
     shipped cars were appended on 2026-11-05; existing upstream entries are
     left untouched.
+  - `assets/cars/part_names.json` and `assets/cars/wheel_sizes.json` — the
+    upstream 2026-11-03 expansion (`b000b7e744`, plus the dedupe commit) was
+    merged selectively on 2026-11-17: only the nine new FH6 model codes, and
+    only the six part types this viewer displays (2/9/34/35/36/37). Existing
+    entries and upstream's other-game/per-game override data were left
+    untouched. The localized part catalogs were regenerated from the game's
+    own string tables (691 models, 7,842 entries, 99.83 % coverage).
 - Runtime dependencies of the shipped binary (licensing notices live in
   `licenses/` and in `SOURCE.md` which is included in release zips):
   Qt 6.8.3 dynamically linked under LGPL-3.0 (source: download.qt.io /
