@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "updated": "2026-11-17T23:21:05+08:00",
-  "commit": "35e34e1caf5ce52e07ac9fb7874030a191eb6ea9",
+  "updated": "2026-11-18T00:11:07+08:00",
+  "commit": "c5e99854968e5854e6f9a950617798b3a8346c73",
   "files": [
     {
       "path": "cars.json",
@@ -70,8 +70,8 @@
       "path": "viewer3d/assets/vector/shape_geometry.json.gz",
       "target": "viewer_assets/vector/shape_geometry.json.gz",
       "kind": "json.gz",
-      "bytes": 9464264,
-      "sha256": "035ae6ec37b9e296589978faf7e1c42c5eb403fbc3641013ffb2c05f64803edc"
+      "bytes": 12917716,
+      "sha256": "5ce11861465422f852cf135b36b3d61627e0332b8b76dadbe19da91c7beb9630"
     }
   ]
 }
