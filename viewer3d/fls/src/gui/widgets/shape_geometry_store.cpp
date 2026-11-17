@@ -1,5 +1,7 @@
 #include "shape_geometry_store.h"
 
+#include "viewer_assets.h"
+
 #include <zlib.h>
 
 #include <algorithm>
@@ -7,21 +9,6 @@
 
 namespace gui {
 namespace {
-
-constexpr int kCenturyGothicLowercaseA = 3801;
-
-QStringList candidateAssetPaths() {
-    const QString appDir = QCoreApplication::applicationDirPath();
-    const QString cwd = QDir::currentPath();
-    return {
-        QDir(appDir).filePath(QStringLiteral("assets/vector/shape_geometry.json.gz")),
-        QDir(appDir).filePath(QStringLiteral("assets/vector/shape_geometry.json")),
-        QDir(cwd).filePath(QStringLiteral("assets/vector/shape_geometry.json.gz")),
-        QDir(cwd).filePath(QStringLiteral("assets/vector/shape_geometry.json")),
-        QDir(cwd).filePath(QStringLiteral("cpp-port/assets/vector/shape_geometry.json.gz")),
-        QDir(cwd).filePath(QStringLiteral("cpp-port/assets/vector/shape_geometry.json")),
-    };
-}
 
 QPointF vertexPoint(const QJsonArray &vertices, int index) {
     const QJsonArray vertex = vertices.at(index).toArray();
@@ -71,7 +58,10 @@ bool inflateGzip(const QByteArray &compressed, QByteArray *out, QString *error) 
 } // namespace
 
 bool ShapeGeometryStore::loadDefault(QString *error) {
-    for (const QString &path : candidateAssetPaths()) {
+    for (const QString &relativePath : {
+             QStringLiteral("vector/shape_geometry.json.gz"),
+             QStringLiteral("vector/shape_geometry.json")}) {
+        const QString path = viewer_assets::resolve(relativePath);
         if (QFile::exists(path)) {
             return loadFromFile(path, error);
         }
@@ -124,8 +114,8 @@ bool ShapeGeometryStore::loadFromFile(const QString &path, QString *error) {
         const QJsonArray triangles = raw.value(QStringLiteral("triangles")).toArray();
         ShapeGeometry geometry;
         if (size.size() >= 2) {
-            geometry.width = std::max(1, size.at(0).toInt(128));
-            geometry.height = std::max(1, size.at(1).toInt(128));
+            geometry.width = std::max(1.0, size.at(0).toDouble(128.0));
+            geometry.height = std::max(1.0, size.at(1).toDouble(128.0));
         }
         geometry.source = raw.value(QStringLiteral("source")).toString();
 
@@ -150,14 +140,6 @@ bool ShapeGeometryStore::loadFromFile(const QString &path, QString *error) {
             item.alpha2 = vertexAlpha(vertices, i2);
             if (item.alpha0 > 0.0 || item.alpha1 > 0.0 || item.alpha2 > 0.0) {
                 geometry.triangles.push_back(item);
-            }
-        }
-        if (shapeId == kCenturyGothicLowercaseA) {
-            geometry.width *= 2;
-            for (ShapeTriangle &triangle : geometry.triangles) {
-                triangle.p0.setX(triangle.p0.x() * 2.0);
-                triangle.p1.setX(triangle.p1.x() * 2.0);
-                triangle.p2.setX(triangle.p2.x() * 2.0);
             }
         }
         parsed.insert(shapeId, geometry);

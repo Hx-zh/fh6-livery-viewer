@@ -22,11 +22,12 @@ carupdate.py — cars.json 车型名表在线更新(只读 GET, 无遥测)
 用法(app.py):
     carupdate.init_cache_dir()                    # 启动时准备缓存目录(失败则停用)
     cached = carupdate.load_cached()              # 读缓存(无/不可用为 None)
-    src, data = carupdate.fetch(ua, prefer_gitee, min_count)   # 工作线程里调
-    carupdate.save_cache(data)                    # 主线程写缓存
+    src, data = carupdate.fetch(ua, prefer_gitee, min_count)   # manifest 不可用时的旧通道
+    carupdate.save_cache(data)                    # 仅旧通道写缓存
 
-URL 常量同时供 release_build.py 的 --data-only 发布校验复用(单一来源,
-改仓库地址时只改这里)。
+app 优先由 dataupdate.py 按 data_manifest.json 更新 cars_online.json 与查看器资产；
+本模块仍负责缓存采用规则/校验及旧通道回退。URL 常量同时供 dataupdate.py 与
+release_build.py 的 --data-only 发布校验复用(单一来源, 改仓库地址时只改这里)。
 """
 from __future__ import annotations
 

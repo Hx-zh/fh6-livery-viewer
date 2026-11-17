@@ -1,9 +1,9 @@
 #include "car_registry.h"
 
-#include <QCoreApplication>
+#include "viewer_assets.h"
+
 #include <QDialog>
 #include <QDialogButtonBox>
-#include <QDir>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -20,23 +20,12 @@ namespace {
 
 const QColor kUnsupportedCarColor(255, 213, 79);
 
-QStringList candidateAssetPaths() {
-    const QString appDir = QCoreApplication::applicationDirPath();
-    const QString cwd = QDir::currentPath();
-    return {
-        QDir(appDir).filePath(QStringLiteral("assets/cars/car_ids.json")),
-        QDir(cwd).filePath(QStringLiteral("assets/cars/car_ids.json")),
-        QDir(cwd).filePath(QStringLiteral("cpp-port/assets/cars/car_ids.json")),
-    };
-}
-
 } // namespace
 
 bool CarRegistry::loadDefault(QString *error) {
-    for (const QString &path : candidateAssetPaths()) {
-        if (QFile::exists(path)) {
-            return loadFromFile(path, error);
-        }
+    const QString path = viewer_assets::resolve(QStringLiteral("cars/car_ids.json"));
+    if (QFile::exists(path)) {
+        return loadFromFile(path, error);
     }
     if (error != nullptr) {
         *error = QStringLiteral("car_ids.json was not found");

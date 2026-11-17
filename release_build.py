@@ -7,7 +7,7 @@
                                             #   + git tag + push origin + gh release create
     python release_build.py --publish --gitee   # 发布后顺带推送 Gitee 镜像
     python release_build.py --gitee-release     # 仅在 Gitee 建 release + 传 5 zip(需 GITEE_TOKEN)
-    python release_build.py --data-only         # 仅发布 cars.json 数据(不发版, 见下)
+    python release_build.py --data-only         # 仅发布 JSON 数据(车型表 + 查看器资产, 不发版)
 
 发布管线(v1.8.0 起, 推荐):
     ① git commit → post-commit 钩子自动本地编译测试版(tools/dev_build.py)
@@ -32,10 +32,9 @@
                     无令牌时依赖本机 git 凭据; 推送失败仅告警不阻断
     --gitee-release 经 Gitee API v5 创建同名 release 并上传 5 zip 附件;
                     令牌见上方交互说明; tag 不存在时 Gitee 会在 main 上自动创建
-    --data-only     仅发布车型表数据(v1.8.0 起): 校验 git 干净 → push origin main
-                    → 推 Gitee 镜像 → 双端 raw URL 与本地 cars.json 字节比对。
-                    不打 tag、不建 release、不出 exe——客户端在线更新
-                    (carupdate.py) 直接读仓库 raw 文件, 官方加新车后走本通道
+    --data-only     仅发布 JSON 数据(车型表 + 查看器资产): 校验 git 干净与 manifest
+                    → push origin main → 推 Gitee 镜像 → 双端 raw 与本地 HEAD 字节/hash 比对。
+                    不打 tag、不建 release、不出 exe——客户端在线更新直接读仓库 raw 文件
     --ci            GitHub Actions 专用(.github/workflows/release.yml, tag 触发):
                     门禁 → 构建 → 五语言 zip → 在已有 tag 上创建 GitHub release
                     (GH_TOKEN 环境变量鉴权; 发布说明取 tag 注释, 无则自动生成)
@@ -56,6 +55,7 @@ import argparse
 import getpass
 import io
 import glob
+import hashlib
 import json
 import mimetypes
 import os
@@ -818,6 +818,47 @@ def verify_remote_cars(tries: int = 5, wait_s: float = 10.0) -> None:
           + ", 不阻断——兜底源稍后自然同步")
 
 
+def _repo_raw_url(source: str, path: str) -> str:
+    base = carupdate.SOURCE_URLS[source].rsplit("/cars.json", 1)[0]
+    return f"{base}/{path}"
+
+
+def verify_remote_data(tries: int = 3, wait_s: float = 10.0) -> None:
+    """校验双端 data_manifest.json 及清单内全部 JSON 数据与 HEAD 一致。"""
+    rel = "viewer3d/assets/data_manifest.json"
+    local_manifest = subprocess.run(["git", "show", f"HEAD:{rel}"],
+                                    capture_output=True, check=True).stdout
+    manifest = json.loads(local_manifest.decode("utf-8"))
+    files = manifest.get("files")
+    if not isinstance(files, list) or not files:
+        raise SystemExit("data_manifest.json 缺少 files 清单")
+    for source in ("gitee", "github"):
+        for attempt in range(1, tries + 1):
+            try:
+                url = _repo_raw_url(source, rel)
+                req = urllib.request.Request(url, headers={"User-Agent": "release_build"})
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    remote_manifest = resp.read()
+                if remote_manifest != local_manifest:
+                    raise ValueError("manifest 内容不一致")
+                for entry in files:
+                    path = entry["path"]
+                    req = urllib.request.Request(_repo_raw_url(source, path),
+                                                 headers={"User-Agent": "release_build"})
+                    with urllib.request.urlopen(req, timeout=60) as resp:
+                        raw = resp.read()
+                    if len(raw) != entry["bytes"] or hashlib.sha256(raw).hexdigest() != entry["sha256"]:
+                        raise ValueError(f"{path} 大小/hash 不一致")
+                print(f"[校验] {source} data_manifest + {len(files)} 个数据文件均一致 ✓")
+                break
+            except (OSError, ValueError) as e:
+                if attempt == tries:
+                    raise SystemExit(f"{source} 线上数据校验未通过: {e}")
+                print(f"[校验] {source} 第 {attempt}/{tries} 轮未一致({e}), "
+                      f"{wait_s:.0f}s 后重试")
+                time.sleep(wait_s)
+
+
 def check_cars_stamp() -> None:
     """cars.json 数据版本打戳校验: 顶层 "_updated" 必须存在且**日期部分**等于该文件
     最近一次提交日期(完整格式 "YYYY-MM-DDTHH:MM:SS±HH:MM" ISO 8601 含维护者时区,
@@ -834,9 +875,9 @@ def check_cars_stamp() -> None:
 
 
 def data_only_publish() -> None:
-    """数据更新发布: cars.json 已提交后把 main 推到双端并校验线上内容一致。
-    不打 tag、不建 release、不出 exe——客户端在线更新(carupdate.py)直接读仓库
-    raw 文件, 官方加新车后用本命令发布, 用户 24h 内自动拿到新表。"""
+    """数据更新发布: 已提交的数据与 manifest 推到双端并校验线上内容一致。
+    不打 tag、不建 release、不出 exe——客户端在线更新直接读仓库 raw 文件。
+    官方加新车/查看器数据后用本命令发布，用户自动拿到新表与新资产。"""
     r = _run(["git", "status", "--porcelain"], check=False)
     dirty = [ln for ln in (r.stdout or "").splitlines()
              if ln.strip() and not ln.startswith("?? ")]
@@ -846,6 +887,10 @@ def data_only_publish() -> None:
     r = _run(["git", "log", "-1", "--oneline", "--", "cars.json"], check=False)
     print(f"[数据] 最新 cars.json 提交: {(r.stdout or '').strip()}")
     check_cars_stamp()
+    r = _run([sys.executable, "tools/update_data_manifest.py", "--check"], check=False)
+    if r.returncode != 0:
+        raise SystemExit("data_manifest.json 与 HEAD 不一致——先提交数据，再运行 "
+                         "tools/update_data_manifest.py --write 并提交清单")
     r = _run(["git", "push", "origin", "main"], check=False)
     if r.returncode != 0:
         raise SystemExit("push origin main 失败: " + _out(r)[:300])
@@ -853,6 +898,7 @@ def data_only_publish() -> None:
     if not push_gitee_mirror(token):
         print("[数据] 警告: Gitee 镜像未同步, 国内用户暂时读不到新数据(不阻断)")
     verify_remote_cars()
+    verify_remote_data()
 
 
 def main() -> int:

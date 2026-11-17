@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "updated": "2026-11-17T23:21:05+08:00",
+  "commit": "35e34e1caf5ce52e07ac9fb7874030a191eb6ea9",
+  "files": [
+    {
+      "path": "cars.json",
+      "target": "cars_online.json",
+      "kind": "json",
+      "bytes": 29508,
+      "sha256": "56af9ffee91a431d86b4f31472fcf2ad7b67ec07cf612a4b24edfed10ddf087d"
+    },
+    {
+      "path": "viewer3d/assets/cars/car_ids.json",
+      "target": "viewer_assets/cars/car_ids.json",
+      "kind": "json",
+      "bytes": 92936,
+      "sha256": "b691cf038fac26daaced11501f21fb7a3296f2508d6f65f0298e8ba263d7ddc3"
+    },
+    {
+      "path": "viewer3d/assets/cars/part_names.json",
+      "target": "viewer_assets/cars/part_names.json",
+      "kind": "json",
+      "bytes": 321546,
+      "sha256": "91e6d96c7d3cc3849c4b8ce91d0b36e2bf11714dc82bd2a6abd19751148cd369"
+    },
+    {
+      "path": "viewer3d/assets/cars/part_names.zh-cn.json",
+      "target": "viewer_assets/cars/part_names.zh-cn.json",
+      "kind": "json",
+      "bytes": 350395,
+      "sha256": "89a76c92b45a00ad4bdf53de821faa81905e90fcd164183cc3ad7596176793e2"
+    },
+    {
+      "path": "viewer3d/assets/cars/part_names.zh-tw.json",
+      "target": "viewer_assets/cars/part_names.zh-tw.json",
+      "kind": "json",
+      "bytes": 341556,
+      "sha256": "8e40a64a7b1386e0ec5243341f9990ad9e7ee123bc4d6edf6794f0a1dc9ea379"
+    },
+    {
+      "path": "viewer3d/assets/cars/part_names.ja.json",
+      "target": "viewer_assets/cars/part_names.ja.json",
+      "kind": "json",
+      "bytes": 463064,
+      "sha256": "e91eb2e6c5db3713bbd4dfd00f2a12f0604129f0afd0063df0af9e7c0d454006"
+    },
+    {
+      "path": "viewer3d/assets/cars/part_names.ko.json",
+      "target": "viewer_assets/cars/part_names.ko.json",
+      "kind": "json",
+      "bytes": 375018,
+      "sha256": "68ec4b51f58c3bc90aa1d13474f5678fdab989eb7d931d491baac22f3f6abadd"
+    },
+    {
+      "path": "viewer3d/assets/cars/wheel_sizes.json",
+      "target": "viewer_assets/cars/wheel_sizes.json",
+      "kind": "json",
+      "bytes": 128627,
+      "sha256": "0608380d82e743835e1fd8b46c5273e17ec6eb7f326e0079a27b53fab3092b01"
+    },
+    {
+      "path": "viewer3d/assets/vector/shape_names.json",
+      "target": "viewer_assets/vector/shape_names.json",
+      "kind": "json",
+      "bytes": 68106,
+      "sha256": "1d2e35d38649a1969ca3341935a6102f7182cd0a686e8830826a4817456f4eca"
+    },
+    {
+      "path": "viewer3d/assets/vector/shape_geometry.json.gz",
+      "target": "viewer_assets/vector/shape_geometry.json.gz",
+      "kind": "json.gz",
+      "bytes": 9464264,
+      "sha256": "035ae6ec37b9e296589978faf7e1c42c5eb403fbc3641013ffb2c05f64803edc"
+    }
+  ]
+}

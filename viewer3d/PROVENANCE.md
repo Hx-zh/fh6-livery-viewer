@@ -181,6 +181,20 @@ This directory contains a vendored snapshot of code from **Forza Livery Studio**
     entries and upstream's other-game/per-game override data were left
     untouched. The localized part catalogs were regenerated from the game's
     own string tables (691 models, 7,842 entries, 99.83 % coverage).
+  - `src/car_locator.cpp` and `src/viewer_window.cpp` — when the registry lacks
+    a car id or its model code is stale, the viewer scans `media/Cars/*.zip`
+    and matches the `.carbin` header `Ordinal` directly (no full extraction),
+    with a process-local cache. This makes a missing `car_ids.json` update
+    non-fatal for model loading.
+  - `src/viewer_assets.{h,cpp}` — read-only resolver for online-cached JSON
+    assets under `%LOCALAPPDATA%\FH6LiveryViewer\viewer_assets`, checked against
+    `data_manifest.json` timestamps, sizes and SHA-256. The registry, wheel
+    sizes, part names and shape geometry/names all use it; invalid or stale
+    caches fall back to packaged assets.
+  - `fls/src/gui/widgets/shape_geometry_store.{h,cpp}` — applied upstream
+    `6ab336a4b3` compatibility (floating-point dimensions and removal of the
+    Century Gothic special case), and `assets/vector/shape_geometry.json.gz`
+    was synchronized to upstream version 2. `shape_names.json` is unchanged.
 - Runtime dependencies of the shipped binary (licensing notices live in
   `licenses/` and in `SOURCE.md` which is included in release zips):
   Qt 6.8.3 dynamically linked under LGPL-3.0 (source: download.qt.io /

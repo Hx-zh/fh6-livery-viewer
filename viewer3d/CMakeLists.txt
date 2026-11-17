@@ -30,6 +30,7 @@ set(FLS_GUI_SOURCES
     fls/src/gui/state/editor_state_snapshot.cpp
     fls/src/gui/widgets/car_preview_widget.cpp
     fls/src/gui/widgets/shape_geometry_store.cpp
+    fls/src/gui/widgets/shape_name_store.cpp
 )
 
 qt_add_executable(FH6Livery3DViewer WIN32
@@ -38,6 +39,8 @@ qt_add_executable(FH6Livery3DViewer WIN32
     src/viewer_window.cpp
     src/viewer_i18n.h
     src/viewer_i18n.cpp
+    src/viewer_assets.h
+    src/viewer_assets.cpp
     src/car_locator.h
     src/car_locator.cpp
     src/raster_pack.h

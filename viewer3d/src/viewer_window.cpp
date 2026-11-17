@@ -181,7 +181,7 @@ void ViewerWindow::applyProject()
         return;
     }
     const QString modelCode = registry.modelCode(project_.carId);
-    if (modelCode.isEmpty()) {
+    if (modelCode.isEmpty() && gameRoot_.isEmpty()) {
         preview_->clearModel();
         statusLabel_->setText(viewer_i18n::tr(
             QStringLiteral("Unknown car id %1 — model not loaded")).arg(project_.carId));
@@ -201,12 +201,20 @@ void ViewerWindow::loadCarModel()
     const QString carsDir = fls::gameCarsDir(gameRoot_);
     const QString modelCode =
         gui::sharedCarRegistry().modelCode(project_.carId);
-    const QString path = fls::findCarModelPath(carsDir, modelCode);
+    QString path = fls::findCarModelPath(carsDir, modelCode);
+    if (path.isEmpty()) {
+        path = fls::findCarModelPathByOrdinal(carsDir, project_.carId);
+    }
     if (path.isEmpty()) {
         preview_->clearModel();
-        statusLabel_->setText(
-            viewer_i18n::tr(QStringLiteral("Car archive %1 not found under %2"))
-                .arg(modelCode, carsDir));
+        if (modelCode.isEmpty()) {
+            statusLabel_->setText(viewer_i18n::tr(
+                QStringLiteral("Unknown car id %1 — model not loaded")).arg(project_.carId));
+        } else {
+            statusLabel_->setText(
+                viewer_i18n::tr(QStringLiteral("Car archive %1 not found under %2"))
+                    .arg(modelCode, carsDir));
+        }
         return;
     }
     statusLabel_->setText(viewer_i18n::tr(QStringLiteral("Loading car model…")));

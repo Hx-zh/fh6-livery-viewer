@@ -1,49 +1,57 @@
 # -*- coding: utf-8 -*-
-"""tools/update_part_names.py — 查看器套件名多语言数据生成(游戏串表 → assets)。
+"""tools/update_part_names.py — 查看器套件名多语言数据生成(GameDB/串表 → assets)。
 
 查看器 PARTS 页的选项名原本只有上游导出的英文表(`viewer3d/assets/cars/
-part_names.json`, 682 车型 / 7706 条)。游戏本身自带 25 种语言的界面串表,
-套件名/厂家名/类别名都在里面, 所以其它语言不需要人工翻译: 用 EN 表做对照
-逐条 join, 直接生成 `part_names.<lang>.json`。
+part_names.json`)。游戏自带 25 种语言的界面串表，所以其它语言不需要人工翻译:
+用 EN 表做对照逐条 join，生成 `part_names.<lang>.json`。
 
 用法:
     python tools/update_part_names.py               # 报告模式: 各语言命中率
     python tools/update_part_names.py --write       # 写入 viewer3d/assets/cars/
     python tools/update_part_names.py --game PATH   # 手动指定游戏根目录/串表目录
+    python tools/update_part_names.py --game PATH --gamedb PATH/gamedb.sqlite
+                                                    # 同时报告可补齐的缺失车型
 
-数据源(只读, 全部来自游戏安装目录):
-    <game>/media/Stripped/StringTables/EN.zip   + CHS/CHT/JP/KO.zip
-      - Upgrades.str              具体套件名(原厂/街车版/跑车版/赛车版 + 类别…)
-      - List_PartManufacturer.str 厂家名(Stock 原厂 / Toyota 丰田 / …)
-      - UpgradeTypes.str          类别名(Body Kit / Front Bumper / …)
+--gamedb 只处理 part_names.json 里不存在的 model code。Data_Car.MediaName 对应
+media/Cars/<CODE>.zip 内的 Manifest.xml；六个可见类别的升级行通过 Ordinal 精确
+连接 Data_Car.Id，再按游戏 exe 已证实的 Data_UpgradePart → UpgradeTypes →
+Upgrades 和 List_PartManufacturer 关系取名。Manifest 提供 PartEnum/PartId 对照，
+但不单独作为名称来源（Stock/Remove 等条目并不一定出现在 Manifest）。DB 字符串
+必须是相应 EN.str 的 key 或与完整英文值完全一致；无法解析的行跳过并报告，不猜。
+List_Wheels 会被检查/计数，但当前查看器六类不含 WheelStyle，不伪造轮毂名称映射。
 
-映射规则(与 part_names.json 的构词一致):
-    "Toyota - Remove Front Bumper" → "丰田 - 移除前保险杠"
-    "Forza Horizon 6 Widebody Kit" → "极限竞速：地平线 6 宽体车身套件"(无 " - " 分隔)
-    游戏里没有的档位(如 Race Hood / Sport Side Skirts)保持英文并计入未命中, 不猜。
+串表来源(只读):
+    <game>/media/Stripped/StringTables/EN.zip + CHS/CHT/JP/KO.zip
+      - Upgrades.str / List_PartManufacturer.str / UpgradeTypes.str
 
-只读原则: 串表 zip 只读打开, 不解压落盘; 只有 --write 才写 viewer3d/assets。
+默认只报告。--write 保留所有现存车型和条目，只追加完整解析出的新车型条目；
+英文基准新增会先备份，其它语言沿用原有未命中保留英文规则和 90% 覆盖门禁。
 """
 from __future__ import annotations
 
 import json
+import re
+import sqlite3
 import struct
 import sys
+import xml.etree.ElementTree as ET
 import zipfile
+from contextlib import closing
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+import gamedbmem  # noqa: E402  (ROOT 必须先入 sys.path)
+
 ASSETS = ROOT / "viewer3d" / "assets" / "cars"
 BASE_JSON = ASSETS / "part_names.json"
 
-# 查看器语言码 -> 游戏语言包名
 LANG_ZIPS = {"zh-cn": "CHS", "zh-tw": "CHT", "ja": "JP", "ko": "KO"}
 
-# 套件类别 ID -> UpgradeTypes.str 的 key。ID 与
-# viewer3d/fls/src/core/model_geometry.h 的 car_part_types 保持一致。
+# 与 viewer3d/fls/src/core/model_geometry.h 的 car_part_types 一致。
 PART_TYPE_KEYS = {
     2: "IDS_Name_38",    # CarBody     -> Body Kit
     9: "IDS_Name_25",    # RearWing    -> Rear Wing
@@ -53,8 +61,35 @@ PART_TYPE_KEYS = {
     37: "IDS_Name_27",   # SideSkirts  -> Side Skirts
 }
 
-# 命中率下限: 低于此值拒绝写入, 防止串表换版/解析错位时把坏数据发出去
+PART_TABLES = {
+    2: ("List_UpgradeCarBody", "CarBody"),
+    9: ("List_UpgradeRearWing", "RearWing"),
+    34: ("List_UpgradeCarBodyFrontBumper", "FrontBumper"),
+    35: ("List_UpgradeCarBodyRearBumper", "RearBumper"),
+    36: ("List_UpgradeCarBodyHood", "Hood"),
+    37: ("List_UpgradeCarBodySideSkirt", "SideSkirts"),
+}
+
+CORE_SCHEMA = {
+    "Data_Car": {"Id", "MediaName"},
+    "Data_UpgradePart": {"Id", "PartName"},
+    "UpgradeTypes": {"Id", "PartName"},
+    "Upgrades": {"TypeId", "Level", "Name"},
+    "List_PartManufacturer": {"Id", "PartManufacturer"},
+}
+PART_COLUMNS = {"Id", "Ordinal", "Level", "IsStock", "ManufacturerID"}
+MODEL_CODE_RE = re.compile(r"^[A-Za-z0-9_]+$")
 MIN_COVERAGE = 0.90
+
+
+@dataclass
+class PartExtraction:
+    models: dict[str, dict[str, str]] = field(default_factory=dict)
+    issues: list[str] = field(default_factory=list)
+    covered: set[str] = field(default_factory=set)
+    manifest_links: int = 0
+    db_rows: int = 0
+    wheel_rows: int | None = None
 
 
 def parse_str_table(data: bytes) -> tuple[list[str], list[str]]:
@@ -106,7 +141,6 @@ def translate(value: str, manufacturers: dict[str, str], upgrades: dict[str, str
     for table in (part_types, upgrades, manufacturers):
         if text in table:
             return table[text]
-    # 无 " - " 分隔的组合: "<厂家> <套件名>"(如 Forza Horizon 6 Widebody Kit)
     for option in upgrade_suffixes:
         if text.endswith(" " + option):
             maker = text[: -len(option) - 1].strip()
@@ -126,10 +160,200 @@ def string_tables_dir(game: Path) -> Path | None:
 
 
 def find_string_tables() -> Path | None:
-    import flsbridge  # 只读探测, 与 app 用同一套 Steam/Xbox 候选
+    import flsbridge
 
     root = flsbridge.detect_game_root()
     return string_tables_dir(root) if root is not None else None
+
+
+def find_cars_dir(game: Path, tables_dir: Path) -> Path | None:
+    candidates = [game / "media" / "Cars", game / "Content" / "media" / "Cars"]
+    if game.name.casefold() == "cars":
+        candidates.append(game)
+    if len(tables_dir.parents) >= 3:
+        candidates.append(tables_dir.parents[2] / "media" / "Cars")
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def require_columns(
+    tables: dict[str, tuple[str, ...]], table: str, columns: set[str]
+) -> list[str]:
+    actual = next((cols for name, cols in tables.items() if name.casefold() == table.casefold()), None)
+    if actual is None:
+        return [f"{table} (整表)"]
+    present = {col.casefold() for col in actual}
+    return [
+        f"{table}.{column}" for column in sorted(columns)
+        if column.casefold() not in present
+    ]
+
+
+def manifest_part_ids(car_zip: Path) -> set[tuple[int, int]]:
+    with zipfile.ZipFile(car_zip) as archive:
+        root = ET.fromstring(archive.read("Manifest.xml"))
+    enum_to_type = {enum: part_type for part_type, (_table, enum) in PART_TABLES.items()}
+    return {
+        (enum_to_type[element.attrib["PartEnum"]], int(element.attrib["PartId"]))
+        for element in root.iter("UpgradeablePart")
+        if element.attrib.get("PartEnum") in enum_to_type
+    }
+
+
+def db_text(value: object, table: dict[str, str], english_values: set[str]) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if text in table:
+        resolved = table[text].strip()
+        return resolved or None
+    return text if text in english_values else None
+
+
+def generate_part_models(
+    conn: sqlite3.Connection,
+    tables: dict[str, tuple[str, ...]],
+    cars_dir: Path,
+    existing: dict[str, dict[str, str]],
+    en_upgrades: dict[str, str],
+    en_manufacturers: dict[str, str],
+) -> PartExtraction:
+    result = PartExtraction()
+    missing_core = [
+        item for table, columns in CORE_SCHEMA.items()
+        for item in require_columns(tables, table, columns)
+    ]
+    if missing_core:
+        raise gamedbmem.GameDBError(
+            "无法建立升级件名称映射；缺少 " + ", ".join(missing_core)
+        )
+
+    if any(name.casefold() == "list_wheels" for name in tables):
+        result.wheel_rows = conn.execute("SELECT COUNT(*) FROM List_Wheels").fetchone()[0]
+    else:
+        result.issues.append("缺少 List_Wheels；不生成 WheelStyle（当前六类车身件不受影响）")
+
+    existing_folded = {model.casefold() for model in existing}
+    available: dict[int, tuple[str, str]] = {}
+    for part_type, (table, enum) in PART_TABLES.items():
+        missing = require_columns(tables, table, PART_COLUMNS)
+        if missing:
+            result.issues.append(f"跳过 {enum}: 缺少 " + ", ".join(missing))
+        else:
+            available[part_type] = (table, enum)
+    if not available:
+        result.issues.append("六个可视升级表均不可用；未生成任何车型")
+        return result
+
+    manifests: dict[str, set[tuple[int, int]] | None] = {}
+    new_names: dict[str, str] = {}
+    linked: set[tuple[str, int, int]] = set()
+    blocked: set[str] = set()
+    conflicts: set[tuple[str, str]] = set()
+    upgrade_values = set(en_upgrades.values())
+    manufacturer_values = set(en_manufacturers.values())
+
+    for part_type, (table, enum) in available.items():
+        query = f"""
+SELECT c.Id AS CarId, c.MediaName AS MediaName,
+       p.Id AS PartId, p.IsStock AS IsStock,
+       p.ManufacturerID AS ManufacturerID,
+       u.Name AS UpgradeName, pm.PartManufacturer AS ManufacturerName
+FROM Data_Car AS c
+JOIN {gamedbmem.quote_identifier(table)} AS p ON p.Ordinal = c.Id
+LEFT JOIN Data_UpgradePart AS dp ON dp.Id = {part_type}
+LEFT JOIN UpgradeTypes AS ut ON ut.PartName = dp.PartName
+LEFT JOIN Upgrades AS u ON u.TypeId = ut.Id AND u.Level = p.Level
+LEFT JOIN List_PartManufacturer AS pm ON pm.Id = p.ManufacturerID
+ORDER BY c.Id, p.Id, u.Name
+"""
+        for row in conn.execute(query):
+            result.db_rows += 1
+            code_value = row["MediaName"]
+            if not isinstance(code_value, str):
+                result.issues.append(f"车 ID {row['CarId']}: MediaName 非字符串")
+                continue
+            code = code_value.strip()
+            if not MODEL_CODE_RE.fullmatch(code):
+                result.issues.append(f"车 ID {row['CarId']}: 非法 MediaName {code_value!r}")
+                continue
+            folded = code.casefold()
+            if folded in existing_folded:
+                result.covered.add(folded)
+                continue
+            code = new_names.get(folded, code)
+            if folded in blocked:
+                continue
+            if folded not in manifests:
+                try:
+                    manifests[folded] = manifest_part_ids(cars_dir / f"{code}.zip")
+                except (OSError, KeyError, ValueError, ET.ParseError, zipfile.BadZipFile) as exc:
+                    manifests[folded] = None
+                    blocked.add(folded)
+                    result.models.pop(code, None)
+                    result.issues.append(f"{code}: Manifest.xml 不可验证，整车型跳过: {exc}")
+                    continue
+            manifest = manifests[folded]
+            if manifest is None:
+                continue
+
+            part_id = row["PartId"]
+            if isinstance(part_id, bool) or not isinstance(part_id, int) or part_id < 0:
+                result.issues.append(f"{code}/{enum}: 非法 PartId {part_id!r}")
+                continue
+            key = f"{part_type}:{part_id}"
+            if (folded, key) in conflicts:
+                continue
+            upgrade_name = db_text(row["UpgradeName"], en_upgrades, upgrade_values)
+            if upgrade_name is None:
+                result.issues.append(
+                    f"{code}/{key}: Upgrades.Name 无法映射到 EN Upgrades.str: "
+                    f"{row['UpgradeName']!r}"
+                )
+                continue
+
+            is_stock = row["IsStock"]
+            if is_stock not in (0, 1):
+                result.issues.append(f"{code}/{key}: 非法 IsStock {is_stock!r}")
+                continue
+            manufacturer_id = row["ManufacturerID"]
+            maker = ""
+            if not is_stock and manufacturer_id not in (None, 0):
+                maker_value = db_text(
+                    row["ManufacturerName"], en_manufacturers, manufacturer_values
+                )
+                if maker_value is None:
+                    result.issues.append(
+                        f"{code}/{key}: ManufacturerID={manufacturer_id!r} 无法映射到厂家串表"
+                    )
+                    continue
+                maker = maker_value
+            if not maker:
+                name = upgrade_name
+            elif part_type == 2:
+                name = f"{maker} {upgrade_name}"
+            else:
+                name = f"{maker} - {upgrade_name}"
+
+            new_names.setdefault(folded, code)
+            old = result.models.get(code, {}).get(key)
+            if old is not None and old != name:
+                conflicts.add((folded, key))
+                del result.models[code][key]
+                result.issues.append(f"{code}/{key}: 多个名称冲突，整项拒绝: {old!r} / {name!r}")
+                continue
+            link = (folded, part_type, part_id)
+            if (part_type, part_id) in manifest and link not in linked:
+                linked.add(link)
+                result.manifest_links += 1
+            result.models.setdefault(code, {})[key] = name
+
+    for model in list(result.models):
+        if not result.models[model]:
+            del result.models[model]
+    return result
 
 
 def dump_models(path: Path, meta: dict[str, object],
@@ -146,9 +370,11 @@ def dump_models(path: Path, meta: dict[str, object],
 
 def main(argv: list[str]) -> int:
     game_arg = next((a.split("=", 1)[1] for a in argv if a.startswith("--game=")), None)
+    db_arg = next((a.split("=", 1)[1] for a in argv if a.startswith("--gamedb=")), None)
     write = "--write" in set(argv)
 
-    tables_dir = Path(game_arg) if game_arg else find_string_tables()
+    game_input = Path(game_arg) if game_arg else None
+    tables_dir = game_input if game_input is not None else find_string_tables()
     if tables_dir is None or string_tables_dir(tables_dir) is None:
         raise SystemExit("未找到游戏串表目录(用 --game=PATH 手动指定游戏根目录)")
     tables_dir = string_tables_dir(tables_dir)
@@ -157,13 +383,47 @@ def main(argv: list[str]) -> int:
     print(f"[串表] {tables_dir}")
 
     base: dict[str, dict[str, str]] = json.loads(BASE_JSON.read_text(encoding="utf-8"))
-    values = [v for entries in base.values() for v in entries.values()]
-    print(f"[基准] {BASE_JSON.name}: {len(base)} 车型 / {len(values)} 条")
+    original_count = len(base)
+    original_values = sum(len(entries) for entries in base.values())
+    print(f"[基准] {BASE_JSON.name}: {original_count} 车型 / {original_values} 条")
 
     en_zip = tables_dir / "EN.zip"
     en_upgrades = read_table(en_zip, "Upgrades.str")
     en_manufacturers = read_table(en_zip, "List_PartManufacturer.str")
     en_types = read_table(en_zip, "UpgradeTypes.str")
+
+    extracted = PartExtraction()
+    if db_arg:
+        db_path = Path(db_arg)
+        summary = gamedbmem.validate_gamedb(db_path)
+        cars_dir = find_cars_dir(game_input or tables_dir, tables_dir)
+        if cars_dir is None:
+            raise gamedbmem.GameDBError("找不到 media/Cars，无法逐车读取 Manifest.xml")
+        with closing(gamedbmem.connect_readonly(db_path)) as conn:
+            extracted = generate_part_models(
+                conn, summary.tables, cars_dir, base, en_upgrades, en_manufacturers
+            )
+        print(
+            f"[GameDB] integrity_check=ok；升级行 {extracted.db_rows}；"
+            f"已覆盖现存车型 {len(extracted.covered)}；Manifest ID 对照 {extracted.manifest_links} 条；"
+            f"List_Wheels {extracted.wheel_rows if extracted.wheel_rows is not None else '不可用'}"
+        )
+        for model, entries in extracted.models.items():
+            print(f"  + {model}: {len(entries)} 条")
+            for key, value in entries.items():
+                print(f"      {key}: {value}")
+        for issue in extracted.issues:
+            print("  ! " + issue)
+        base.update(extracted.models)
+
+    values = [v for entries in base.values() for v in entries.values()]
+    if extracted.models:
+        print(f"[合并] {original_count} → {len(base)} 车型；只新增车型，不修改现存条目")
+        if write:
+            backup = ROOT / "backups" / f"part_names_backup_{datetime.now():%Y%m%d_%H%M%S}.json"
+            backup.write_bytes(BASE_JSON.read_bytes())
+            dump_models(BASE_JSON, {}, base)
+            print(f"[英文] 已追加 {len(extracted.models)} 车型；备份 {backup.name}")
 
     stamp = datetime.now().astimezone().isoformat(timespec="seconds")
     failures = 0
@@ -190,7 +450,7 @@ def main(argv: list[str]) -> int:
                 text = translate(value, manufacturers, upgrades, types, suffixes)
                 if text is None:
                     misses[value] = misses.get(value, 0) + 1
-                    translated[key] = value          # 游戏里没有 → 保留英文, 不猜
+                    translated[key] = value
                 else:
                     hits += 1
                     translated[key] = text
@@ -202,7 +462,6 @@ def main(argv: list[str]) -> int:
         for value, count in sorted(misses.items(), key=lambda kv: -kv[1]):
             print(f"        {count}× {value}")
 
-        # 类别名按 IDS key 直取: text_map 的键是英文串, 这里要的是 partType ID -> 类别名
         localized_types = read_table(zip_path, "UpgradeTypes.str")
         part_types = {str(pid): localized_types[key].strip()
                       for pid, key in PART_TYPE_KEYS.items()

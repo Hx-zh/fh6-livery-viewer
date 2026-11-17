@@ -1,6 +1,6 @@
 #include "viewer_i18n.h"
 
-#include "gui_assets.h"
+#include "viewer_assets.h"
 
 #include <QFile>
 #include <QHash>
@@ -61,7 +61,7 @@ QString catalogFile(const QString &code)
 Catalog loadCatalog(const QString &code)
 {
     Catalog catalog;
-    QFile file(gui::assetPath(catalogFile(code)));
+    QFile file(viewer_assets::resolve(catalogFile(code)));
     if (!file.open(QIODevice::ReadOnly)) {
         return catalog;
     }

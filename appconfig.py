@@ -3,9 +3,10 @@
 
 v1.8.0 之前为保持「单文件零外部文件零注册表」全部设置为会话级; 自车型表在线
 更新引入该数据目录后, 低频小配置一并落在这里(仍零注册表、不写 exe 旁)。
-当前存八项: 自动定位按键节奏(key_hold_ms/key_gap_ms, 与设置对话框校验同范围)、
+当前设置: 自动定位按键节奏(key_hold_ms/key_gap_ms, 与设置对话框校验同范围)、
 「自动检测存档更新」开关(auto_refresh, v1.8.0 从顶栏移入设置)、
 「自动检查车型表更新」开关(cars_auto_check, v1.8.0 起每次启动检查一次)、
+「启动时扫描本机游戏车型」开关(cars_local_scan, 默认开; 手动扫描不受开关限制)、
 手动选择的存档目录(manual_dir; 「手动选择目录…」后记住, 启动时恢复到下拉首项,
 改选其它存档或目录消失/被自动检测覆盖时自动清除, 空串=未设置)、
 游戏安装目录(game_dir; 3D 预览的 --game 参数, 空串=自动探测; 手动指定后
@@ -35,6 +36,7 @@ VIEWER_WINDOWS_MAX = 16
 
 _DEFAULTS: dict[str, Any] = {"key_hold_ms": 15, "key_gap_ms": 50,
                               "auto_refresh": True, "cars_auto_check": True,
+                              "cars_local_scan": True,
                               "manual_dir": "", "game_dir": "",
                               "card_scale": 1.0,
                               "viewer_max_windows": 1}
@@ -56,7 +58,7 @@ def load() -> dict[str, Any]:
             if (isinstance(v, int) and not isinstance(v, bool)
                     and 0 <= v <= KEY_TIMING_MAX):
                 out[k] = v
-        for k in ("auto_refresh", "cars_auto_check"):
+        for k in ("auto_refresh", "cars_auto_check", "cars_local_scan"):
             v = obj.get(k)
             if isinstance(v, bool):
                 out[k] = v
@@ -111,6 +113,13 @@ def set_cars_auto_check(value: bool) -> bool:
     """保存「自动检查车型表更新」开关(读-改-写, 保留其它字段)。"""
     cfg = load()
     cfg["cars_auto_check"] = bool(value)
+    return _write(cfg)
+
+
+def set_cars_local_scan(value: bool) -> bool:
+    """保存「启动时扫描本机车型」开关(读-改-写, 保留其它字段)。"""
+    cfg = load()
+    cfg["cars_local_scan"] = bool(value)
     return _write(cfg)
 
 

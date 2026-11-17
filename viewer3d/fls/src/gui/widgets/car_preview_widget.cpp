@@ -10,9 +10,9 @@
 #include "model_material.h"
 #include "scene_view.h"
 #include "zip_extract.h"
+#include "viewer_assets.h"
 #include "viewer_i18n.h"   // FH6LiveryViewer local addition: localized parts catalog
 
-#include <QCoreApplication>
 #include <QButtonGroup>
 #include <QDir>
 #include <QFile>
@@ -271,18 +271,8 @@ fls::WheelSizing wheelSizingForModelCode(const QString &modelCode) {
     static const auto table = [] {
         QHash<QString, fls::WheelSizing> sizes;
         fls::WheelSizing fallback;
-        const QString appDir = QCoreApplication::applicationDirPath();
-        const QString cwd = QDir::currentPath();
-        const QStringList candidates = {
-            QDir(appDir).filePath(QStringLiteral("assets/cars/wheel_sizes.json")),
-            QDir(cwd).filePath(QStringLiteral("assets/cars/wheel_sizes.json")),
-            QDir(cwd).filePath(QStringLiteral("cpp-port/assets/cars/wheel_sizes.json")),
-        };
-        for (const QString &path : candidates) {
-            QFile file(path);
-            if (!file.open(QIODevice::ReadOnly)) {
-                continue;
-            }
+        QFile file(viewer_assets::resolve(QStringLiteral("cars/wheel_sizes.json")));
+        if (file.open(QIODevice::ReadOnly)) {
             const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
             const auto parseAxle = [](const QJsonValue &value, fls::AxleSizing def) {
                 const QJsonObject o = value.toObject();
@@ -314,7 +304,6 @@ fls::WheelSizing wheelSizingForModelCode(const QString &modelCode) {
                 }
                 sizes.insert(it.key().toLower(), parse(it.value().toObject(), fallback));
             }
-            break;
         }
         return std::make_pair(sizes, fallback);
     }();
