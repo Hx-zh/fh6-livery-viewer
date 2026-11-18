@@ -851,6 +851,7 @@ def verify_remote_data(tries: int = 3, wait_s: float = 10.0) -> None:
         raise SystemExit("data_manifest.json 缺少 files 清单")
     for source in ("gitee", "github"):
         for attempt in range(1, tries + 1):
+            fallback = []
             try:
                 url = _repo_raw_url(source, rel)
                 req = urllib.request.Request(url, headers={"User-Agent": "release_build"})
@@ -860,13 +861,23 @@ def verify_remote_data(tries: int = 3, wait_s: float = 10.0) -> None:
                     raise ValueError("manifest 内容不一致")
                 for entry in files:
                     path = entry["path"]
-                    req = urllib.request.Request(_repo_raw_url(source, path),
-                                                 headers={"User-Agent": "release_build"})
-                    with urllib.request.urlopen(req, timeout=60) as resp:
-                        raw = resp.read()
-                    if len(raw) != entry["bytes"] or hashlib.sha256(raw).hexdigest() != entry["sha256"]:
-                        raise ValueError(f"{path} 大小/hash 不一致")
-                print(f"[校验] {source} data_manifest + {len(files)} 个数据文件均一致 ✓")
+                    try:
+                        req = urllib.request.Request(_repo_raw_url(source, path),
+                                                     headers={"User-Agent": "release_build"})
+                        with urllib.request.urlopen(req, timeout=60) as resp:
+                            raw = resp.read()
+                        if len(raw) != entry["bytes"] or hashlib.sha256(raw).hexdigest() != entry["sha256"]:
+                            raise ValueError(f"{path} 大小/hash 不一致")
+                    except urllib.error.HTTPError as e:
+                        large_gitee_raw = (
+                            source == "gitee" and entry["bytes"] > 10 * 1024 * 1024 and e.code == 403
+                        )
+                        if not large_gitee_raw:
+                            raise
+                        fallback.append(path)
+                        print(f"[校验] gitee 大文件 raw 403，由其他源回退: {path}")
+                suffix = f"；{len(fallback)} 个大文件由其他源兜底" if fallback else ""
+                print(f"[校验] {source} data_manifest + {len(files)} 个数据文件均一致{suffix} ✓")
                 break
             except (OSError, ValueError) as e:
                 if attempt == tries:
