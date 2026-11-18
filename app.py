@@ -4,8 +4,8 @@ app.py — FH6 涂装查看器 (GUI)
 
 仅查看《极限竞速:地平线 6》存档中的涂装, 主视图为缩略图平铺, 只读。
 车型名表 cars.json 随程序分发(打包时内嵌进 exe, 不再释放到用户目录),
-支持本机游戏文件扫描补缺(carlocal.py)与在线更新(dataupdate.py 清单通道,
-carupdate.py 旧通道回退; 发布数据用 release_build.py --data-only)。
+支持在线更新(dataupdate.py 清单通道, carupdate.py 旧通道回退;
+发布数据用 release_build.py --data-only)。
 
 用法: python app.py
 打包: python -m PyInstaller FH6LiveryViewer.spec(勿用损坏的 pyinstaller.exe shim)
@@ -35,7 +35,6 @@ from pathlib import Path
 from tkinter import filedialog, font as tkfont, messagebox, ttk
 
 import appconfig
-import carlocal
 import carupdate
 import dataupdate
 import fh6save
@@ -524,21 +523,14 @@ class App(tk.Tk):
         self.minsize(1000, 620)
 
         self.car_table = CarTable(CARS_JSON)
-        # 内置/在线基表与本机扫描分层保存；本机扫描只补基表缺失 ID，永不覆盖现值。
         self._cars_builtin_n = self.car_table.known_count("fh6")  # 内置表条数(设置界面展示)
         self._cars_src = ""            # 当前生效的在线数据来源(""=内置表)
         self._cars_base_data: dict = {}
-        self._cars_local_data: dict | None = None
-        self._cars_local_pending = 0
-        self._cars_local_error = ""
-        self._cars_local_scanning = False
-        self._cars_local_scan_id = 0       # 恢复内置后忽略仍在途的旧扫描结果
         self._cars_checking = False    # 在线检查进行中(防重入)
         self._appupd_checking = False  # 软件更新检查进行中(防重入)
         self._cars_dlg: tk.Toplevel | None = None   # 设置对话框存活引用(messagebox 父窗口)
         self._cars_info_var = tk.StringVar(value="")
         self._cars_date_var = tk.StringVar(value="")   # 页脚车型表第二行(版本时刻)
-        self._cars_local_status_var = tk.StringVar(value="")
         carupdate.init_cache_dir()
         cached = carupdate.load_cached()
         if cached is not None and self._cars_adopt_cached(cached):
@@ -586,8 +578,6 @@ class App(tk.Tk):
         # 「自动检查车型表更新」开关(appconfig 持久化; v1.8.0 起每次启动检查一次)
         self._cars_auto = tk.BooleanVar(
             value=bool(_cfg.get("cars_auto_check", True)))
-        self._cars_local_auto = tk.BooleanVar(
-            value=bool(_cfg.get("cars_local_scan", True)))
         # 手动选择的存档目录(appconfig 持久化; 启动时恢复到下拉首项,
         # 改选其它存档/目录消失/被自动检测覆盖时自动清除)
         self._manual_dir = str(_cfg.get("manual_dir", ""))
@@ -645,10 +635,6 @@ class App(tk.Tk):
         if self._cars_auto.get():
             self.after(CARS_CHECK_DELAY_MS,
                        lambda: self.check_cars_online(manual=False))
-        # 本机车型扫描同样避开首屏/存档首扫；找不到游戏时只更新状态，不弹目录选择。
-        if self._cars_local_auto.get():
-            self.after(CARS_CHECK_DELAY_MS,
-                       lambda: self.scan_cars_local(manual=False))
 
     def _on_close(self):
         """关窗: 取消自动刷新/缩放防抖 job(缩放待应用步进先落盘, 避免
@@ -3042,61 +3028,6 @@ class App(tk.Tk):
             self.select(self._selected)
         return True
 
-    def scan_cars_local(self, manual: bool = False) -> None:
-        """后台扫描本机游戏车型；目录只取配置/自动探测，绝不弹选择框。"""
-        if self._cars_local_scanning:
-            if manual:
-                self.status_var.set(_("正在扫描本机车型…"))
-            return
-        self._cars_local_scanning = True
-        self._cars_local_error = ""
-        self._cars_local_scan_id += 1
-        scan_id = self._cars_local_scan_id
-        manual_root = self._game_dir
-        self._cars_update_info()
-        if manual:
-            self.status_var.set(_("正在扫描本机车型…"))
-
-        def _work():
-            data, err = None, ""
-            try:
-                root = carlocal.resolve_game_root(manual_root)
-                data, _cached = carlocal.scan_or_load(root, force=manual)
-            except Exception as exc:  # 后台失败只报告状态，现有表与旧缓存均保留
-                err = str(exc) or exc.__class__.__name__
-            try:
-                self.after(0, lambda: self._cars_local_done(scan_id, data, err, manual))
-            except RuntimeError:
-                pass
-
-        threading.Thread(target=_work, daemon=True).start()
-
-    def _cars_local_done(self, scan_id: int, data: dict | None, err: str,
-                         manual: bool) -> None:
-        if scan_id != self._cars_local_scan_id:
-            return
-        self._cars_local_scanning = False
-        if data is None:
-            self._cars_local_error = err or _("读取失败")
-            self._cars_update_info()
-            if manual:
-                self.status_var.set(
-                    _("本机车型扫描失败({err}); 已保留现有数据").format(
-                        err=self._cars_local_error))
-            return
-        old = self.car_table.known_count("fh6")
-        self._cars_local_data = data
-        self._cars_local_error = ""
-        self._cars_local_pending = len(carlocal.pending_ids(self._cars_base_data, data))
-        effective = carlocal.merge_cars(self._cars_base_data, data)
-        self._cars_replace_effective(effective)
-        self._cars_update_info()
-        if manual:
-            self.status_var.set(
-                _("本机车型扫描完成: 新增 {added} 辆, 待确认 {pending} 辆").format(
-                    added=self.car_table.known_count("fh6") - old,
-                    pending=self._cars_local_pending))
-
     def check_cars_online(self, manual: bool = False) -> None:
         """车型名表在线检查: daemon 线程逐源 fetch(单源 6s 超时), 结果回主线程。
         manual=True 立即检查并弹窗反馈; 自动检查静默(失败只丢状态栏, 现有数据不动)。"""
@@ -3109,7 +3040,6 @@ class App(tk.Tk):
         if manual:
             self.status_var.set(_("正在检查车型表更新…"))
         prefer_gitee = i18n.LANG == "zh"
-        # 本机新增车辆不能抬高在线表的最低条数门槛。
         min_count = max(carupdate.MIN_FH6,
                         carupdate.fh6_count(self._cars_base_data) * 9 // 10)
 
@@ -3159,8 +3089,6 @@ class App(tk.Tk):
                         err=err or _("读取失败")),
                     parent=self._cars_parent())
             return
-        # 时间戳只比较内置/在线基表。本机扫描的 scanned_at 绝不进入 _updated，
-        # 因而不会把以后的在线更新误判成旧数据。
         local_dt = carupdate.data_updated_dt(self._cars_base_data)
         remote_dt = carupdate.data_updated_dt(data)
         if local_dt is not None and (remote_dt is None or remote_dt < local_dt):
@@ -3190,11 +3118,9 @@ class App(tk.Tk):
             return
         old = self.car_table.known_count("fh6")
         self._cars_base_data = data
-        self._cars_local_pending = len(carlocal.pending_ids(data, self._cars_local_data))
-        effective = carlocal.merge_cars(data, self._cars_local_data)
-        self._cars_replace_effective(effective)
+        self._cars_replace_effective(data)
         if not cache_saved:
-            carupdate.save_cache(data)      # 在线缓存只存远端原表，与本机缓存分离
+            carupdate.save_cache(data)      # 在线缓存只存远端原表
         self._cars_src = src
         self._cars_update_info()
         msg = _("车型表已更新: {old} → {new} 辆(来源 {src})").format(
@@ -3204,17 +3130,11 @@ class App(tk.Tk):
             messagebox.showinfo(_("车型名表(在线更新)"), msg, parent=self._cars_parent())
 
     def reset_cars_builtin(self) -> None:
-        """恢复内置车型表并清在线/本机缓存；忽略恢复前仍在途的本机扫描。"""
+        """恢复内置车型表并清在线缓存。"""
         builtin = CarTable(CARS_JSON).snapshot()
-        self._cars_local_scan_id += 1
-        self._cars_local_scanning = False
-        self._cars_local_data = None
-        self._cars_local_pending = 0
-        self._cars_local_error = ""
         self._cars_base_data = builtin
         self.car_table.replace(builtin)
         carupdate.clear_cache()
-        carlocal.clear_cache()
         self._cars_src = ""
         self._refresh_brands()
         self.rebuild_grid()
@@ -3225,43 +3145,17 @@ class App(tk.Tk):
             n=self.car_table.known_count("fh6")))
 
     def _cars_update_info(self) -> None:
-        """页脚与设置页展示基表版本、本机扫描状态、来源和新增待确认数。"""
+        """页脚展示车型条数、数据版本日期和在线检查状态。"""
         cur = self.car_table.known_count("fh6")
         snap = self._cars_base_data
         dt = carupdate.data_updated_dt(snap)
         date = fmt_local(dt) if dt is not None else carupdate.data_updated(snap)
-        sources: list[str] = []
-        if self._cars_src:
-            sources.append(_("在线缓存") if self._cars_src == "cache" else _("在线"))
-        if self._cars_local_data is not None:
-            sources.append(_("本机扫描"))
-        source = "+".join(sources) if sources else _("内置")
         checked = carupdate.cache_fetched_at() > 0
-        info = (_("车型表: {n} 辆(已是最新)") if checked else _("车型表: {n} 辆")).format(n=cur)
-        info += _(" · 来源: {source}").format(source=source)
-        if self._cars_local_pending:
-            info += _(" · 待确认 {n} 辆").format(n=self._cars_local_pending)
-        self._cars_info_var.set(info)
-
-        if self._cars_local_scanning:
-            local_status = _("正在扫描本机车型…")
-            footer_status = local_status
-        elif self._cars_local_error:
-            local_status = _("本机扫描失败: {err}; 已保留现有数据").format(
-                err=self._cars_local_error)
-            footer_status = _("本机扫描失败")
-        elif self._cars_local_data is not None:
-            scanned = str(self._cars_local_data.get("scanned_at", "")).replace("T", " ")
-            local_status = _("本机扫描于 {date}").format(date=scanned or _("未知时间"))
-            footer_status = local_status
-        else:
-            local_status = _("尚未扫描本机车型")
-            footer_status = local_status
-        if self._cars_local_pending:
-            local_status += _(" · 待确认 {n} 辆").format(n=self._cars_local_pending)
-        self._cars_local_status_var.set(local_status)
-        dates = ([_("更新于 {date}").format(date=date)] if date else []) + [footer_status]
-        self._cars_date_var.set(" · ".join(dates))
+        self._cars_info_var.set(
+            _("车型表: {n} 辆(已是最新)").format(n=cur) if checked
+            else _("车型表: {n} 辆").format(n=cur))
+        self._cars_date_var.set(
+            _("更新于 {date}").format(date=date) if date else "")
 
     # ------------------------------------------------------------ 软件更新检查
 
@@ -3376,27 +3270,11 @@ class App(tk.Tk):
         ttk.Button(row_cars, text=_("恢复内置数据"),
                    command=self.reset_cars_builtin).pack(side=tk.LEFT, padx=(8, 0))
 
-        def _toggle_cars_local():
-            appconfig.set_cars_local_scan(self._cars_local_auto.get())
-
-        row_local = tk.Frame(body)
-        row_local.grid(row=4, column=0, columnspan=4, sticky=tk.W, pady=(6, 0))
-        ttk.Checkbutton(row_local, text=_("启动时扫描本机游戏车型"),
-                        variable=self._cars_local_auto,
-                        command=_toggle_cars_local).pack(side=tk.LEFT)
-        ttk.Button(row_local, text=_("立即扫描本机车型"),
-                   command=lambda: self.scan_cars_local(manual=True)).pack(
-            side=tk.LEFT, padx=(8, 0))
-        ttk.Label(body, textvariable=self._cars_local_status_var,
-                  wraplength=560, foreground="#666").grid(
-            row=5, column=0, columnspan=4, sticky=tk.W, pady=(2, 0))
-
-        # 游戏安装目录同时供 3D 预览和本机车型扫描使用；后台扫描不会弹目录选择。
         ttk.Label(body, text=_("游戏安装目录(留空 = 自动探测):")).grid(
-            row=6, column=0, columnspan=4, sticky=tk.W, pady=(10, 0))
+            row=4, column=0, columnspan=4, sticky=tk.W, pady=(10, 0))
         game_var = tk.StringVar(value=self._game_dir)
         row_game = tk.Frame(body)
-        row_game.grid(row=7, column=0, columnspan=4, sticky=tk.EW, pady=2)
+        row_game.grid(row=5, column=0, columnspan=4, sticky=tk.EW, pady=2)
 
         def _browse_game():
             path = filedialog.askdirectory(
@@ -3411,7 +3289,7 @@ class App(tk.Tk):
 
         # 3D 预览(内置查看器)行为: 窗口数量上限。即时生效(下次点「3D 预览」即采用)。
         row_viewer = tk.Frame(body)
-        row_viewer.grid(row=8, column=0, columnspan=4, sticky=tk.W, pady=(10, 0))
+        row_viewer.grid(row=6, column=0, columnspan=4, sticky=tk.W, pady=(10, 0))
         ttk.Label(row_viewer, text=_("3D 预览窗口数上限(0 = 不限制):")).pack(
             side=tk.LEFT)
         windows_var = tk.StringVar(
@@ -3421,10 +3299,10 @@ class App(tk.Tk):
 
         ttk.Label(body, foreground="#666", text=_(
             "上限 1 = 新预览在同一个窗口里换涂装/换车模; 0 = 每次预览都开新窗口")).grid(
-            row=9, column=0, columnspan=4, sticky=tk.W, pady=(2, 0))
+            row=7, column=0, columnspan=4, sticky=tk.W, pady=(2, 0))
 
         btns = ttk.Frame(body)
-        btns.grid(row=10, column=0, columnspan=4, sticky=tk.E, pady=(10, 0))
+        btns.grid(row=8, column=0, columnspan=4, sticky=tk.E, pady=(10, 0))
 
         def _save():
             try:
@@ -3448,20 +3326,13 @@ class App(tk.Tk):
                 return
             self.key_hold_ms, self.key_gap_ms = hold, gap
             appconfig.save_key_timing(hold, gap)
-            old_game_dir = self._game_dir
             self._game_dir = game_var.get().strip()
             appconfig.set_game_dir(self._game_dir)
             appconfig.set_viewer_max_windows(windows)
             self.status_var.set(
                 _("按键节奏: 保持 {hold}ms + 间隔 {gap}ms (已保存)").format(
                     hold=hold, gap=gap))
-            game_changed = self._game_dir != old_game_dir
-            if game_changed:
-                self._cars_local_scan_id += 1
-                self._cars_local_scanning = False
             dlg.destroy()
-            if game_changed and self._cars_local_auto.get():
-                self.after(0, lambda: self.scan_cars_local(manual=False))
 
         def _reset():
             hold_var.set(str(DEFAULT_KEY_HOLD_MS))
