@@ -643,7 +643,12 @@ def publish_github_release(version: str, zips: list[Path]) -> None:
            "--repo", "Hx-zh/fh6-livery-viewer",
            "--title", f"FH6 Livery Viewer v{version}"]
     notes = tag_notes(version)
-    cmd += ["--notes", notes] if notes else ["--generate-notes"]
+    notes_path = DIST / f".release_notes_v{version}.md"
+    if notes:
+        notes_path.write_text(notes, encoding="utf-8")
+        cmd += ["--notes-file", str(notes_path)]
+    else:
+        cmd += ["--generate-notes"]
     cmd += [str(z) for z in zips]
     r = _run(cmd, check=False)
     if r.returncode != 0:
@@ -655,7 +660,7 @@ def publish_github_release(version: str, zips: list[Path]) -> None:
             raise SystemExit("gh release create/upload 均失败:\n" + _out(r) + _out(up))
         if notes:
             _run([gh, "release", "edit", f"v{version}",
-                  "--repo", "Hx-zh/fh6-livery-viewer", "--notes", notes], check=False)
+                  "--repo", "Hx-zh/fh6-livery-viewer", "--notes-file", str(notes_path)], check=False)
         print(f"[发布] GitHub release v{version} 资产已覆盖更新; 资产 {len(zips)} 个 zip")
         return
     print(f"[发布] GitHub release v{version} 已创建; 资产 {len(zips)} 个 zip")
