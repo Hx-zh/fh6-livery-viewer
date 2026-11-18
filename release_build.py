@@ -487,6 +487,21 @@ def _viewer_assets_stale(build_dir: Path, stage: Path) -> bool:
     return any(rel not in dst or dst[rel] != meta for rel, meta in src.items())
 
 
+def _sync_viewer_manifest_assets(stage: Path) -> None:
+    """用 HEAD blob 写入 manifest 及清单内资源，避免旧暂存和 autocrlf 改变字节。"""
+    from tools import update_data_manifest
+
+    repo_paths = [item[0] for item in update_data_manifest.DATA_FILES]
+    repo_paths.append("viewer3d/assets/data_manifest.json")
+    for repo_path in repo_paths:
+        if repo_path == "cars.json":
+            continue
+        relative = repo_path.removeprefix("viewer3d/assets/")
+        target = stage / "assets" / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(update_data_manifest.head_bytes(repo_path))
+
+
 def _viewer_stage() -> Path | None:
     """把 3D 查看器暂存到 dist/3DViewer/。已暂存直接用; 否则 gh 拉取
     build-viewer 工件(发布 zip 内置 3DViewer/ 子目录, 端上 flsbridge 优先用它)。
@@ -536,6 +551,7 @@ def _viewer_stage() -> Path | None:
                 print("[3DViewer] 本地构建或资产较新, 已刷新 dist/3DViewer(白名单)")
         except OSError as e:
             print(f"[3DViewer] 警告: 刷新暂存失败({e}), 沿用现有暂存")
+        _sync_viewer_manifest_assets(stage)
         return stage
     gh = gh_exe()
     try:
@@ -569,6 +585,7 @@ def _viewer_stage() -> Path | None:
             return None
         shutil.copytree(inner, stage, dirs_exist_ok=True)
         print(f"[3DViewer] 已暂存 {stage} (来自 run {run['databaseId']})")
+        _sync_viewer_manifest_assets(stage)
         return stage
     except Exception as e:  # noqa: BLE001 —— 打包不因查看器缺位而失败
         print(f"[3DViewer] 警告: 获取查看器工件失败({e}), zip 不含查看器")
