@@ -40,6 +40,24 @@
 补齐查看器注册表 → commit → `release_build.py --data-only` 发布（用户端 24h 自动更新，不发版）。
 离线时 `update_cars.py` 会改用磁盘全名文案，只给新 ID 补名；`--no-disk-captions` 可强制只信内存文案。
 
+### 维护者本机一键数据链（2026-11-19 新增）
+
+已有已验证明文 GameDB 的维护者可用 `tools/update_local_data.py` 一次完成 cars/car_ids/wheel/part 及四语言文件的校验和更新；上述 `update_cars.py` / `update_car_ids.py` 分步路径仍保留，数据源分级与历史结论不变。
+
+```bash
+python tools/update_local_data.py          # 只报告，不写数据文件
+python tools/update_local_data.py --write  # 写入 JSON，不提交、不推送
+python tools/update_local_data.py --push   # 数据 commit → manifest commit → data-only 双端发布
+python tools/update_local_data.py --game PATH
+python tools/update_local_data.py --gamedb PATH/gamedb.sqlite
+```
+
+默认自动定位 FH6，并调用被 `.gitignore` 排除的 `build/private-fh6-gamedb/decrypt_fh6_gamedb.py`；需要维护者本机 `pwsh` / .NET 8 做 AES/HKDF。私有 key、解密器和解密后的 SQLite 永不提交或上传。`--gamedb` 使用已验证明文 SQLite 并跳过私有解密器；这**不代表玩家端可本地解密**，客户端仍经既有在线通道取得数据。
+
+新车型只接受 `EN.zip` 唯一完整磁盘文案，且年份必须与 GameDB 一致；现存 cars.json 名称和年份均保留，4263 永不自动加入，修改/删除不自动。SQLite 完整性、Data_Car 唯一性、carbin Ordinal/MediaName、schema/断链、生成器问题及 `car_ids --check` 构成全量门禁，失败不推送；首次提交前失败恢复本次 JSON，提交后失败保留提交。`--push` 不打 tag、不发布 exe。
+
+当前真实快照为 691 辆，carbin 全量匹配，cars/wheel/part 均 +0、问题 0；临时工作区已验证可重建上一轮 9 辆的全部本链资产并通过 `car_ids --check`。发布顺序只在临时仓库验证，实际网络发布未测试；v1.10.0 发布仍暂停。
+
 ### 纯 ID / 模型路径（不依赖名称，推荐先跑）
 
 `tools/update_car_ids.py` 只用游戏文件里的 `<CODE>.carbin` 头 `Ordinal`，与 `cars.json` 的名称/年份完全解耦：

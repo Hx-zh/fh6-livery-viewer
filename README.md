@@ -74,6 +74,22 @@ python -m PyInstaller FH6LiveryViewer.spec
 `FH6LiveryViewer.spec` 在打包时会从 `Analysis.binaries` 里剔除 `api-ms-win-*.dll` 与 `ucrtbase.dll` 这类 **UCRT 转发库**：CPython 3.13.6+ 的安装目录自带这一批 DLL（约 986 KB），PyInstaller 会把它们一并打进包，而 Windows 10+ 系统本来就有这些库；更关键的是打进包的副本会优先于系统版本被加载，与历史上 `d3dcompiler_47.dll` 导致查看器启动失败属同类隐患。发布流水线（`.github/workflows/release.yml`）另外把 Python 钉在 `3.13.5`、依赖钉在 `pyinstaller==6.22.0` / `pillow==12.3.0`，让 GitHub 与 Gitee 两端的产物保持一致（此前 GitHub 包比 Gitee 包大 1.56 MB，解包对比发现差异全部来自构建环境：UCRT 转发库，以及 libcrypto/libssl 与各 `.pyd` 的补丁版差异）。
 
 
+## 维护者：本机车辆数据更新
+
+`tools/update_local_data.py` 将本机 GameDB、`EN.zip`、车辆 `carbin` 与 `Manifest.xml` 串成一条校验和更新链，覆盖 `cars.json`、查看器 `car_ids.json`、`wheel_sizes.json` 与 `part_names*.json`。它只供维护者使用，**不是玩家端本地解密或更新功能**；玩家仍通过既有的在线数据通道获取已发布数据。
+
+```bash
+python tools/update_local_data.py                 # 默认只报告，不写数据文件
+python tools/update_local_data.py --write         # 写入 JSON，不提交、不推送
+python tools/update_local_data.py --push          # 数据提交 + manifest 提交 + data-only 双端发布
+python tools/update_local_data.py --game "C:\path\to\Forza Horizon 6"
+python tools/update_local_data.py --gamedb "build\path\to\gamedb.sqlite"
+```
+
+默认自动定位 FH6，并调用被 `.gitignore` 排除的 `build/private-fh6-gamedb/decrypt_fh6_gamedb.py`。该私有目录包含维护者本机的解密依赖，需要本机 `pwsh` / .NET 8 提供 AES/HKDF；密钥与解密后的 SQLite 均不得提交或上传。也可用 `--gamedb` 指定已验证的明文 SQLite，跳过私有解密器。
+
+新车型只自动新增，现存名称和年份不覆盖、条目不自动删除；全量校验失败不会推送。`--push` 只发布数据，**不打 tag、不构建或发布 exe**，实际网络发布只在维护者明确执行该命令时发生。
+
 ## 使用说明
 
 | 操作 | 说明 |
@@ -116,6 +132,7 @@ python -m PyInstaller FH6LiveryViewer.spec
 ├── flsbridge.py # 3D 预览桥接（定位内置查看器 3DViewer\ + 探测游戏目录传 --game）
 ├── viewer3d/   # 内置 3D 查看器源码（vendored Forza Livery Studio 快照 + 自研查看器壳，云端构建；来源/许可见 viewer3d/PROVENANCE.md）
 ├── tools/fastdl.py # 多线程分块下载器（纯标准库，维护者工具）
+├── tools/update_local_data.py # 维护者本机车辆数据链（默认报告；私有 GameDB 依赖不入库）
 ├── i18n/__init__.py  # 界面多语言（中文源串即 key；FH6_LANG 环境变量 → exe 文件名后缀 → 默认简中）
 ├── i18n/lang_en.py / lang_ja.py / lang_ko.py / lang_zhtw.py  # 四语言译文表（各 241 条）
 ├── check_i18n.py  # i18n 覆盖校验（改 UI 字符串后必跑，发布前要求 COVERAGE OK）

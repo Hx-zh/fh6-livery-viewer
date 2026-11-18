@@ -79,6 +79,22 @@ Produces a single-file `dist\FH6LiveryViewer.exe` with `cars.json` embedded (rea
 
 > The UI is multilingual since v1.6.0: Simplified Chinese (default), English, 日本語, 한국어, and 繁體中文 — the exe picks its UI language from its own file name (see the Download table above). Chinese button labels are quoted where relevant below.
 
+## Maintainer-only local vehicle data updates
+
+`tools/update_local_data.py` connects the local GameDB, `EN.zip`, vehicle `carbin` files, and `Manifest.xml` files into one validated update pipeline covering `cars.json` and the viewer's `car_ids.json`, `wheel_sizes.json`, and `part_names*.json`. This is a **maintainer workflow, not player-side local decryption or updating**; clients continue to receive published data through the existing online update channel.
+
+```bash
+python tools/update_local_data.py                 # Report only; do not write data files
+python tools/update_local_data.py --write         # Write JSON; no commit or push
+python tools/update_local_data.py --push          # Data commit + manifest commit + dual-host data-only release
+python tools/update_local_data.py --game "C:\path\to\Forza Horizon 6"
+python tools/update_local_data.py --gamedb "build\path\to\gamedb.sqlite"
+```
+
+By default the tool locates FH6 automatically and invokes the Git-ignored `build/private-fh6-gamedb/decrypt_fh6_gamedb.py`. That private directory contains the maintainer's local decryption dependencies and requires local `pwsh` / .NET 8 for AES/HKDF. Keys and decrypted SQLite databases must never be committed or uploaded. `--gamedb` instead accepts an already verified plaintext SQLite database and bypasses the private decryptor.
+
+New cars are additive only: existing names and years are preserved, and entries are never removed automatically. A failed full validation prevents publishing. `--push` publishes data only—it **does not create a tag or build/release an exe**, and network publishing happens only when a maintainer explicitly runs it.
+
 ## Usage
 
 | Action | Result |
@@ -120,6 +136,7 @@ The tool is **read-only**. These findings come from real on-disk saves plus comm
 ├── flsbridge.py # 3D preview bridge (locate the bundled 3DViewer\ + detect game dir for --game)
 ├── viewer3d/   # built-in 3D viewer sources (vendored Forza Livery Studio snapshot + our viewer shell, built in the cloud; source/license in viewer3d/PROVENANCE.md)
 ├── tools/fastdl.py # multi-threaded chunked downloader (stdlib only, maintainer tool)
+├── tools/update_local_data.py # maintainer-only local vehicle data pipeline (private GameDB dependencies are Git-ignored)
 ├── i18n/__init__.py  # UI localization (Chinese source string = key; FH6_LANG env var → exe file-name suffix → default zh)
 ├── i18n/lang_en.py / lang_ja.py / lang_ko.py / lang_zhtw.py  # translation tables (241 entries each)
 ├── check_i18n.py  # i18n coverage checker (run after any UI string change; releases require COVERAGE OK)

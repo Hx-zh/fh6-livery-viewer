@@ -911,7 +911,7 @@ def main() -> int:
     ap.add_argument("--gitee-release", action="store_true",
                     help="在 Gitee 创建同名 release 并上传 5 个 zip(令牌见交互说明/GITEE_TOKEN)")
     ap.add_argument("--data-only", action="store_true",
-                    help="仅发布 cars.json 数据: push 双端 + 线上内容校验(不发版)")
+                    help="仅发布 JSON 数据与 manifest: push 双端 + 线上内容校验(不发版)")
     ap.add_argument("--ci", action="store_true",
                     help="GitHub Actions 专用: 门禁+构建+五语言+在已有 tag 上建 GitHub release")
     ap.add_argument("--gitee-local", action="store_true",
