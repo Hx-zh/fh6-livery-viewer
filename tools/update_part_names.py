@@ -13,11 +13,13 @@ part_names.json`)。游戏自带 25 种语言的界面串表，所以其它语�
                                                     # 同时报告可补齐的缺失车型
 
 --gamedb 只处理 part_names.json 里不存在的 model code。Data_Car.MediaName 对应
-media/Cars/<CODE>.zip 内的 Manifest.xml；六个可见类别的升级行通过 Ordinal 精确
-连接 Data_Car.Id，再按游戏 exe 已证实的 Data_UpgradePart → UpgradeTypes →
-Upgrades 和 List_PartManufacturer 关系取名。Manifest 提供 PartEnum/PartId 对照，
-但不单独作为名称来源（Stock/Remove 等条目并不一定出现在 Manifest）。DB 字符串
-必须是相应 EN.str 的 key 或与完整英文值完全一致；无法解析的行跳过并报告，不猜。
+media/Cars/<CODE>.zip 内的 Manifest.xml；有 Ordinal 的升级表直接连接 Data_Car.Id，
+四种无 Ordinal 的车身件则经 CarBodyID → List_UpgradeCarBody.CarBodyID +
+Data_CarBody.ID → Ordinal → Data_Car.Id 精确连接，并拒绝重复/断链。
+名称优先按 Upgrades.id → IDS_Name_<id>、ManufacturerID →
+IDS_PartManufacturer_<id> 映射到 EN 串表；旧库明文/哈希值仅作兼容回退。
+非原厂父套件保留厂家名；无通用 Upgrades 行时只复用现存唯一 PartId 名称，否则报错。
+Manifest 提供 PartEnum/PartId 对照；缺名引用单独告警、不阻断，不凭 Manifest 猜名称。
 List_Wheels 会被检查/计数，但当前查看器六类不含 WheelStyle，不伪造轮毂名称映射。
 
 串表来源(只读):
@@ -74,10 +76,10 @@ CORE_SCHEMA = {
     "Data_Car": {"Id", "MediaName"},
     "Data_UpgradePart": {"Id", "PartName"},
     "UpgradeTypes": {"Id", "PartName"},
-    "Upgrades": {"TypeId", "Level", "Name"},
+    "Upgrades": {"Id", "TypeId", "Level", "Name"},
     "List_PartManufacturer": {"Id", "PartManufacturer"},
 }
-PART_COLUMNS = {"Id", "Ordinal", "Level", "IsStock", "ManufacturerID"}
+PART_COLUMNS = {"Id", "Level", "IsStock", "ManufacturerID"}
 MODEL_CODE_RE = re.compile(r"^[A-Za-z0-9_]+$")
 MIN_COVERAGE = 0.90
 
@@ -85,6 +87,7 @@ MIN_COVERAGE = 0.90
 @dataclass
 class PartExtraction:
     models: dict[str, dict[str, str]] = field(default_factory=dict)
+    manifest_missing: dict[str, list[str]] = field(default_factory=dict)
     issues: list[str] = field(default_factory=list)
     covered: set[str] = field(default_factory=set)
     manifest_links: int = 0
@@ -236,13 +239,51 @@ def generate_part_models(
         result.issues.append("缺少 List_Wheels；不生成 WheelStyle（当前六类车身件不受影响）")
 
     existing_folded = {model.casefold() for model in existing}
-    available: dict[int, tuple[str, str]] = {}
+    known_part_names: dict[tuple[int, int], set[str]] = {}
+    for entries in existing.values():
+        for key, value in entries.items():
+            part_type_text, separator, part_id_text = key.partition(":")
+            if separator and part_type_text.isdigit() and part_id_text.isdigit() and value:
+                known_part_names.setdefault(
+                    (int(part_type_text), int(part_id_text)), set()
+                ).add(value)
+    available: dict[int, tuple[str, str, str]] = {}
     for part_type, (table, enum) in PART_TABLES.items():
         missing = require_columns(tables, table, PART_COLUMNS)
         if missing:
             result.issues.append(f"跳过 {enum}: 缺少 " + ", ".join(missing))
-        else:
-            available[part_type] = (table, enum)
+            continue
+        if not require_columns(tables, table, {"Ordinal"}):
+            available[part_type] = (table, enum, "ordinal")
+            continue
+        parent_missing = (
+            require_columns(tables, table, {"CarBodyID"})
+            + require_columns(tables, "List_UpgradeCarBody", {"Id", "Ordinal", "CarBodyID"})
+            + require_columns(tables, "Data_CarBody", {"ID"})
+        )
+        if parent_missing:
+            result.issues.append(
+                f"跳过 {enum}: 缺少 Ordinal/CarBodyID 连接所需的 " + ", ".join(parent_missing)
+            )
+            continue
+        duplicates = conn.execute(
+            "SELECT COUNT(*) FROM (SELECT CarBodyID FROM List_UpgradeCarBody "
+            "GROUP BY CarBodyID HAVING COUNT(*) <> 1)"
+        ).fetchone()[0]
+        if duplicates:
+            raise gamedbmem.GameDBError("List_UpgradeCarBody.CarBodyID 不唯一，拒绝猜测车身件车型")
+        orphans = conn.execute(f"""
+SELECT COUNT(*)
+FROM {gamedbmem.quote_identifier(table)} AS p
+LEFT JOIN List_UpgradeCarBody AS parent ON parent.CarBodyID = p.CarBodyID
+LEFT JOIN Data_CarBody AS body ON body.ID = p.CarBodyID
+LEFT JOIN Data_Car AS c ON c.Id = parent.Ordinal
+WHERE parent.Id IS NULL OR body.ID IS NULL OR c.Id IS NULL
+""").fetchone()[0]
+        if orphans:
+            result.issues.append(f"跳过 {enum}: CarBodyID 有 {orphans} 行无法精确连接到车型")
+            continue
+        available[part_type] = (table, enum, "carbody")
     if not available:
         result.issues.append("六个可视升级表均不可用；未生成任何车型")
         return result
@@ -255,14 +296,23 @@ def generate_part_models(
     upgrade_values = set(en_upgrades.values())
     manufacturer_values = set(en_manufacturers.values())
 
-    for part_type, (table, enum) in available.items():
+    for part_type, (table, enum, join_kind) in available.items():
+        if join_kind == "ordinal":
+            join = f"""FROM Data_Car AS c
+JOIN {gamedbmem.quote_identifier(table)} AS p ON p.Ordinal = c.Id"""
+            parent_stock = "p.IsStock"
+        else:
+            join = f"""FROM {gamedbmem.quote_identifier(table)} AS p
+JOIN List_UpgradeCarBody AS parent ON parent.CarBodyID = p.CarBodyID
+JOIN Data_CarBody AS body ON body.ID = p.CarBodyID
+JOIN Data_Car AS c ON c.Id = parent.Ordinal"""
+            parent_stock = "parent.IsStock"
         query = f"""
 SELECT c.Id AS CarId, c.MediaName AS MediaName,
-       p.Id AS PartId, p.IsStock AS IsStock,
-       p.ManufacturerID AS ManufacturerID,
+       p.Id AS PartId, p.IsStock AS IsStock, {parent_stock} AS ParentIsStock,
+       p.ManufacturerID AS ManufacturerID, u.id AS UpgradeId,
        u.Name AS UpgradeName, pm.PartManufacturer AS ManufacturerName
-FROM Data_Car AS c
-JOIN {gamedbmem.quote_identifier(table)} AS p ON p.Ordinal = c.Id
+{join}
 LEFT JOIN Data_UpgradePart AS dp ON dp.Id = {part_type}
 LEFT JOIN UpgradeTypes AS ut ON ut.PartName = dp.PartName
 LEFT JOIN Upgrades AS u ON u.TypeId = ut.Id AND u.Level = p.Level
@@ -306,13 +356,23 @@ ORDER BY c.Id, p.Id, u.Name
             key = f"{part_type}:{part_id}"
             if (folded, key) in conflicts:
                 continue
-            upgrade_name = db_text(row["UpgradeName"], en_upgrades, upgrade_values)
-            if upgrade_name is None:
-                result.issues.append(
-                    f"{code}/{key}: Upgrades.Name 无法映射到 EN Upgrades.str: "
-                    f"{row['UpgradeName']!r}"
-                )
-                continue
+            upgrade_id = row["UpgradeId"]
+            upgrade_name = ""
+            if isinstance(upgrade_id, int) and not isinstance(upgrade_id, bool):
+                upgrade_name = en_upgrades.get(f"IDS_Name_{upgrade_id}", "").strip()
+            if not upgrade_name:
+                upgrade_name = db_text(row["UpgradeName"], en_upgrades, upgrade_values) or ""
+            known_name = ""
+            if not upgrade_name:
+                candidates = known_part_names.get((part_type, part_id), set())
+                if len(candidates) == 1:
+                    known_name = next(iter(candidates))
+                else:
+                    result.issues.append(
+                        f"{code}/{key}: Upgrades.id/Name 无法映射到 EN Upgrades.str，"
+                        f"现存唯一 PartId 名称也不可用: {row['UpgradeId']!r} / {row['UpgradeName']!r}"
+                    )
+                    continue
 
             is_stock = row["IsStock"]
             if is_stock not in (0, 1):
@@ -320,17 +380,27 @@ ORDER BY c.Id, p.Id, u.Name
                 continue
             manufacturer_id = row["ManufacturerID"]
             maker = ""
-            if not is_stock and manufacturer_id not in (None, 0):
-                maker_value = db_text(
-                    row["ManufacturerName"], en_manufacturers, manufacturer_values
-                )
-                if maker_value is None:
+            if (not known_name and (not is_stock or row["ParentIsStock"] == 0)
+                    and manufacturer_id not in (None, 0)):
+                maker_value = ""
+                if isinstance(manufacturer_id, int) and not isinstance(manufacturer_id, bool):
+                    maker_value = en_manufacturers.get(
+                        f"IDS_PartManufacturer_{manufacturer_id}", ""
+                    ).strip()
+                if not maker_value:
+                    maker_value = db_text(
+                        row["ManufacturerName"], en_manufacturers, manufacturer_values
+                    ) or ""
+                if not maker_value:
                     result.issues.append(
                         f"{code}/{key}: ManufacturerID={manufacturer_id!r} 无法映射到厂家串表"
                     )
                     continue
-                maker = maker_value
-            if not maker:
+                if maker_value != en_manufacturers.get("IDS_PartManufacturer_1", "").strip():
+                    maker = maker_value
+            if known_name:
+                name = known_name
+            elif not maker:
                 name = upgrade_name
             elif part_type == 2:
                 name = f"{maker} {upgrade_name}"
@@ -353,6 +423,21 @@ ORDER BY c.Id, p.Id, u.Name
     for model in list(result.models):
         if not result.models[model]:
             del result.models[model]
+    for folded, manifest in manifests.items():
+        if manifest is None:
+            continue
+        code = new_names.get(folded)
+        if code is None:
+            continue
+        present = {
+            (int(key.split(":", 1)[0]), int(key.split(":", 1)[1]))
+            for key in result.models.get(code, {})
+        }
+        missing = sorted(manifest - present)
+        if missing:
+            result.manifest_missing[code] = [
+                f"{part_type}:{part_id}" for part_type, part_id in missing
+            ]
     return result
 
 
@@ -412,6 +497,8 @@ def main(argv: list[str]) -> int:
             print(f"  + {model}: {len(entries)} 条")
             for key, value in entries.items():
                 print(f"      {key}: {value}")
+        for model, missing in extracted.manifest_missing.items():
+            print(f"  ! {model}: Manifest 缺名（不阻断）: {', '.join(missing)}")
         for issue in extracted.issues:
             print("  ! " + issue)
         base.update(extracted.models)
